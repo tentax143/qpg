@@ -1,0 +1,221 @@
+{% extends 'base.html' %}
+
+{% block title %}Exam Pattern & Portion - Question Paper Generator{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1 class="h3 mb-0">
+                <i class="fas fa-clipboard-list me-2"></i>Exam Pattern & Portion
+            </h1>
+            <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">
+                <i class="fas fa-arrow-left me-1"></i>Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Navigation Tabs -->
+<ul class="nav nav-tabs mb-4" id="examPatternTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="pattern-tab" data-bs-toggle="tab" data-bs-target="#pattern" type="button" role="tab">
+            <i class="fas fa-chart-bar me-1"></i>Exam Pattern
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="syllabus-tab" data-bs-toggle="tab" data-bs-target="#syllabus" type="button" role="tab">
+            <i class="fas fa-book me-1"></i>Syllabus Portion
+        </button>
+    </li>
+</ul>
+
+<!-- Tab Content -->
+<div class="tab-content" id="examPatternTabContent">
+    <!-- Exam Pattern Tab -->
+    <div class="tab-pane fade show active" id="pattern" role="tabpanel">
+        <div class="row">
+            {% for class_name, pattern in exam_patterns.items %}
+            <div class="col-lg-6 col-xl-4 mb-4">
+                <div class="card h-100">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-graduation-cap me-2"></i>{{ class_name }}
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-6">
+                                <small class="text-muted">Total Marks</small>
+                                <div class="h5 mb-0 text-primary">{{ pattern.total_marks }}</div>
+                            </div>
+                            <div class="col-6">
+                                <small class="text-muted">Duration</small>
+                                <div class="h5 mb-0 text-success">{{ pattern.duration }}</div>
+                            </div>
+                        </div>
+                        
+                        <h6 class="text-muted mb-3">Section Breakdown:</h6>
+                        {% for section in pattern.sections %}
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <div>
+                                <strong>{{ section.name }}</strong>
+                                <br>
+                                <small class="text-muted">{{ section.type }}</small>
+                            </div>
+                            <span class="badge bg-info">{{ section.marks }} marks</span>
+                        </div>
+                        {% endfor %}
+                        
+                        <div class="progress mt-3" style="height: 8px;">
+                            {% for section in pattern.sections %}
+                            <div class="progress-bar bg-{% cycle 'primary' 'success' 'warning' %}" 
+                                 role="progressbar" 
+                                 style="width: {{ section.marks }}%"
+                                 title="{{ section.name }}: {{ section.marks }} marks">
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Syllabus Portion Tab -->
+    <div class="tab-pane fade" id="syllabus" role="tabpanel">
+        <div class="row">
+            <div class="col-12 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-info-circle me-2"></i>Subject-wise Syllabus
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted">
+                            Select a subject to view the detailed syllabus portions for each class level.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Subject Selection -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="btn-group" role="group">
+                    {% for subject in syllabus_portions.keys %}
+                    <input type="radio" class="btn-check" name="subject" id="subject_{{ forloop.counter }}" autocomplete="off">
+                    <label class="btn btn-outline-primary" for="subject_{{ forloop.counter }}">
+                        <i class="fas fa-{% cycle 'calculator' 'flask' 'leaf' %} me-1"></i>{{ subject }}
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Syllabus Content -->
+        {% for subject, classes in syllabus_portions.items %}
+        <div class="syllabus-content" id="syllabus_{{ subject|lower }}" style="display: none;">
+            <div class="row">
+                {% for class_name, topics in classes.items %}
+                <div class="col-lg-6 col-xl-4 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header bg-success text-white">
+                            <h6 class="card-title mb-0">
+                                <i class="fas fa-book-open me-2"></i>{{ class_name }} - {{ subject }}
+                            </h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="list-group list-group-flush">
+                                {% for topic in topics %}
+                                <div class="list-group-item d-flex align-items-center">
+                                    <i class="fas fa-check-circle text-success me-2"></i>
+                                    <span>{{ topic }}</span>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <div class="card-footer">
+                            <small class="text-muted">
+                                <i class="fas fa-clock me-1"></i>{{ topics|length }} topics covered
+                            </small>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Quick Reference Card -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card bg-light">
+            <div class="card-header">
+                <h6 class="card-title mb-0">
+                    <i class="fas fa-lightbulb me-2"></i>Quick Reference
+                </h6>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <h6><i class="fas fa-clock me-1"></i>Exam Duration</h6>
+                        <p class="text-muted small">All exams are 3 hours long with 15 minutes reading time.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h6><i class="fas fa-percentage me-1"></i>Marking Scheme</h6>
+                        <p class="text-muted small">Total marks vary by class but typically follow the pattern shown above.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h6><i class="fas fa-file-alt me-1"></i>Question Types</h6>
+                        <p class="text-muted small">Mix of objective, short answer, and long answer questions.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Subject selection functionality
+    const subjectRadios = document.querySelectorAll('input[name="subject"]');
+    const syllabusContents = document.querySelectorAll('.syllabus-content');
+    
+    subjectRadios.forEach(radio => {
+        radio.addEventListener('change', function() {
+            // Hide all syllabus contents
+            syllabusContents.forEach(content => {
+                content.style.display = 'none';
+            });
+            
+            // Show selected subject content
+            if (this.checked) {
+                const subjectName = this.nextElementSibling.textContent.trim();
+                const targetContent = document.getElementById('syllabus_' + subjectName.toLowerCase());
+                if (targetContent) {
+                    targetContent.style.display = 'block';
+                }
+            }
+        });
+    });
+    
+    // Auto-select first subject on syllabus tab
+    const syllabusTab = document.getElementById('syllabus-tab');
+    syllabusTab.addEventListener('shown.bs.tab', function() {
+        if (subjectRadios.length > 0 && !document.querySelector('input[name="subject"]:checked')) {
+            subjectRadios[0].checked = true;
+            subjectRadios[0].dispatchEvent(new Event('change'));
+        }
+    });
+});
+</script>
+{% endblock %}
+
