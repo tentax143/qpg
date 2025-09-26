@@ -1,18 +1,16 @@
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from app import views
+from django.shortcuts import redirect
+from django.http import HttpResponseRedirect
+
+def redirect_to_login(request):
+    """Redirect root URL to login page"""
+    return HttpResponseRedirect('/login/')
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("", views.dashboard_view, name="dashboard"),
-    path("generate/", views.generate_view, name="generate"),
-    path("login/", views.login_view, name="login"),
-    path("logout/", views.logout_view, name="logout"),
-    path("exam-pattern/", views.exam_pattern_view, name="exam_pattern"),
-]
-
-# Serve media files during development
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    path("", redirect_to_login, name="home"),
+    path("", include("core.urls")),
+] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

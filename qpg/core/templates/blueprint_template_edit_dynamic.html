@@ -1,0 +1,669 @@
+{% extends "base.html" %}
+{% block title %}Edit Blueprint Template - QPG System{% endblock %}
+{% block page_icon %}edit{% endblock %}
+{% block page_title %}Edit Blueprint Template{% endblock %}
+{% block content %}
+
+<div class="row justify-content-center">
+  <div class="col-lg-12">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header border-bottom">
+        <h5 class="mb-0"><i class="fas fa-edit me-2"></i>Edit Blueprint Template</h5>
+      </div>
+      <div class="card-body">
+        <form method="post" id="blueprintForm">
+          {% csrf_token %}
+          
+          <!-- Basic Information -->
+          <div class="row mb-4">
+            <div class="col-12">
+              <h6 class="text-primary mb-3">
+                <i class="fas fa-info-circle me-2"></i>Template Information
+              </h6>
+            </div>
+            
+            <div class="col-md-6 mb-3">
+              <label class="form-label">
+                <i class="fas fa-tag me-1"></i>Template Name
+              </label>
+              <input type="text" name="name" class="form-control" 
+                     value="{{ template.name }}" required>
+              <div class="form-text">Give a descriptive name to this template</div>
+            </div>
+            
+            <div class="col-md-3 mb-3">
+              <label class="form-label">
+                <i class="fas fa-users me-1"></i>Class
+              </label>
+              <input type="text" name="class_name" class="form-control" 
+                     value="{{ template.class_name }}" required>
+              <div class="form-text">Target class</div>
+            </div>
+            
+            <div class="col-md-3 mb-3">
+              <label class="form-label">
+                <i class="fas fa-book me-1"></i>Subject
+              </label>
+              <input type="text" name="subject" class="form-control" 
+                     value="{{ template.subject }}" required>
+              <div class="form-text">Subject name</div>
+            </div>
+            
+            <div class="col-12 mb-3">
+              <label class="form-label">
+                <i class="fas fa-align-left me-1"></i>Description
+              </label>
+              <textarea name="description" class="form-control" rows="3" 
+                        placeholder="Describe this template and its purpose...">{{ template.description }}</textarea>
+            </div>
+            
+            <div class="col-12 mb-3">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="is_default" id="isDefault" 
+                       {% if template.is_default %}checked{% endif %}>
+                <label class="form-check-label" for="isDefault">
+                  Set as default template for this subject and class
+                </label>
+                <div class="form-text">Only one default template per subject/class combination</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dynamic Blueprint Builder -->
+          <div class="row mb-4">
+            <div class="col-12">
+              <h6 class="text-primary mb-3">
+                <i class="fas fa-cogs me-2"></i>Blueprint Structure
+              </h6>
+              <div class="alert alert-info">
+                <i class="fas fa-info-circle me-2"></i>
+                <strong>Dynamic Blueprint Builder:</strong> Add sections, then subsections, then question types. This will create a structured blueprint automatically.
+              </div>
+              
+              <!-- Add Section Button -->
+              <div class="mb-3">
+                <button type="button" class="btn btn-outline-primary" onclick="addSection()">
+                  <i class="fas fa-plus me-2"></i>Add Section
+                </button>
+                <div class="form-text">Click to add a new section (A, B, C, etc.)</div>
+              </div>
+              
+              <!-- Sections Container -->
+              <div id="sectionsContainer">
+                <div class="empty-state">
+                  <i class="fas fa-inbox"></i>
+                  <p>No sections added yet. Click "Add Section" to get started.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Hidden input for blueprint data -->
+          <input type="hidden" name="blueprint" id="blueprintData">
+
+          <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+            <a href="{% url 'blueprint_list' %}" class="btn btn-secondary me-md-2">
+              <i class="fas fa-arrow-left me-2"></i>Back to Blueprints
+            </a>
+            <button type="submit" class="btn btn-primary" id="updateTemplateBtn">
+              <i class="fas fa-save me-2"></i>Update Template
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Question Types Reference -->
+    <div class="card border-0 shadow-sm mt-4">
+      <div class="card-header border-bottom">
+        <h6 class="mb-0"><i class="fas fa-lightbulb me-2"></i>Question Types Reference</h6>
+      </div>
+      <div class="card-body">
+        <div class="row g-4">
+          <div class="col-lg-4 col-md-6">
+            <div class="h-100">
+              <h6 class="text-primary mb-3">
+                <i class="fas fa-language me-2"></i>English Question Types
+              </h6>
+              <div class="question-types-list">
+                <div class="question-type-item">
+                  <code class="question-code">unseen_passage</code>
+                  <span class="question-desc">Reading comprehension</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">case_based</code>
+                  <span class="question-desc">Case study questions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">note_making</code>
+                  <span class="question-desc">Note making tasks</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">summary</code>
+                  <span class="question-desc">Summary writing</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">gap_filling</code>
+                  <span class="question-desc">Grammar gap filling</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">reordering</code>
+                  <span class="question-desc">Sentence reordering</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">advertisement</code>
+                  <span class="question-desc">Advertisement writing</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">poster</code>
+                  <span class="question-desc">Poster design</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">speech</code>
+                  <span class="question-desc">Speech writing</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">debate</code>
+                  <span class="question-desc">Debate writing</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">extract_based</code>
+                  <span class="question-desc">Literature extracts</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">short_answer</code>
+                  <span class="question-desc">Brief answers</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">long_answer</code>
+                  <span class="question-desc">Detailed answers</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-lg-4 col-md-6">
+            <div class="h-100">
+              <h6 class="text-primary mb-3">
+                <i class="fas fa-flask me-2"></i>Science Question Types
+              </h6>
+              <div class="question-types-list">
+                <div class="question-type-item">
+                  <code class="question-code">mcq</code>
+                  <span class="question-desc">Multiple choice questions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">assertion_reason</code>
+                  <span class="question-desc">Assertion-reason type</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">very_short_answer</code>
+                  <span class="question-desc">1-2 mark questions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">short_answer</code>
+                  <span class="question-desc">3-4 mark questions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">long_answer</code>
+                  <span class="question-desc">5+ mark questions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">case_based</code>
+                  <span class="question-desc">Case study questions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">or_choice</code>
+                  <span class="question-desc">Either/or questions</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-lg-4 col-md-12">
+            <div class="h-100">
+              <h6 class="text-primary mb-3">
+                <i class="fas fa-calculator me-2"></i>Math Question Types
+              </h6>
+              <div class="question-types-list">
+                <div class="question-type-item">
+                  <code class="question-code">mcq</code>
+                  <span class="question-desc">Multiple choice questions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">numerical</code>
+                  <span class="question-desc">Numerical problems</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">short_answer</code>
+                  <span class="question-desc">Brief solutions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">long_answer</code>
+                  <span class="question-desc">Detailed solutions</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">proof</code>
+                  <span class="question-desc">Mathematical proofs</span>
+                </div>
+                <div class="question-type-item">
+                  <code class="question-code">or_choice</code>
+                  <span class="question-desc">Either/or questions</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+.section-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+  transition: all 0.2s ease;
+}
+
+.section-card:hover {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-md);
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.section-number {
+  background: var(--accent-color);
+  color: white;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  margin-right: 1rem;
+}
+
+.remove-btn {
+  background: var(--danger-color);
+  color: white;
+  border: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.remove-btn:hover {
+  background: #c82333;
+  transform: scale(1.1);
+}
+
+.subsection-card {
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.question-item {
+  background: white;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--text-muted);
+}
+
+.empty-state i {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+  opacity: 0.5;
+}
+
+/* Question Types Reference Styles */
+.question-types-list {
+  padding: 0;
+  margin: 0;
+}
+
+.question-type-item {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+  transition: background-color 0.2s ease;
+}
+
+.question-type-item:hover {
+  background-color: rgba(0, 123, 255, 0.05);
+}
+
+.question-code {
+  background-color: #f8f9fa;
+  color: #495057;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  min-width: 120px;
+  margin-right: 0.75rem;
+  border: 1px solid #e9ecef;
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.question-desc {
+  color: #6c757d;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  flex: 1;
+  padding-top: 0.1rem;
+}
+</style>
+
+<script>
+let sectionCount = 0;
+let subsectionCount = 0;
+let questionCount = 0;
+
+// Load existing blueprint data
+document.addEventListener('DOMContentLoaded', function() {
+  const templateData = {{ template.blueprint|safe }};
+  if (templateData && Object.keys(templateData).length > 0) {
+    loadExistingBlueprint(templateData);
+  }
+});
+
+// Load existing blueprint
+function loadExistingBlueprint(blueprintData) {
+  Object.keys(blueprintData).forEach(sectionKey => {
+    const sectionData = blueprintData[sectionKey];
+    addSection();
+    
+    const section = document.querySelector(`#section-${sectionCount}`);
+    section.querySelector('.section-title').value = sectionData.title || '';
+    section.querySelector('.section-marks').value = sectionData.marks || '';
+    
+    if (sectionData.subsections) {
+      Object.keys(sectionData.subsections).forEach(subsectionName => {
+        const subsectionData = sectionData.subsections[subsectionName];
+        addSubsection(sectionCount);
+        
+        const subsection = document.querySelector(`#subsection-${subsectionCount}`);
+        subsection.querySelector('.subsection-name').value = subsectionName;
+        subsection.querySelector('.subsection-marks').value = subsectionData[0]?.marks || '';
+        
+        subsectionData.forEach(questionData => {
+          addQuestion(subsectionCount);
+          
+          const question = document.querySelector(`#question-${questionCount}`);
+          question.querySelector('.question-type').value = questionData.type || '';
+          question.querySelector('.question-marks').value = questionData.marks || '';
+          question.querySelector('.question-instruction').value = questionData.instruction || '';
+        });
+      });
+    }
+  });
+}
+
+// Add Section
+function addSection() {
+  sectionCount++;
+  const container = document.getElementById('sectionsContainer');
+  
+  // Remove empty state
+  const emptyState = container.querySelector('.empty-state');
+  if (emptyState) {
+    emptyState.remove();
+  }
+  
+  const sectionLetter = String.fromCharCode(64 + sectionCount); // A, B, C, etc.
+  
+  const sectionHtml = `
+    <div class="section-card" id="section-${sectionCount}">
+      <div class="section-header">
+        <div class="d-flex align-items-center">
+          <div class="section-number">${sectionCount}</div>
+          <h6 class="mb-0">Section ${sectionLetter}</h6>
+        </div>
+        <button type="button" class="remove-btn" onclick="removeSection(${sectionCount})">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      
+      <div class="row mb-3">
+        <div class="col-md-6">
+          <label class="form-label">Section Title</label>
+          <input type="text" class="form-control section-title" 
+                 placeholder="e.g. Reading Skills" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Total Marks</label>
+          <input type="number" class="form-control section-marks" 
+                 placeholder="e.g. 26" min="1" required>
+        </div>
+      </div>
+      
+      <div class="mb-3">
+        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addSubsection(${sectionCount})">
+          <i class="fas fa-plus me-2"></i>Add Subsection
+        </button>
+        <div class="form-text">Add subsections like "reading", "grammar", "writing"</div>
+      </div>
+      
+      <div class="subsections-container" id="subsections-${sectionCount}">
+        <div class="empty-state">
+          <i class="fas fa-folder-plus"></i>
+          <p>No subsections added yet. Click "Add Subsection" to get started.</p>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  container.insertAdjacentHTML('beforeend', sectionHtml);
+}
+
+// Add Subsection
+function addSubsection(sectionId) {
+  subsectionCount++;
+  const container = document.getElementById(`subsections-${sectionId}`);
+  
+  // Remove empty state
+  const emptyState = container.querySelector('.empty-state');
+  if (emptyState) {
+    emptyState.remove();
+  }
+  
+  const subsectionHtml = `
+    <div class="subsection-card" id="subsection-${subsectionCount}">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0">Subsection ${subsectionCount}</h6>
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeSubsection(${subsectionCount})">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      
+      <div class="row mb-3">
+        <div class="col-md-6">
+          <label class="form-label">Subsection Name</label>
+          <input type="text" class="form-control subsection-name" 
+                 placeholder="e.g. reading, grammar, writing" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Subsection Marks</label>
+          <input type="number" class="form-control subsection-marks" 
+                 placeholder="e.g. 18" min="1" required>
+        </div>
+      </div>
+      
+      <div class="mb-3">
+        <button type="button" class="btn btn-outline-info btn-sm" onclick="addQuestion(${subsectionCount})">
+          <i class="fas fa-plus me-2"></i>Add Question Type
+        </button>
+        <div class="form-text">Add specific question types for this subsection</div>
+      </div>
+      
+      <div class="questions-container" id="questions-${subsectionCount}">
+        <div class="empty-state">
+          <i class="fas fa-question-circle"></i>
+          <p>No question types added yet. Click "Add Question Type" to get started.</p>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  container.insertAdjacentHTML('beforeend', subsectionHtml);
+}
+
+// Add Question Type
+function addQuestion(subsectionId) {
+  questionCount++;
+  const container = document.getElementById(`questions-${subsectionId}`);
+  
+  // Remove empty state
+  const emptyState = container.querySelector('.empty-state');
+  if (emptyState) {
+    emptyState.remove();
+  }
+  
+  const questionHtml = `
+    <div class="question-item" id="question-${questionCount}">
+      <div class="flex-grow-1">
+        <div class="row">
+          <div class="col-md-4">
+            <input type="text" class="form-control form-control-sm question-type" 
+                   placeholder="e.g. unseen_passage" required>
+          </div>
+          <div class="col-md-2">
+            <input type="number" class="form-control form-control-sm question-marks" 
+                   placeholder="Marks" min="1" required>
+          </div>
+          <div class="col-md-4">
+            <input type="text" class="form-control form-control-sm question-instruction" 
+                   placeholder="e.g. Answer ANY ONE of the following">
+          </div>
+          <div class="col-md-2">
+            <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeQuestion(${questionCount})">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  container.insertAdjacentHTML('beforeend', questionHtml);
+}
+
+// Remove Section
+function removeSection(sectionId) {
+  const section = document.getElementById(`section-${sectionId}`);
+  if (section) {
+    section.remove();
+    sectionCount--;
+  }
+}
+
+// Remove Subsection
+function removeSubsection(subsectionId) {
+  const subsection = document.getElementById(`subsection-${subsectionId}`);
+  if (subsection) {
+    subsection.remove();
+    subsectionCount--;
+  }
+}
+
+// Remove Question
+function removeQuestion(questionId) {
+  const question = document.getElementById(`question-${questionId}`);
+  if (question) {
+    question.remove();
+    questionCount--;
+  }
+}
+
+// Generate Blueprint Data
+function generateBlueprintData() {
+  const blueprint = {};
+  
+  const sections = document.querySelectorAll('.section-card');
+  sections.forEach((section, index) => {
+    const sectionLetter = String.fromCharCode(65 + index); // A, B, C, etc.
+    const title = section.querySelector('.section-title').value;
+    const marks = parseInt(section.querySelector('.section-marks').value);
+    
+    const subsections = {};
+    const subsectionElements = section.querySelectorAll('.subsection-card');
+    
+    subsectionElements.forEach(subsection => {
+      const name = subsection.querySelector('.subsection-name').value;
+      const subsectionMarks = parseInt(subsection.querySelector('.subsection-marks').value);
+      
+      const questions = [];
+      const questionElements = subsection.querySelectorAll('.question-item');
+      
+      questionElements.forEach((question, qIndex) => {
+        const type = question.querySelector('.question-type').value;
+        const questionMarks = parseInt(question.querySelector('.question-marks').value);
+        const instruction = question.querySelector('.question-instruction').value;
+        
+        questions.push({
+          qnum: qIndex + 1,
+          type: type,
+          marks: questionMarks,
+          instruction: instruction || ""
+        });
+      });
+      
+      subsections[name] = questions;
+    });
+    
+    blueprint[sectionLetter] = {
+      title: title,
+      marks: marks,
+      subsections: subsections
+    };
+  });
+  
+  return blueprint;
+}
+
+// Form Submission
+document.getElementById('blueprintForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  
+  // Generate blueprint data
+  const blueprintData = generateBlueprintData();
+  
+  // Set the hidden input
+  document.getElementById('blueprintData').value = JSON.stringify(blueprintData);
+  
+  // Submit the form
+  this.submit();
+});
+</script>
+
+{% endblock %}
