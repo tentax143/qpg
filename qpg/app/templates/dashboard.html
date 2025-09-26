@@ -34,6 +34,7 @@
                                     <th>Subject</th>
                                     <th>Unit</th>
                                     <th>Difficulty</th>
+                                    <th>Status</th>
                                     <th>Created</th>
                                     <th>Actions</th>
                                 </tr>
@@ -55,6 +56,17 @@
                                             <span class="badge bg-warning text-dark">Medium</span>
                                         {% else %}
                                             <span class="badge bg-danger">Hard</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if paper.status == 'generated' %}
+                                            <span class="badge bg-success">Generated</span>
+                                        {% elif paper.status == 'processing' %}
+                                            <span class="badge bg-warning text-dark">Processing</span>
+                                        {% elif paper.status == 'failed' %}
+                                            <span class="badge bg-danger">Failed</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">{{ paper.status }}</span>
                                         {% endif %}
                                     </td>
                                     <td>

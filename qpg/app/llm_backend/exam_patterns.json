@@ -1,0 +1,210 @@
+{
+  "Class 11": {
+    "Biology": {
+      "total_marks": 100,
+      "duration": "3 hours",
+      "sections": {
+        "A": {
+          "name": "MCQs",
+          "count": 14,
+          "marks_per_question": 1,
+          "total_marks": 14,
+          "description": "Multiple Choice Questions",
+          "chapters": ["4", "5"],
+                      "prompt_template": "Generate exactly {q_start} {difficulty} CBSE Class {class_name} {subject} MCQs (1 mark each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Must include some assertion–reason and case-based MCQs. - Avoid direct recall like 'What is / Define'. - Provide 4 answer options (a–d). - DO NOT include answers or explanations. Format strictly: {q_start}) Question text a) option1 b) option2 c) option3 d) option4"
+        },
+        "B": {
+          "name": "Very Short Answer",
+          "count": 10,
+          "marks_per_question": 2,
+          "total_marks": 20,
+          "description": "Very Short Answer Questions",
+          "chapters": ["5", "6"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} Very Short Answer (2 mark) descriptive questions. Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Questions must test reasoning or comparison, not recall. - Expected length: 2–3 sentences. - DO NOT include answers."
+        },
+        "C": {
+          "name": "Short Answer Type I",
+          "count": 7,
+          "marks_per_question": 3,
+          "total_marks": 21,
+          "description": "Short Answer Type I Questions",
+          "chapters": ["6", "7"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} Short Answer Type I (3 mark) descriptive questions. Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Questions must test application or analysis, not recall. - Expected length: 4–5 sentences. - DO NOT include answers."
+        },
+        "D": {
+          "name": "Case-based/Competency",
+          "count": 2,
+          "marks_per_question": 4,
+          "total_marks": 8,
+          "description": "Case-based/Competency/Value-based Questions",
+          "chapters": ["4", "5", "6", "7"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} case-based/competency/value-based questions (4 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Present experimental/scenario/data-driven cases. - Avoid factual recall. - DO NOT include answers."
+        },
+        "E": {
+          "name": "Long Answer",
+          "count": 3,
+          "marks_per_question": 5,
+          "total_marks": 15,
+          "description": "Long Answer Questions with Internal Choice",
+          "chapters": ["4", "5", "6", "7"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} Long Answer (5 marks each) descriptive questions WITH internal choice. Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Must integrate concepts across topics. - ALWAYS give internal choice using 'OR'. - DO NOT include answers. Format strictly: Q1. Question text OR Question text"
+        }
+      }
+    },
+    "English": {
+      "total_marks": 100,
+      "duration": "3 hours",
+      "sections": {
+        "A": {
+          "name": "Reading Comprehension",
+          "count": 15,
+          "marks_per_question": 1,
+          "total_marks": 15,
+          "description": "Reading Comprehension Passages",
+          "chapters": ["1", "2", "3"],
+                      "prompt_template": "Generate exactly {q_start} {difficulty} CBSE Class {class_name} {subject} reading comprehension questions (1 mark each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Questions must test understanding, inference, and vocabulary. - Provide 4 answer options (a–d). - DO NOT include answers or explanations."
+        },
+        "B": {
+          "name": "Grammar & Vocabulary",
+          "count": 10,
+          "marks_per_question": 2,
+          "total_marks": 20,
+          "description": "Grammar and Vocabulary Questions",
+          "chapters": ["4", "5"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} grammar and vocabulary questions (2 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test grammar rules, vocabulary usage, and language skills. - Expected length: 2–3 sentences. - DO NOT include answers."
+        },
+        "C": {
+          "name": "Writing Skills",
+          "count": 5,
+          "marks_per_question": 5,
+          "total_marks": 25,
+          "description": "Writing Skills - Letter, Notice, etc.",
+          "chapters": ["6", "7"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} writing skills questions (5 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Include letter writing, notice writing, and other formats. - Provide clear instructions and format requirements. - DO NOT include sample answers."
+        },
+        "D": {
+          "name": "Literature",
+          "count": 4,
+          "marks_per_question": 5,
+          "total_marks": 20,
+          "description": "Literature and Poetry Analysis",
+          "chapters": ["8", "9"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} literature analysis questions (5 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test understanding of themes, characters, and literary devices. - Questions should encourage critical thinking. - DO NOT include answers."
+        },
+        "E": {
+          "name": "Long Answer",
+          "count": 2,
+          "marks_per_question": 10,
+          "total_marks": 20,
+          "description": "Long Answer Questions with Choice",
+          "chapters": ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} long answer questions (10 marks each) WITH internal choice. Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test comprehensive understanding and analytical skills. - ALWAYS give internal choice using 'OR'. - DO NOT include answers. Format strictly: Q1. Question text OR Question text"
+        }
+      }
+    },
+    "Mathematics": {
+      "total_marks": 100,
+      "duration": "3 hours",
+      "sections": {
+        "A": {
+          "name": "MCQs",
+          "count": 20,
+          "marks_per_question": 1,
+          "total_marks": 20,
+          "description": "Multiple Choice Questions",
+          "chapters": ["1", "2", "3"],
+                      "prompt_template": "Generate exactly {q_start} {difficulty} CBSE Class {class_name} {subject} MCQs (1 mark each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test conceptual understanding and problem-solving. - Provide 4 answer options (a–d). - DO NOT include answers or explanations."
+        },
+        "B": {
+          "name": "Very Short Answer",
+          "count": 6,
+          "marks_per_question": 2,
+          "total_marks": 12,
+          "description": "Very Short Answer Questions",
+          "chapters": ["4", "5"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} very short answer questions (2 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test basic concepts and simple calculations. - Expected length: 1–2 lines. - DO NOT include answers."
+        },
+        "C": {
+          "name": "Short Answer Type I",
+          "count": 6,
+          "marks_per_question": 3,
+          "total_marks": 18,
+          "description": "Short Answer Type I Questions",
+          "chapters": ["6", "7"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} short answer type I questions (3 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test problem-solving and application skills. - Include step-by-step solutions. - DO NOT include final answers."
+        },
+        "D": {
+          "name": "Short Answer Type II",
+          "count": 4,
+          "marks_per_question": 4,
+          "total_marks": 16,
+          "description": "Short Answer Type II Questions",
+          "chapters": ["8", "9"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} short answer type II questions (4 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test analytical and problem-solving skills. - Include detailed solutions. - DO NOT include final answers."
+        },
+        "E": {
+          "name": "Long Answer",
+          "count": 4,
+          "marks_per_question": 8.5,
+          "total_marks": 34,
+          "description": "Long Answer Questions with Choice",
+          "chapters": ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} long answer questions (8.5 marks each) WITH internal choice. Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test comprehensive understanding and complex problem-solving. - ALWAYS give internal choice using 'OR'. - DO NOT include answers. Format strictly: Q1. Question text OR Question text"
+        }
+      }
+    }
+  },
+  "Class 12": {
+    "Biology": {
+      "total_marks": 100,
+      "duration": "3 hours",
+      "sections": {
+        "A": {
+          "name": "MCQs",
+          "count": 16,
+          "marks_per_question": 1,
+          "total_marks": 16,
+          "description": "Multiple Choice Questions",
+          "chapters": ["1", "2", "3"],
+                      "prompt_template": "Generate exactly {q_start} {difficulty} CBSE Class {class_name} {subject} MCQs (1 mark each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Must include some assertion–reason and case-based MCQs. - Avoid direct recall like 'What is / Define'. - Provide 4 answer options (a–d). - DO NOT include answers or explanations."
+        },
+        "B": {
+          "name": "Very Short Answer",
+          "count": 5,
+          "marks_per_question": 2,
+          "total_marks": 10,
+          "description": "Very Short Answer Questions",
+          "chapters": ["4", "5"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} very short answer questions (2 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Questions must test reasoning or comparison, not recall. - Expected length: 2–3 sentences. - DO NOT include answers."
+        },
+        "C": {
+          "name": "Short Answer Type I",
+          "count": 7,
+          "marks_per_question": 3,
+          "total_marks": 21,
+          "description": "Short Answer Type I Questions",
+          "chapters": ["6", "7"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} short answer type I questions (3 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Questions must test application or analysis, not recall. - Expected length: 4–5 sentences. - DO NOT include answers."
+        },
+        "D": {
+          "name": "Short Answer Type II",
+          "count": 3,
+          "marks_per_question": 4,
+          "total_marks": 12,
+          "description": "Short Answer Type II Questions",
+          "chapters": ["8", "9"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} short answer type II questions (4 marks each). Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Test analytical and application skills. - Include detailed explanations. - DO NOT include answers."
+        },
+        "E": {
+          "name": "Long Answer",
+          "count": 3,
+          "marks_per_question": 5,
+          "total_marks": 15,
+          "description": "Long Answer Questions with Internal Choice",
+          "chapters": ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+          "prompt_template": "Generate exactly {q_start} {difficulty} long answer questions (5 marks each) WITH internal choice. Use ONLY this NCERT context: {context}. Rules: - Chapters: {chapters}. - Must integrate concepts across topics. - ALWAYS give internal choice using 'OR'. - DO NOT include answers. Format strictly: Q1. Question text OR Question text"
+        }
+      }
+    }
+  }
+}

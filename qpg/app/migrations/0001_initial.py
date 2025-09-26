@@ -22,6 +22,7 @@ class Migration(migrations.Migration):
                 ('unit', models.CharField(max_length=50)),
                 ('difficulty', models.CharField(choices=[('easy', 'Easy'), ('medium', 'Medium'), ('hard', 'Hard')], max_length=10)),
                 ('pdf_file', models.FileField(upload_to='question_papers/')),
+                ('status', models.CharField(choices=[('generated', 'Generated'), ('processing', 'Processing'), ('failed', 'Failed')], default='generated', max_length=20)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('teacher', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='auth.user')),
             ],

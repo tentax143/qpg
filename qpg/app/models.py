@@ -8,6 +8,11 @@ class QuestionPaper(models.Model):
         ("medium", "Medium"),
         ("hard", "Hard"),
     ]
+    STATUS_CHOICES = [
+        ("generated", "Generated"),
+        ("processing", "Processing"),
+        ("failed", "Failed"),
+    ]
 
     teacher = models.ForeignKey(User, on_delete=models.CASCADE)
     class_name = models.CharField(max_length=10, choices=CLASS_CHOICES)
@@ -15,6 +20,7 @@ class QuestionPaper(models.Model):
     unit = models.CharField(max_length=50)
     difficulty = models.CharField(max_length=10, choices=DIFFICULTY_CHOICES)
     pdf_file = models.FileField(upload_to="question_papers/")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="generated")
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

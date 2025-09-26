@@ -44,19 +44,31 @@ def generate_view(request):
             unit = form.cleaned_data["unit"]
             difficulty = form.cleaned_data["difficulty"]
 
-            # Call LLM backend
-            pdf_path = generate_paper(class_name, subject, unit, difficulty)
+            try:
+                # Call LLM backend - now returns (file_path, summary)
+                pdf_path, summary = generate_paper(class_name, subject, unit, difficulty)
 
-            # Save in DB
-            qp = QuestionPaper.objects.create(
-                teacher=request.user,
-                class_name=class_name,
-                subject=subject,
-                unit=unit,
-                difficulty=difficulty,
-                pdf_file=pdf_path,
-            )
-            return redirect("dashboard")
+                # Save in DB
+                qp = QuestionPaper.objects.create(
+                    teacher=request.user,
+                    class_name=class_name,
+                    subject=subject,
+                    unit=unit,
+                    difficulty=difficulty,
+                    pdf_file=pdf_path,
+                    status="generated",  # Set status explicitly
+                )
+                
+                messages.success(request, f"Question paper generated successfully! {subject} paper for Class {class_name}, Unit {unit} ({difficulty} difficulty) has been created.")
+                return redirect("dashboard")
+                
+            except ValueError as e:
+                # Handle configuration errors (e.g., no exam pattern found)
+                messages.error(request, f"Configuration error: {str(e)}")
+            except Exception as e:
+                # Handle other errors (e.g., Bedrock API issues, PDF generation)
+                messages.error(request, f"Error generating question paper: {str(e)}")
+                print(f"Error in generate_paper: {e}")
     else:
         form = GeneratePaperForm()
 
