@@ -1,5 +1,4 @@
 Django
-sqlite3
 celery
 redis
 boto3
