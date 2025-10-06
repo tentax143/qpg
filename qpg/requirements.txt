@@ -1,0 +1,55 @@
+# Django Framework
+Django==5.0.1
+
+# Database
+sqlite3
+
+# Task Queue
+celery==5.3.4
+redis==5.0.1
+
+# AWS Bedrock Integration
+boto3==1.34.0
+botocore==1.34.0
+
+# Vector Database
+chromadb==0.4.22
+
+# PDF Processing
+PyPDF2==3.0.1
+reportlab==4.0.7
+
+# Text Processing and Embeddings
+sentence-transformers==2.2.2
+transformers==4.36.2
+torch==2.1.2
+
+# HTTP Requests
+requests==2.31.0
+
+# JSON Processing
+jsonschema==4.20.0
+
+# Environment Variables
+python-dotenv==1.0.0
+
+# Development and Testing
+pytest==7.4.3
+pytest-django==4.7.0
+
+# Code Quality
+black==23.11.0
+flake8==6.1.0
+
+# Production Server
+gunicorn==21.2.0
+
+# Static Files
+whitenoise==6.6.0
+
+# CORS (if needed for API)
+django-cors-headers==4.3.1
+
+# Additional Utilities
+python-dateutil==2.8.2
+pytz==2023.3
