@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where python)",
+      "Bash(C:\\ProgramData\\anaconda3\\python.exe -m conda run -n tpm python manage.py shell -c:*)",
+      "Bash(cmd /c:*)",
+      "Bash(call C:ProgramDataanaconda3Scriptsactivate.bat tpm)",
+      "Bash(python manage.py create_english_blueprint:*)",
+      "Bash(python:*)",
+      "Bash(C:\\ProgramData\\anaconda3\\envs\\tpm\\python.exe:*)",
+      "Bash(C:\\\\ProgramData\\\\anaconda3\\\\envs\\\\tpm\\\\python.exe test_paper_generation.py:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(tree:*)",
+      "Bash(cat:*)",
+      "Bash(find:*)",
+      "Bash(awk:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

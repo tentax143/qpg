@@ -1,0 +1,271 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Detailed Blueprint Builder - QPG{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="row">
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">
+                        <i class="fas fa-tools me-2"></i>Detailed Blueprint Builder
+                        <small class="ms-2 opacity-75">Create blueprints with precise specifications</small>
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <!-- Basic Information -->
+                    <div class="row mb-4">
+                        <div class="col-md-4">
+                            <label for="blueprint_name" class="form-label">Blueprint Name</label>
+                            <input type="text" class="form-control" id="blueprint_name"
+                                   placeholder="e.g., Class 6 English Term 1">
+                        </div>
+                        <div class="col-md-4">
+                            <label for="class_name" class="form-label">Class</label>
+                            <select class="form-select" id="class_name">
+                                <option value="">Select Class</option>
+                                {% for class in classes %}
+                                <option value="{{ class }}">Class {{ class }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="subject" class="form-label">Subject</label>
+                            <select class="form-select" id="subject">
+                                <option value="">Select Subject</option>
+                                {% for subj in subjects %}
+                                <option value="{{ subj }}">{{ subj }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="d-flex justify-content-between mb-4">
+                        <button class="btn btn-success" onclick="addSection()">
+                            <i class="fas fa-plus me-2"></i>Add Section
+                        </button>
+                        <div>
+                            <button class="btn btn-outline-secondary" onclick="loadSampleBlueprint()">
+                                <i class="fas fa-file-import me-2"></i>Load Sample
+                            </button>
+                            <button class="btn btn-outline-info" onclick="parseFromText()">
+                                <i class="fas fa-paste me-2"></i>Import from Text
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Sections Container -->
+                    <div id="sections-container">
+                        <!-- Sections will be added here dynamically -->
+                    </div>
+
+                    <!-- Summary Card -->
+                    <div class="card mt-4 border-info">
+                        <div class="card-body">
+                            <h5 class="card-title">Blueprint Summary</h5>
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <strong>Total Sections:</strong>
+                                    <span id="total-sections" class="badge bg-primary">0</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <strong>Total Questions:</strong>
+                                    <span id="total-questions" class="badge bg-success">0</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <strong>Total Marks:</strong>
+                                    <span id="total-marks" class="badge bg-warning text-dark">0</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <strong>Status:</strong>
+                                    <span id="validation-status" class="badge bg-secondary">Not Validated</span>
+                                </div>
+                            </div>
+                            <div id="validation-messages" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- Save Buttons -->
+                    <div class="d-flex justify-content-between mt-4">
+                        <button class="btn btn-secondary" onclick="window.history.back()">
+                            <i class="fas fa-arrow-left me-2"></i>Back
+                        </button>
+                        <div>
+                            <button class="btn btn-outline-primary me-2" onclick="validateBlueprint()">
+                                <i class="fas fa-check me-2"></i>Validate
+                            </button>
+                            <button class="btn btn-primary" onclick="saveBlueprint()">
+                                <i class="fas fa-save me-2"></i>Save Blueprint
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Section Template (Hidden) -->
+<template id="section-template">
+    <div class="card mb-3 section-card" data-section-index="">
+        <div class="card-header bg-light d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">
+                <span class="section-label">Section A</span> -
+                <input type="text" class="form-control form-control-sm d-inline-block w-auto section-title"
+                       placeholder="Section Title" style="width: 200px;">
+                <span class="badge bg-info ms-2">
+                    <input type="number" class="form-control form-control-sm d-inline-block section-marks"
+                           placeholder="Marks" style="width: 60px; background: transparent; border: none; color: white;"
+                           min="1" max="100" value="10"> marks
+                </span>
+            </h5>
+            <button class="btn btn-sm btn-danger" onclick="removeSection(this)">
+                <i class="fas fa-trash"></i>
+            </button>
+        </div>
+        <div class="card-body">
+            <!-- Passage Configuration -->
+            <div class="passage-config mb-3">
+                <div class="form-check mb-2">
+                    <input class="form-check-input enable-passage" type="checkbox" onchange="togglePassageConfig(this)">
+                    <label class="form-check-label">
+                        Include Passage/Comprehension
+                    </label>
+                </div>
+                <div class="passage-details d-none">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <label class="form-label">Word Count Range</label>
+                            <div class="input-group input-group-sm">
+                                <input type="number" class="form-control word-min" placeholder="Min" value="300">
+                                <span class="input-group-text">to</span>
+                                <input type="number" class="form-control word-max" placeholder="Max" value="400">
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Passage Type</label>
+                            <select class="form-select form-select-sm passage-type">
+                                <option value="narrative">Narrative</option>
+                                <option value="descriptive">Descriptive</option>
+                                <option value="factual">Factual</option>
+                                <option value="discursive">Discursive</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Topics (comma-separated)</label>
+                            <input type="text" class="form-control form-control-sm passage-topics"
+                                   placeholder="e.g., environment, technology">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Question Distribution -->
+            <div class="question-distribution">
+                <h6>Question Distribution</h6>
+                <div class="question-list mb-2">
+                    <!-- Questions will be added here -->
+                </div>
+                <button class="btn btn-sm btn-outline-primary" onclick="addQuestionType(this)">
+                    <i class="fas fa-plus me-1"></i>Add Question Type
+                </button>
+            </div>
+
+            <!-- Special Instructions -->
+            <div class="mt-3">
+                <label class="form-label">Special Instructions (Optional)</label>
+                <textarea class="form-control form-control-sm special-instructions" rows="2"
+                          placeholder="e.g., Focus on vocabulary and inference questions"></textarea>
+            </div>
+        </div>
+    </div>
+</template>
+
+<!-- Question Type Template -->
+<template id="question-template">
+    <div class="question-item border rounded p-2 mb-2">
+        <div class="row align-items-center">
+            <div class="col-md-3">
+                <select class="form-select form-select-sm question-type">
+                    <option value="">Select Type</option>
+                    {% for qtype in question_types %}
+                    <option value="{{ qtype.name }}">{{ qtype.display_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text">Count</span>
+                    <input type="number" class="form-control question-count" value="2" min="1">
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text">Marks</span>
+                    <input type="number" class="form-control marks-each" value="1" min="0.5" step="0.5">
+                </div>
+            </div>
+            <div class="col-md-2">
+                <select class="form-select form-select-sm question-source">
+                    <option value="general">General</option>
+                    {% for source in question_sources %}
+                    <option value="{{ source.name }}">{{ source.display_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <select class="form-select form-select-sm question-difficulty">
+                    <option value="medium">Medium</option>
+                    <option value="easy">Easy</option>
+                    <option value="hard">Hard</option>
+                </select>
+            </div>
+            <div class="col-md-1">
+                <button class="btn btn-sm btn-danger" onclick="removeQuestionType(this)">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+        <div class="row mt-1 chapter-selection d-none">
+            <div class="col-12">
+                <input type="text" class="form-control form-control-sm specific-chapters"
+                       placeholder="Specific chapters (comma-separated, optional)">
+            </div>
+        </div>
+    </div>
+</template>
+
+<!-- Import from Text Modal -->
+<div class="modal fade" id="importTextModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Import Blueprint from Text</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Paste your blueprint structure in simple text format:</p>
+                <textarea id="import-text" class="form-control" rows="10"
+                          placeholder="Example:
+Section A - Reading Comprehension - 10 marks
+- 2 assertion reason from NCERT
+- 4 MCQ from inside text
+- 4 MCQ from book back
+
+Section B - Grammar - 10 marks
+- 5 fill in the blanks
+- 5 error correction"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="importFromText()">Import</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{% static 'js/blueprint_builder.js' %}"></script>
+{% endblock %}

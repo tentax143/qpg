@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}Pattern: {{ pattern.name }} - QPG System{% endblock %}
+{% block page_icon %}eye{% endblock %}
+{% block page_title %}View Pattern{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col-lg-10">
+    <!-- Pattern Header -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header border-bottom d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="fas fa-list-alt me-2"></i>{{ pattern.name }}</h5>
+          <small class="text-muted">{{ pattern.description }}</small>
+        </div>
+        <div>
+          <span class="badge bg-{% if pattern.pattern_source == 'ai_generated' %}success{% elif pattern.pattern_source == 'manual' %}primary{% else %}info{% endif %}">
+            {{ pattern.get_pattern_source_display }}
+          </span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="row">
+          <div class="col-md-3">
+            <strong><i class="fas fa-graduation-cap me-2"></i>Class:</strong>
+            <span class="badge bg-light text-dark">{{ pattern.class_name }}</span>
+          </div>
+          <div class="col-md-3">
+            <strong><i class="fas fa-book me-2"></i>Subject:</strong>
+            <span class="badge bg-light text-dark">{{ pattern.subject }}</span>
+          </div>
+          <div class="col-md-3">
+            <strong><i class="fas fa-calculator me-2"></i>Total Marks:</strong>
+            <span class="badge bg-success">{{ pattern.total_marks }}</span>
+          </div>
+          <div class="col-md-3">
+            <strong><i class="fas fa-list me-2"></i>Total Questions:</strong>
+            <span class="badge bg-info">{{ pattern.total_questions }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sections Display -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header border-bottom">
+        <h6 class="mb-0"><i class="fas fa-bars me-2"></i>Pattern Sections</h6>
+      </div>
+      <div class="card-body">
+        {% if pattern.sections %}
+          <div class="accordion" id="sectionsAccordion">
+            {% for section in pattern.sections %}
+              <div class="accordion-item">
+                <h2 class="accordion-header">
+                  <button class="accordion-button" type="button" data-bs-toggle="collapse"
+                          data-bs-target="#section{{ forloop.counter }}">
+                    <strong>{{ section.name }}</strong>
+                    <span class="ms-2">
+                      <span class="badge bg-primary">{{ section.marks }} marks</span>
+                      <span class="badge bg-info">{{ section.questions_count }} questions</span>
+                    </span>
+                  </button>
+                </h2>
+                <div id="section{{ forloop.counter }}" class="accordion-collapse collapse"
+                     data-bs-parent="#sectionsAccordion">
+                  <div class="accordion-body">
+                    <div class="row mb-3">
+                      <div class="col-md-6">
+                        <strong><i class="fas fa-tag me-2"></i>Marks per Question:</strong>
+                        <span>{{ section.marks_per_question }}</span>
+                      </div>
+                      <div class="col-md-6">
+                        <strong><i class="fas fa-list me-2"></i>Question Types:</strong>
+                        <div class="mt-1">
+                          {% for type in section.question_types %}
+                            <span class="badge bg-light text-dark">{{ type }}</span>
+                          {% endfor %}
+                        </div>
+                      </div>
+                    </div>
+
+                    {% if section.instructions %}
+                      <div class="mb-3">
+                        <strong><i class="fas fa-sticky-note me-2 text-info"></i>Instructions:</strong>
+                        <div class="alert alert-info mt-2 mb-0">
+                          <ul class="mb-0">
+                            {% for instruction in section.instructions %}
+                              <li>{{ instruction }}</li>
+                            {% endfor %}
+                          </ul>
+                        </div>
+                      </div>
+                    {% endif %}
+
+                    {% if section.constraints %}
+                      <div class="mb-3">
+                        <strong><i class="fas fa-exclamation-circle me-2 text-warning"></i>Constraints:</strong>
+                        <div class="alert alert-warning mt-2 mb-0">
+                          {% for key, value in section.constraints.items %}
+                            <div class="mb-2">
+                              <strong>{{ key|title }}:</strong>
+                              <span>{{ value }}</span>
+                            </div>
+                          {% endfor %}
+                        </div>
+                      </div>
+                    {% endif %}
+
+                    {% if section.subsections %}
+                      <div>
+                        <strong><i class="fas fa-code-branch me-2"></i>Subsections:</strong>
+                        <div class="mt-2">
+                          {% for subsec in section.subsections %}
+                            <div class="card bg-light mb-2">
+                              <div class="card-body py-2">
+                                <div class="row">
+                                  <div class="col-md-6">
+                                    <strong>{{ subsec.name }}</strong>
+                                  </div>
+                                  <div class="col-md-6">
+                                    <span class="badge bg-success">{{ subsec.marks }} marks</span>
+                                    <span class="badge bg-info">{{ subsec.questions_count }} Q</span>
+                                  </div>
+                                </div>
+                                {% if subsec.instructions %}
+                                  <small class="text-muted d-block mt-1">
+                                    <i class="fas fa-sticky-note me-1"></i>
+                                    {% for instr in subsec.instructions %}
+                                      {{ instr }}{% if not forloop.last %}, {% endif %}
+                                    {% endfor %}
+                                  </small>
+                                {% endif %}
+                              </div>
+                            </div>
+                          {% endfor %}
+                        </div>
+                      </div>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="alert alert-info">No sections defined in this pattern.</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Original AI Prompt (if available) -->
+    {% if pattern.ai_prompt %}
+      <div class="card border-0 shadow-sm mb-4">
+        <div class="card-header border-bottom bg-light">
+          <h6 class="mb-0"><i class="fas fa-robot me-2"></i>Original Teacher Input (AI Generated)</h6>
+        </div>
+        <div class="card-body">
+          <pre class="bg-light p-3 rounded mb-0">{{ pattern.ai_prompt }}</pre>
+        </div>
+      </div>
+    {% endif %}
+
+    <!-- Raw JSON (Developer View) -->
+    <div class="card border-0 shadow-sm">
+      <div class="card-header border-bottom">
+        <div class="d-flex justify-content-between align-items-center">
+          <h6 class="mb-0"><i class="fas fa-code me-2"></i>Raw JSON Structure</h6>
+          <button class="btn btn-sm btn-outline-secondary" onclick="toggleRawJSON()">
+            <i class="fas fa-eye me-1"></i>Toggle
+          </button>
+        </div>
+      </div>
+      <div class="card-body" id="rawJsonContainer" style="display: none;">
+        <pre class="bg-dark text-light p-3 rounded mb-0"><code>{{ pattern_json }}</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="col-lg-2">
+    <!-- Actions -->
+    <div class="card border-0 shadow-sm mb-3">
+      <div class="card-header border-bottom">
+        <h6 class="mb-0"><i class="fas fa-cog me-2"></i>Actions</h6>
+      </div>
+      <div class="card-body">
+        <div class="d-grid gap-2">
+          <a href="{% url 'edit_pattern' pattern.id %}" class="btn btn-primary btn-sm">
+            <i class="fas fa-edit me-1"></i>Edit Pattern
+          </a>
+          <a href="{% url 'generate' %}" class="btn btn-success btn-sm" title="Generate paper with this pattern">
+            <i class="fas fa-magic me-1"></i>Generate Paper
+          </a>
+          <a href="{% url 'delete_pattern' pattern.id %}" class="btn btn-danger btn-sm"
+             onclick="return confirm('Are you sure?')">
+            <i class="fas fa-trash me-1"></i>Delete
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metadata -->
+    <div class="card border-0 shadow-sm mb-3">
+      <div class="card-header border-bottom">
+        <h6 class="mb-0"><i class="fas fa-info-circle me-2"></i>Details</h6>
+      </div>
+      <div class="card-body small">
+        <strong>Created By:</strong>
+        <div class="text-muted">{{ pattern.created_by.username }}</div>
+
+        <strong class="d-block mt-2">Created At:</strong>
+        <div class="text-muted">{{ pattern.created_at|date:"Y-m-d H:i" }}</div>
+
+        <strong class="d-block mt-2">Updated At:</strong>
+        <div class="text-muted">{{ pattern.updated_at|date:"Y-m-d H:i" }}</div>
+
+        <strong class="d-block mt-2">Pattern ID:</strong>
+        <div class="text-muted">{{ pattern.id }}</div>
+
+        <strong class="d-block mt-2">Source:</strong>
+        <div class="text-muted">{{ pattern.get_pattern_source_display }}</div>
+      </div>
+    </div>
+
+    <!-- Back Link -->
+    <a href="{% url 'patterns' %}" class="btn btn-outline-secondary w-100">
+      <i class="fas fa-arrow-left me-1"></i>Back to Patterns
+    </a>
+  </div>
+</div>
+
+<style>
+.accordion-button:not(.collapsed) {
+  background-color: #f8f9fa;
+  color: #0d6efd;
+}
+
+.accordion-button::after {
+  filter: brightness(0) saturate(100%) invert(0.09) sepia(1) saturate(1.5) hue-rotate(200deg) brightness(1.2);
+}
+</style>
+
+<script>
+function toggleRawJSON() {
+  const container = document.getElementById('rawJsonContainer');
+  container.style.display = container.style.display === 'none' ? 'block' : 'none';
+}
+</script>
+{% endblock %}
