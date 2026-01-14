@@ -2,7 +2,7 @@
 Django==5.0.1
 
 # Database
-sqlite3
+# sqlite3 is part of the Python standard library (no pip package).
 
 # Task Queue
 celery==5.3.4
@@ -55,4 +55,3 @@ django-cors-headers==4.3.1
 # Additional Utilities
 python-dateutil==2.8.2
 pytz==2023.3
-
