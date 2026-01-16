@@ -20,12 +20,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-hiyv$94jox20hw%(u_)#@g+j05-pb&6*kezp%vo!m)393@!@2!'
+import os
+
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
+
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+DEBUG = False
+
+ALLOWED_HOSTS = [
+    "questionpapergeneration.duckdns.org",
+    "127.0.0.1",
+    "localhost",
+]
+CSRF_TRUSTED_ORIGINS = [
+    "https://questionpapergeneration.duckdns.org"
+]
+
 
 
 # Application definition
@@ -119,6 +132,7 @@ USE_TZ = True
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 STATIC_URL = "/static/"
 STATICFILES_DIRS = [BASE_DIR / "core" / "static"]
@@ -145,8 +159,9 @@ CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0"
 
 # Embedding Configuration
 USE_OLLAMA = True  # Set to False to use AWS Bedrock instead
-OLLAMA_SERVER = "http://172.16.71.183:11434"
 OLLAMA_MODEL = "all-minilm:l6-v2"  # Your actual Ollama model
-OLLAMA_SERVERS = [f"http://172.16.71.{i}:11434" for i in range(101, 131)]
+OLLAMA_SERVER = "http://127.0.0.1:11434"
+OLLAMA_SERVERS = ["http://127.0.0.1:11434"]
+
 
 
