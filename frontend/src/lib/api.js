@@ -12,9 +12,32 @@ const apiClient = axios.create({
   },
 });
 
-// Add request interceptor for auth token
+// Session timeout in milliseconds (1 hour to match backend SESSION_COOKIE_AGE)
+const SESSION_TIMEOUT = 3600 * 1000;
+
+// Add request interceptor for auth token and session expiration
 apiClient.interceptors.request.use(
   (config) => {
+    // Check for session expiration
+    const loginTimestamp = localStorage.getItem('loginTimestamp');
+    if (loginTimestamp) {
+      const now = Date.now();
+      if (now - parseInt(loginTimestamp) > SESSION_TIMEOUT) {
+        // Session expired
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('user');
+        localStorage.removeItem('loginTimestamp');
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login?expired=true';
+          // Cancel request
+          const controller = new AbortController();
+          config.signal = controller.signal;
+          controller.abort();
+          return config;
+        }
+      }
+    }
+
     const token = localStorage.getItem('authToken');
     if (token) {
       // Django Token Authentication uses "Token" prefix
@@ -29,11 +52,16 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      // Handle unauthorized access - clear token and redirect to login
-      localStorage.removeItem('authToken');
-      localStorage.removeItem('user');
-      if (typeof window !== 'undefined') {
+    // Check key authentication errors
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      // Only redirect if we are not already on the login/register pages
+      if (typeof window !== 'undefined' && 
+          !window.location.pathname.startsWith('/login') && 
+          !window.location.pathname.startsWith('/register')) {
+        
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('user');
+        localStorage.removeItem('loginTimestamp');
         window.location.href = '/login';
       }
     }

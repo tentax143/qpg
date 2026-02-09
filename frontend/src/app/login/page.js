@@ -1,13 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, Lock, User, Zap, ArrowRight, Sparkles } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 
-export default function LoginPage() {
+function LoginForm() {
+  const searchParams = useSearchParams();
   const [formData, setFormData] = useState({
     username: '',
     password: '',
@@ -17,6 +19,12 @@ export default function LoginPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [focusedField, setFocusedField] = useState(null);
+
+  useEffect(() => {
+    if (searchParams.get('expired') === 'true') {
+      setError('Your session has expired. Please login again.');
+    }
+  }, [searchParams]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -45,6 +53,8 @@ export default function LoginPage() {
 
       localStorage.setItem('authToken', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
+      // Store login timestamp for session expiration (1 hour matches backend)
+      localStorage.setItem('loginTimestamp', Date.now().toString());
 
       setSuccess('Login successful! Redirecting...');
       setTimeout(() => {
@@ -174,6 +184,14 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>}>
+      <LoginForm />
+    </Suspense>
   );
 }
    
