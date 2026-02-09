@@ -1,0 +1,78 @@
+from rest_framework import serializers
+from django.contrib.auth.models import User
+from rest_framework.authtoken.models import Token
+
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'last_login', 'date_joined')
+        read_only_fields = ('id', 'last_login', 'date_joined')
+
+class CreateUserSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True)
+    is_staff = serializers.BooleanField(default=False)
+
+    class Meta:
+        model = User
+        fields = ('username', 'email', 'password', 'is_staff')
+
+    def create(self, validated_data):
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data.get('email', ''),
+            password=validated_data['password'],
+            is_staff=validated_data.get('is_staff', False)
+        )
+        return user
+
+class PasswordUpdateSerializer(serializers.Serializer):
+    old_password = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True, min_length=8)
+    
+class ProfileUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('username', 'email', 'first_name', 'last_name')
+
+class LoginSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        from django.contrib.auth import authenticate
+        user = authenticate(
+            username=data.get('username'),
+            password=data.get('password')
+        )
+        if not user:
+            raise serializers.ValidationError('Invalid credentials')
+        data['user'] = user
+        return data
+
+
+class RegisterSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=8)
+    password2 = serializers.CharField(write_only=True, min_length=8)
+
+    def validate(self, data):
+        if data['password'] != data['password2']:
+            raise serializers.ValidationError('Passwords do not match')
+
+        if User.objects.filter(username=data['username']).exists():
+            raise serializers.ValidationError('Username already exists')
+
+        if User.objects.filter(email=data['email']).exists():
+            raise serializers.ValidationError('Email already exists')
+
+        return data
+
+    def create(self, validated_data):
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data['email'],
+            password=validated_data['password']
+        )
+        return user

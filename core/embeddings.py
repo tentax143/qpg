@@ -241,7 +241,7 @@ def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="t
 # ------------------------------
 # Bulk ingest multiple PDFs
 # ------------------------------
-def ingest_bulk(class_name, subject, chapters):
+def ingest_bulk(class_name, subject, chapters, material_type="textbook"):
     """
     chapters = [
       {"unit": "Animal Kingdom", "title": "Ch-4 Animal Kingdom", "file_path": "Ch4.pdf"},
@@ -261,7 +261,8 @@ def ingest_bulk(class_name, subject, chapters):
                 subject=subject,
                 unit=ch["unit"],
                 pdf_path=pdf_path,
-                title=ch.get("title")
+                title=ch.get("title"),
+                material_type=material_type
             )
             total_chunks += chunks
             print(f"[Embeddings] Successfully processed PDF: {pdf_filename} ({chunks} chunks)")

@@ -86,6 +86,8 @@ class Material(models.Model):
         ("textbook", "Textbook"),
         ("notes", "Notes"),
         ("bank", "Question Bank"),
+        ("syllabus", "Syllabus"),
+        ("reference", "Reference Book"),
     ]
 
     class_name = models.CharField(max_length=10)
@@ -128,8 +130,7 @@ class BlueprintTemplate(models.Model):
 
 class ExamBlueprint(models.Model):
     """Enhanced blueprint model for specific exam configurations"""
-    class_name = models.CharField(max_length=10)   # e.g. "11", "12"
-    section = models.CharField(max_length=5, blank=True, null=True)  # e.g. "A", "B"
+    class_name = models.CharField(max_length=10)   # e.g. "11-A", "12-B"
     subject = models.CharField(max_length=100)
     code = models.CharField(max_length=20, blank=True, null=True)  # e.g. "301" for English Core
     
@@ -146,11 +147,10 @@ class ExamBlueprint(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['class_name', 'subject', 'section']
+        ordering = ['class_name', 'subject']
 
     def __str__(self):
-        sec = f"-{self.section}" if self.section else ""
-        return f"{self.class_name}{sec} {self.subject} ({self.code})"
+        return f"{self.class_name} {self.subject} ({self.code})"
 
 
 # ==============================
