@@ -18,6 +18,11 @@ const SESSION_TIMEOUT = 3600 * 1000;
 // Add request interceptor for auth token and session expiration
 apiClient.interceptors.request.use(
   (config) => {
+    // Skip session check for auth endpoints
+    if (config.url.startsWith('/auth/') || config.url.startsWith('/login') || config.url.startsWith('/register')) {
+      return config;
+    }
+
     // Check for session expiration
     const loginTimestamp = localStorage.getItem('loginTimestamp');
     if (loginTimestamp) {

@@ -38,6 +38,9 @@ export default function RootPage() {
       const response = await apiClient.post('/auth/login/', formData);
       localStorage.setItem('authToken', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
+      // Store login timestamp
+      localStorage.setItem('loginTimestamp', Date.now().toString());
+      
       setSuccess('Redirecting to dashboard...');
       setTimeout(() => {
         router.push('/dashboard');
