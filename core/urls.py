@@ -72,4 +72,6 @@ urlpatterns = [
     path("blueprint/detailed/list/", views_blueprint_detail.list_detailed_blueprints, name="list_detailed_blueprints"),
     path("blueprint/detailed/<int:blueprint_id>/load/", views_blueprint_detail.load_detailed_blueprint, name="load_detailed_blueprint"),
     path("blueprint/detailed/<int:blueprint_id>/delete/", views_blueprint_detail.delete_detailed_blueprint, name="delete_detailed_blueprint"),
+    path("api/auth/login/", views.api_login),
+
 ]

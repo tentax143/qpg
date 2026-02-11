@@ -1439,3 +1439,38 @@ def extract_text_from_docx(docx_file):
     except Exception as e:
         return f"Could not extract DOCX content: {str(e)}"
 
+import json
+from django.http import JsonResponse
+from django.contrib.auth import authenticate, login
+from django.views.decorators.csrf import csrf_exempt
+
+
+@csrf_exempt   # simplest for now (you can add CSRF later)
+def api_login(request):
+    print("API LOGIN HIT")
+    if request.method != "POST":
+        
+
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        username = data.get("username")
+        password = data.get("password")
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    user = authenticate(request, username=username, password=password)
+
+    if not user:
+        return JsonResponse({"error": "Invalid credentials"}, status=401)
+
+    login(request, user)
+
+    return JsonResponse({
+        "success": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+        }
+    })

@@ -33,11 +33,8 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-qpg-dev-key-no
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = [
-    "questionpapergeneration.duckdns.org",
-    "127.0.0.1",
-    "localhost",
-]
+ALLOWED_HOSTS = ["*"]  # Allow all hosts for development, change in production
+
 CSRF_TRUSTED_ORIGINS = [
     "https://questionpapergeneration.duckdns.org",
     "http://localhost:3000",
@@ -61,6 +58,8 @@ INSTALLED_APPS = [
     'corsheaders',
     'api',
     'core',
+
+
 ]
 
 MIDDLEWARE = [
