@@ -27,7 +27,7 @@ class BlueprintTemplateAdmin(admin.ModelAdmin):
 
 @admin.register(ExamBlueprint)
 class ExamBlueprintAdmin(admin.ModelAdmin):
-    list_display = ("class_name", "subject", "section", "code", "is_active", "created_at")
+    list_display = ("class_name", "subject", "code", "is_active", "created_at")
     list_filter = ("class_name", "subject", "is_active")
     search_fields = ("class_name", "subject", "code")
     list_editable = ("is_active",)
