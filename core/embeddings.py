@@ -1,348 +1,297 @@
-import os, json, boto3, re, requests
+import os, re, requests
 import chromadb
-from chromadb.config import Settings
 from PyPDF2 import PdfReader
 from PyPDF2.errors import PdfReadError
-from django.conf import settings
+import concurrent.futures
 
-# ------------------------------
-# Embedding Configuration
-# ------------------------------
-OLLAMA_SERVER = getattr(settings, 'OLLAMA_SERVER', 'http://172.16.71.183:11434')
-OLLAMA_MODEL = getattr(settings, 'OLLAMA_MODEL', 'all-minilm:l6-v2')
-USE_OLLAMA = getattr(settings, 'USE_OLLAMA', True)
+# ── OpenRouter ────────────────────────────────────────────────────────────────
+OPENROUTER_API_KEY    = os.environ.get('OPENROUTER_API_KEY', '')
+OPENROUTER_MODEL      = 'nvidia/llama-nemotron-embed-vl-1b-v2:free'
+OPENROUTER_DIM        = 2048
+OPENROUTER_BATCH_SIZE = 64
 
-# ------------------------------
-# Ollama Embedding Client
-# ------------------------------
-def ollama_embed(text: str, model_name: str = OLLAMA_MODEL):
-    """Get embedding vector from local Ollama server"""
-    try:
-        response = requests.post(
-            f"{OLLAMA_SERVER}/api/embeddings",
-            json={
-                "model": model_name,
-                "prompt": text
-            },
-            timeout=30
-        )
-        response.raise_for_status()
-        result = response.json()
-        return result["embedding"]
-    except Exception as e:
-        print(f"[Ollama Error] Failed to get embedding: {e}")
-        # Fallback to AWS if Ollama fails
-        if USE_OLLAMA:
-            print("[Ollama] Falling back to AWS Bedrock...")
-            return titan_embed(text)
-        raise e
+# ── Ollama (local) ────────────────────────────────────────────────────────────
+OLLAMA_BASE_URL  = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
+OLLAMA_MODEL     = 'nomic-embed-text'
+OLLAMA_DIM       = 768
+OLLAMA_SUB_BATCH = 32   # chunks per single Ollama request
+OLLAMA_WORKERS   = 4    # parallel Ollama requests (match OLLAMA_NUM_PARALLEL env var)
 
-# ------------------------------
-# AWS Bedrock Titan Client (Fallback)
-# ------------------------------
-client = boto3.client("bedrock-runtime", region_name="us-east-1")
+# ── Collection names (separate per provider to avoid dim mismatch) ────────────
+COLLECTION_NAMES = {
+    'local':       'default',
+    'openrouter':  'openrouter',
+}
+EMBED_DIMS = {
+    'local':       OLLAMA_DIM,
+    'openrouter':  OPENROUTER_DIM,
+}
 
-def titan_embed(text: str):
-    """Get embedding vector from Titan Text Embeddings V2 (Fallback)"""
-    body = {"inputText": text}
-    resp = client.invoke_model(
-        modelId="amazon.titan-embed-text-v2:0",
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps(body)
-    )
-    result = json.loads(resp["body"].read())
-    return result["embedding"]
-
-# ------------------------------
-# Main Embedding Function
-# ------------------------------
-def get_embedding(text: str):
-    """Get embedding using configured method (Ollama or AWS)"""
-    if USE_OLLAMA:
-        return ollama_embed(text)
-    else:
-        return titan_embed(text)
-
-# ------------------------------
-# Helpers
-# ------------------------------
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def normalize_label(label: str) -> str:
-    """Normalize unit/chapter/subject labels for consistency"""
     if not label:
         return None
-    # Lowercase
-    clean = label.lower()
-    # Replace spaces and hyphens with underscores
-    clean = clean.replace(" ", "_").replace("-", "_")
-    # Remove punctuation/special chars (keep only letters, numbers, underscores)
+    clean = label.lower().replace(" ", "_").replace("-", "_")
     clean = re.sub(r"[^a-z0-9_]", "", clean)
-    # Remove multiple underscores
-    clean = re.sub(r"_+", "_", clean)
-    # Strip leading/trailing underscores
-    return clean.strip("_")
+    return re.sub(r"_+", "_", clean).strip("_")
 
-# ------------------------------
-# Per-Class+Subject DB Manager
-# ------------------------------
+
+# ── OpenRouter ────────────────────────────────────────────────────────────────
+def _openrouter_embed_batch(texts: list) -> list:
+    if not OPENROUTER_API_KEY:
+        return [[0.0] * OPENROUTER_DIM for _ in texts]
+    try:
+        r = requests.post(
+            'https://openrouter.ai/api/v1/embeddings',
+            headers={'Authorization': f'Bearer {OPENROUTER_API_KEY}', 'Content-Type': 'application/json'},
+            json={'model': OPENROUTER_MODEL, 'input': texts},
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = sorted(r.json()['data'], key=lambda x: x['index'])
+        return [item['embedding'] for item in data]
+    except Exception as e:
+        print(f"[Embeddings/OpenRouter] Batch failed: {e}")
+        return [[0.0] * OPENROUTER_DIM for _ in texts]
+
+
+def _embed_openrouter(texts: list) -> list:
+    out = []
+    for i in range(0, len(texts), OPENROUTER_BATCH_SIZE):
+        batch = texts[i:i + OPENROUTER_BATCH_SIZE]
+        print(f"[Embeddings/OpenRouter] batch {i // OPENROUTER_BATCH_SIZE + 1}/{-(-len(texts) // OPENROUTER_BATCH_SIZE)} ({len(batch)} chunks)")
+        out.extend(_openrouter_embed_batch(batch))
+    return out
+
+
+# ── Ollama (local, parallel) ──────────────────────────────────────────────────
+def _ollama_embed_sub_batch(texts: list) -> list:
+    """Single Ollama request for a sub-batch of texts."""
+    try:
+        r = requests.post(
+            f'{OLLAMA_BASE_URL}/v1/embeddings',
+            json={'model': OLLAMA_MODEL, 'input': texts},
+            timeout=120,
+        )
+        r.raise_for_status()
+        data = sorted(r.json()['data'], key=lambda x: x['index'])
+        return [item['embedding'] for item in data]
+    except Exception as e:
+        print(f"[Embeddings/Ollama] Sub-batch failed: {e}")
+        return [[0.0] * OLLAMA_DIM for _ in texts]
+
+
+def _embed_ollama(texts: list) -> list:
+    """Split into sub-batches and run OLLAMA_WORKERS in parallel."""
+    sub_batches = [texts[i:i + OLLAMA_SUB_BATCH] for i in range(0, len(texts), OLLAMA_SUB_BATCH)]
+    results = [None] * len(sub_batches)
+    print(f"[Embeddings/Ollama] {len(texts)} chunks → {len(sub_batches)} sub-batches × {OLLAMA_WORKERS} workers")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=OLLAMA_WORKERS) as pool:
+        futures = {pool.submit(_ollama_embed_sub_batch, batch): idx for idx, batch in enumerate(sub_batches)}
+        for future in concurrent.futures.as_completed(futures):
+            results[futures[future]] = future.result()
+    return [v for batch in results for v in batch]
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+def get_embeddings_batch(texts: list, provider: str = 'local') -> list:
+    if provider == 'openrouter':
+        return _embed_openrouter(texts)
+    return _embed_ollama(texts)
+
+
+def get_embedding(text: str, provider: str = 'local') -> list:
+    return get_embeddings_batch([text], provider)[0]
+
+
+# ── ChromaDB helpers ──────────────────────────────────────────────────────────
 def get_chroma_client(class_name, subject):
-    """Each class+subject gets its own ChromaDB directory"""
     db_dir = os.path.join("vector_store", f"{normalize_label(class_name)}_{normalize_label(subject)}")
     os.makedirs(db_dir, exist_ok=True)
-    return chromadb.PersistentClient(path=db_dir)
+    return chromadb.PersistentClient(path=db_dir, settings=chromadb.Settings(anonymized_telemetry=False))
 
-def get_collection(class_name, subject, reset_if_corrupted=False):
-    """Always get 'default' collection inside that DB"""
+
+def _reset_collection(chroma_client, name):
+    try:
+        chroma_client.delete_collection(name=name)
+    except Exception:
+        pass
+    return chroma_client.create_collection(name=name, metadata={"hnsw:space": "cosine"})
+
+
+def get_collection(class_name, subject, provider='local', reset_if_corrupted=False):
+    name = COLLECTION_NAMES.get(provider, 'default')
     chroma_client = get_chroma_client(class_name, subject)
     try:
-        collection = chroma_client.get_or_create_collection(name="default")
-        # Test if collection is accessible by trying to get count
-        try:
-            collection.count()
-        except Exception as e:
-            if "invalid literal for int" in str(e) or "base 16" in str(e) or reset_if_corrupted:
-                print(f"[Embeddings] Collection appears corrupted, resetting...")
-                try:
-                    chroma_client.delete_collection(name="default")
-                except:
-                    pass
-                collection = chroma_client.create_collection(name="default")
-        return collection
+        col = chroma_client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
     except Exception as e:
-        print(f"[Embeddings] Error accessing collection: {e}")
-        # Try to reset if corrupted
-        if "invalid literal for int" in str(e) or "base 16" in str(e):
-            try:
-                chroma_client.delete_collection(name="default")
-            except:
-                pass
-            return chroma_client.create_collection(name="default")
-        raise
+        print(f"[Embeddings] Collection open failed ({e}), resetting…")
+        return _reset_collection(chroma_client, name)
+    try:
+        col.count()
+    except Exception as e:
+        print(f"[Embeddings] Collection read failed ({e}), resetting…")
+        return _reset_collection(chroma_client, name)
+    if reset_if_corrupted:
+        return _reset_collection(chroma_client, name)
+    return col
 
-# ------------------------------
-# Ingest a single PDF
-# ------------------------------
-def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook"):
+
+# ── Ingest ────────────────────────────────────────────────────────────────────
+def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook", provider='local'):
     class_name = normalize_label(class_name)
-    subject = normalize_label(subject)
-    unit = normalize_label(unit)
-
-    # Get PDF filename for error reporting
+    subject    = normalize_label(subject)
+    unit       = normalize_label(unit)
     pdf_filename = os.path.basename(pdf_path)
-    
+
     try:
         reader = PdfReader(pdf_path)
     except Exception as e:
-        error_msg = f"[Embeddings ERROR] Failed to open PDF file: {pdf_filename} | Error: {str(e)}"
-        print(error_msg)
-        raise Exception(f"Cannot read PDF file '{pdf_filename}': {str(e)}")
-    
+        raise Exception(f"Cannot read PDF '{pdf_filename}': {e}")
+
     text = ""
-    pages_processed = 0
     pages_skipped = 0
-    
     for page_num, page in enumerate(reader.pages):
         try:
-            page_text = page.extract_text() or ""
-            text += page_text
-            pages_processed += 1
+            text += page.extract_text() or ""
         except Exception as e:
-            # Handle all PDF parsing errors (PyPDF2 errors, ValueError, etc.)
-            error_msg = str(e)
-            error_type = type(e).__name__
-            
-            # Check if it's a PDF parsing error
-            is_pdf_error = (
-                isinstance(e, PdfReadError) or
-                isinstance(e, ValueError) or
-                "invalid literal for int" in error_msg or
-                "base 16" in error_msg or
-                "hex" in error_msg.lower() or
-                "Invalid Elementary Object" in error_msg or
-                "PdfReadError" in error_type or
-                "malformed" in error_msg.lower() or
-                "corrupted" in error_msg.lower()
+            err = str(e)
+            is_pdf_err = (
+                isinstance(e, (PdfReadError, ValueError)) or
+                any(k in err.lower() for k in ("invalid literal", "base 16", "hex", "malformed", "corrupted", "invalid elementary"))
             )
-            
-            if is_pdf_error:
-                print(f"[Embeddings] Warning: PDF '{pdf_filename}' - Skipping page {page_num + 1} due to PDF parsing error ({error_type}): {error_msg[:80]}")
+            if is_pdf_err:
                 pages_skipped += 1
-                # Try alternative: use pdfplumber if available
                 try:
                     import pdfplumber
                     with pdfplumber.open(pdf_path) as pdf:
                         if page_num < len(pdf.pages):
-                            alt_page = pdf.pages[page_num]
-                            alt_text = alt_page.extract_text() or ""
-                            if alt_text:
-                                text += alt_text
-                                pages_processed += 1
+                            alt = pdf.pages[page_num].extract_text() or ""
+                            if alt:
+                                text += alt
                                 pages_skipped -= 1
-                                print(f"[Embeddings] PDF '{pdf_filename}' - Successfully extracted page {page_num + 1} using pdfplumber fallback")
-                except ImportError:
-                    # pdfplumber not available, just skip the page
+                except Exception:
                     pass
-                except Exception as fallback_error:
-                    # Fallback also failed, skip the page
-                    print(f"[Embeddings] PDF '{pdf_filename}' - Fallback extraction also failed for page {page_num + 1}: {str(fallback_error)[:50]}")
             else:
-                # Re-raise if it's a different error (not PDF-related)
-                print(f"[Embeddings ERROR] PDF '{pdf_filename}' - Non-PDF error on page {page_num + 1}: {error_type}: {error_msg[:100]}")
-                raise Exception(f"Error processing PDF '{pdf_filename}' on page {page_num + 1}: {error_msg}")
-    
-    if pages_skipped > 0:
-        print(f"[Embeddings] PDF '{pdf_filename}' - Processed {pages_processed} pages, skipped {pages_skipped} pages due to parsing errors")
-    
+                raise Exception(f"Error on page {page_num + 1} of '{pdf_filename}': {e}")
+
+    if pages_skipped:
+        print(f"[Embeddings] '{pdf_filename}' — skipped {pages_skipped} pages")
     if not text.strip():
-        error_msg = f"[Embeddings ERROR] No text could be extracted from PDF: {pdf_filename} (path: {pdf_path})"
-        print(error_msg)
-        raise ValueError(f"No text could be extracted from PDF: {pdf_filename}")
+        raise ValueError(f"No text extracted from '{pdf_filename}'")
 
-    # Chunk text (approx 500–800 chars each)
-    chunks = [text[i:i+800] for i in range(0, len(text), 800)]
-    collection = get_collection(class_name, subject)
+    chunks = [(i, c) for i, c in enumerate(text[j:j+800] for j in range(0, len(text), 800)) if c.strip()]
+    if not chunks:
+        return 0
 
+    print(f"[Embeddings] '{pdf_filename}' — {len(chunks)} chunks, provider={provider}")
+    vectors = get_embeddings_batch([c for _, c in chunks], provider)
+
+    collection = get_collection(class_name, subject, provider)
     ids, embeddings, docs, metas = [], [], [], []
-    for i, chunk in enumerate(chunks):
-        if not chunk.strip():
-            continue
-        emb = get_embedding(chunk)
-        doc_id = f"{class_name}_{subject}_{unit}_{i}"
-        ids.append(doc_id)
+    for (i, chunk), emb in zip(chunks, vectors):
+        ids.append(f"{class_name}_{subject}_{unit}_{i}")
         embeddings.append(emb)
         docs.append(chunk)
-        metas.append({
-            "class": class_name,
-            "subject": subject,
-            "unit": unit,
-            "title": title or os.path.basename(pdf_path),
-            "type": material_type
-        })
-
-    if ids:
-        try:
+        metas.append({"class": class_name, "subject": subject, "unit": unit,
+                      "title": title or pdf_filename, "type": material_type})
+    try:
+        collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
+        print(f"[Embeddings] Added {len(ids)} chunks from '{pdf_filename}'")
+    except Exception as e:
+        if "invalid literal for int" in str(e) or "base 16" in str(e):
+            collection = get_collection(class_name, subject, provider, reset_if_corrupted=True)
             collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
-            print(f"[Embeddings] Successfully added {len(ids)} chunks from PDF: {pdf_filename}")
-        except Exception as e:
-            if "invalid literal for int" in str(e) or "base 16" in str(e):
-                print(f"[Embeddings] PDF '{pdf_filename}' - Collection corrupted during add, resetting and retrying...")
-                # Get fresh collection (will reset if corrupted)
-                collection = get_collection(class_name, subject, reset_if_corrupted=True)
-                # Retry the add operation
-                collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
-                print(f"[Embeddings] PDF '{pdf_filename}' - Successfully added {len(ids)} chunks after collection reset")
-            else:
-                error_msg = f"[Embeddings ERROR] Failed to add chunks to database for PDF: {pdf_filename} | Error: {str(e)}"
-                print(error_msg)
-                raise Exception(f"Database error while processing PDF '{pdf_filename}': {str(e)}")
-
+        else:
+            raise Exception(f"DB error for '{pdf_filename}': {e}")
     return len(ids)
 
-# ------------------------------
-# Bulk ingest multiple PDFs
-# ------------------------------
-def ingest_bulk(class_name, subject, chapters, material_type="textbook"):
-    """
-    chapters = [
-      {"unit": "Animal Kingdom", "title": "Ch-4 Animal Kingdom", "file_path": "Ch4.pdf"},
-      {"unit": "Morphology of Flowering Plants", "title": "Ch-5 Morphology", "file_path": "Ch5.pdf"}
-    ]
-    """
-    total_chunks = 0
-    failed_pdfs = []
-    
+
+def ingest_bulk(class_name, subject, chapters, material_type="textbook", provider='local'):
+    print(f"[Embeddings] Bulk ingest — class={class_name} subject={subject} files={len(chapters)} provider={provider}")
+    total, failed = 0, []
     for ch in chapters:
-        pdf_path = ch["file_path"]
-        pdf_filename = os.path.basename(pdf_path)
-        
+        pdf_filename = os.path.basename(ch["file_path"])
         try:
-            chunks = ingest_pdf(
-                class_name=class_name,
-                subject=subject,
-                unit=ch["unit"],
-                pdf_path=pdf_path,
-                title=ch.get("title"),
-                material_type=material_type
-            )
-            total_chunks += chunks
-            print(f"[Embeddings] Successfully processed PDF: {pdf_filename} ({chunks} chunks)")
+            n = ingest_pdf(class_name, subject, ch["unit"], ch["file_path"],
+                           title=ch.get("title"), material_type=material_type, provider=provider)
+            total += n
+            print(f"[Embeddings] OK: {pdf_filename} ({n} chunks)")
         except Exception as e:
-            error_msg = f"[Embeddings ERROR] Failed to process PDF: {pdf_filename} | Unit: {ch.get('unit', 'N/A')} | Title: {ch.get('title', 'N/A')} | Error: {str(e)}"
-            print(error_msg)
-            failed_pdfs.append({
-                "filename": pdf_filename,
-                "unit": ch.get("unit"),
-                "title": ch.get("title"),
-                "error": str(e)
-            })
-            # Continue processing other PDFs even if one fails
-            continue
-    
-    if failed_pdfs:
-        print(f"\n[Embeddings ERROR] Summary: {len(failed_pdfs)} PDF(s) failed to process:")
-        for failed in failed_pdfs:
-            print(f"  - {failed['filename']} (Unit: {failed['unit']}, Title: {failed['title']}): {failed['error'][:100]}")
-    
-    return total_chunks
+            print(f"[Embeddings ERROR] {pdf_filename}: {e}")
+            failed.append({"filename": pdf_filename, "error": str(e)})
+    if failed:
+        print(f"[Embeddings] {len(failed)} PDF(s) failed: {[f['filename'] for f in failed]}")
+    return total
 
-# ------------------------------
-# Query embeddings
-# ------------------------------
-def query(class_name, subject, unit, query_text, n_results=5):
+
+# ── Query ─────────────────────────────────────────────────────────────────────
+def query(class_name, subject, unit, query_text, n_results=5, provider='local'):
     class_name = normalize_label(class_name)
-    subject = normalize_label(subject)
-    unit = normalize_label(unit)
-
+    subject    = normalize_label(subject)
+    unit       = normalize_label(unit)
+    empty = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
     try:
-        collection = get_collection(class_name, subject)
-        query_emb = get_embedding(query_text)
-
-        results = collection.query(
+        collection = get_collection(class_name, subject, provider)
+        query_emb  = get_embedding(query_text, provider)
+        return collection.query(
             query_embeddings=[query_emb],
             n_results=n_results,
-            where={"unit": unit} if unit else {}
+            where={"unit": unit} if unit else {},
+            include=["embeddings", "documents", "metadatas", "distances"]
         )
-        return results
     except Exception as e:
         if "invalid literal for int" in str(e) or "base 16" in str(e):
-            print(f"[Embeddings] Collection corrupted during query, resetting...")
-            # Reset collection and return empty results
             try:
-                collection = get_collection(class_name, subject, reset_if_corrupted=True)
-                # Return empty results structure
-                return {
-                    "ids": [[]],
-                    "documents": [[]],
-                    "metadatas": [[]],
-                    "distances": [[]]
-                }
-            except:
-                return {
-                    "ids": [[]],
-                    "documents": [[]],
-                    "metadatas": [[]],
-                    "distances": [[]]
-                }
+                get_collection(class_name, subject, provider, reset_if_corrupted=True)
+            except Exception:
+                pass
+            return empty
         raise
 
-# ------------------------------
-# List all available units for a class+subject
-# ------------------------------
-def list_units(class_name, subject):
-    """Return all distinct unit names already ingested for given class+subject"""
+
+# ── Delete embeddings ─────────────────────────────────────────────────────────
+def delete_unit_embeddings(class_name, subject, unit):
+    """Remove all embedding chunks for a unit from every provider's collection."""
+    class_name = normalize_label(class_name)
+    subject    = normalize_label(subject)
+    unit       = normalize_label(unit)
+    if not unit:
+        return
+    for provider in COLLECTION_NAMES:
+        try:
+            col = get_collection(class_name, subject, provider)
+            ids = col.get(where={"unit": unit}, include=[])["ids"]
+            if ids:
+                col.delete(ids=ids)
+                print(f"[Embeddings] Deleted {len(ids)} chunks for unit='{unit}' ({provider})")
+        except Exception as e:
+            print(f"[Embeddings] Could not delete embeddings for unit='{unit}' ({provider}): {e}")
+
+
+def delete_subject_embeddings(class_name, subject):
+    """Drop the entire vector store directory for a class+subject."""
+    import shutil
+    db_dir = os.path.join("vector_store", f"{normalize_label(class_name)}_{normalize_label(subject)}")
+    if os.path.exists(db_dir):
+        try:
+            shutil.rmtree(db_dir)
+            print(f"[Embeddings] Deleted vector store: {db_dir}")
+        except Exception as e:
+            print(f"[Embeddings] Could not delete vector store '{db_dir}': {e}")
+
+
+# ── List units ────────────────────────────────────────────────────────────────
+def list_units(class_name, subject, provider='local'):
     try:
-        collection = get_collection(class_name, subject)
-        # fetch metadata only
-        results = collection.get(include=["metadatas"])
-        units = sorted(set(m["unit"] for m in results["metadatas"]))
-        return units
+        col = get_collection(class_name, subject, provider)
+        results = col.get(include=["metadatas"])
+        return sorted(set(m["unit"] for m in results["metadatas"]))
     except Exception as e:
         if "invalid literal for int" in str(e) or "base 16" in str(e):
-            print(f"[Embeddings] Collection corrupted during list_units, resetting...")
-            # Reset collection and return empty list
             try:
-                get_collection(class_name, subject, reset_if_corrupted=True)
-            except:
+                get_collection(class_name, subject, provider, reset_if_corrupted=True)
+            except Exception:
                 pass
             return []
         raise

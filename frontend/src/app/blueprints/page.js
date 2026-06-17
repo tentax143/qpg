@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { 
   Plus, FileText, Download, Trash2, Edit, ExternalLink,
-  Layers, Settings, Sparkles, Wand2, Calculator, Info,
+  Layers, Settings, Wand2, Calculator, Info,
   Search, Filter, RefreshCw, ChevronRight, BookOpen, 
   Layout, Bookmark, User, Clock, CheckCircle, Hash,
   Hammer, MoreVertical, Copy, Activity, Zap, ClipboardList
@@ -67,7 +67,7 @@ export default function BlueprintsPage() {
   };
 
   if (loading) return (
-    <div className="min-h-screen mesh-gradient flex items-center justify-center">
+    <div className="min-h-screen flex items-center justify-center">
       <div className="w-12 h-12 border-4 border-blue-600/30 border-t-blue-600 rounded-full animate-spin"></div>
     </div>
   );
@@ -91,7 +91,6 @@ export default function BlueprintsPage() {
             Detailed Builder
           </Link>
           <Link href="/blueprints/ai-create" className="flex items-center gap-2 bg-amber-500 text-white px-5 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg shadow-amber-200 hover:bg-amber-600 hover:shadow-xl hover:shadow-amber-300 transition-all hover:-translate-y-1 active:scale-95 duration-300">
-            <Sparkles size={16} />
             AI Create from Text
           </Link>
           <Link href="/blueprints/create-template" className="flex items-center gap-2 bg-blue-800 text-white px-5 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg shadow-blue-200 hover:bg-blue-900 hover:shadow-xl hover:shadow-blue-300 transition-all hover:-translate-y-1 active:scale-95 duration-300">

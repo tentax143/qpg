@@ -4,11 +4,13 @@ import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { 
-  ArrowLeft, Save, Sparkles, RefreshCw, Layers, 
+  ArrowLeft, Save, RefreshCw, Layers,
   Settings, Info, Calculator, FileText, BookOpen,
   GraduationCap, Hash, MessageCircle, Edit
 } from 'lucide-react';
 import apiClient from '@/lib/api';
+import { subjectOptions } from '@/lib/subjects';
+import CustomSelect from '@/components/CustomSelect';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
@@ -168,16 +170,15 @@ export default function EditPatternPage() {
                   required
                 />
               </div>
-              <div className="space-y-3">
-                <label className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] flex items-center gap-2">
-                  <BookOpen size={14} className="text-blue-500" /> Subject
-                </label>
-                <input 
-                  name="subject" value={formData.subject} onChange={handleChange}
-                  className="w-full px-6 py-4 bg-gray-50/50 border border-gray-100 rounded-2xl font-black text-gray-900 focus:bg-white focus:border-[#1e293b] focus:ring-4 focus:ring-[#1e293b]/5 transition-all outline-none"
-                  required
-                />
-              </div>
+              <CustomSelect
+                label="Subject"
+                icon={BookOpen}
+                value={formData.subject}
+                onChange={(val) => handleChange({ target: { name: 'subject', value: val } })}
+                options={subjectOptions}
+                placeholder="Select Subject"
+                className="space-y-3"
+              />
             </div>
 
             <div className="space-y-3">
@@ -281,7 +282,6 @@ export default function EditPatternPage() {
               
               <div className="p-8 border-b border-blue-50 bg-blue-50/20">
                 <div className="flex items-center gap-3 text-blue-600">
-                  <Sparkles size={18} />
                   <h2 className="text-xs font-black uppercase tracking-widest">Teacher Input (Editable)</h2>
                 </div>
               </div>

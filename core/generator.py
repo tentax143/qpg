@@ -1,8 +1,6 @@
 import os, re, json, random, time, traceback
-import boto3
 import hashlib
 import numpy as np
-from botocore.config import Config
 from datetime import datetime
 from PyPDF2 import PdfReader, PdfWriter
 from django.conf import settings
@@ -16,33 +14,21 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from . import embeddings
+from . import mantle_client
 from .models import ExamBlueprint, BlueprintTemplate, GeneratedQuestion
 from .blueprint_manager import BlueprintManager
 
 
-# Ollama functionality removed
-
 # ------------------------------
-# Bedrock setup
+# Model IDs
 # ------------------------------
-client = boto3.client(
-    "bedrock-runtime", 
-    region_name="us-east-1",
-    config=Config(
-        read_timeout=300,  # 5 minutes
-        connect_timeout=60,  # 1 minute
-        retries={'max_attempts': 3}
-    )
-)
-# GEN_MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
-# VAL_MODEL_ID = "anthropic.claude-3-haiku-20240307-v1:0"
-GEN_MODEL_ID = "amazon.nova-pro-v1:0"
-VAL_MODEL_ID = "amazon.nova-lite-v1:0"
+GEN_MODEL_ID = mantle_client.GEN_MODEL
+VAL_MODEL_ID = mantle_client.VAL_MODEL
 
 
 
 # ------------------------------
-# Bedrock helper
+# Mantle helper (replaces call_bedrock)
 # ------------------------------
 def call_bedrock(
     prompt,
@@ -52,155 +38,43 @@ def call_bedrock(
     retries=5,
     model_source="aws",
 ):
-    import json, time, random, re
-    from datetime import datetime
+    """
+    Drop-in replacement for the old boto3-based call_bedrock.
+    Uses Bedrock Converse API with Mantle bearer-token auth.
+    Returns (text, input_tokens, output_tokens).
+    """
+    token_budget = max_tokens if max_tokens is not None else 4096
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_name = re.sub(r'[<>:"/\\|?*]', "_", model_ref.split("/")[-1])
 
-    # ---------- Logging setup ----------
-    model_name = model_ref.split("/")[-1] if "/" in model_ref else model_ref
-    model_name = re.sub(r'[<>:"/\\|?*]', "_", model_name)
-
+    # Log prompt to file (keep existing debug behaviour)
     prompt_file = f"temp_prompt_{model_name}_{timestamp}.txt"
     with open(prompt_file, "w", encoding="utf-8") as f:
-        f.write("=== PROMPT SENT TO MODEL ===\n")
-        f.write(f"Model: {model_ref}\n")
-        f.write(f"Timestamp: {datetime.now()}\n")
-        f.write(f"Max Tokens: {max_tokens if max_tokens else 'auto'}\n")
-        f.write(f"Temperature: {temperature}\n")
+        f.write(f"Model: {model_ref}\nTimestamp: {timestamp}\n")
+        f.write(f"Max Tokens: {token_budget}\nTemperature: {temperature}\n")
         f.write("=" * 50 + "\n\n")
         f.write(prompt)
+    print(f"[Mantle] Prompt saved to: {prompt_file}")
 
-    print(f"[Log] Prompt saved to: {prompt_file}")
-    print(f"[Bedrock-{model_name}] Sending prompt ({len(prompt)} chars)")
-
-    # ---------- Model family detection (CRITICAL) ----------
-    model_ref_clean = model_ref.strip().lower()
-
-    is_nova = model_ref_clean.startswith("amazon.nova")
-    is_claude = model_ref_clean.startswith("anthropic.")
-
-    print(
-        f"[Bedrock-Debug] model={model_ref_clean} "
-        f"is_nova={is_nova} is_claude={is_claude}"
+    text, input_tokens, output_tokens = mantle_client.converse(
+        model_id=model_ref,
+        prompt=prompt,
+        max_tokens=token_budget,
+        temperature=temperature,
+        retries=retries,
     )
 
-    if not (is_nova or is_claude):
-        raise ValueError(f"Unsupported Bedrock modelId: {model_ref}")
+    # Log response to file
+    response_file = f"temp_response_{model_name}_{timestamp}.txt"
+    with open(response_file, "w", encoding="utf-8") as f:
+        f.write(f"Model: {model_ref}\nTimestamp: {timestamp}\n")
+        f.write(f"Input Tokens: {input_tokens}\nOutput Tokens: {output_tokens}\n")
+        f.write("=" * 50 + "\n\n")
+        f.write(text)
+    print(f"[Mantle] Response saved to: {response_file}")
 
-    # ---------- Token budget ----------
-    default_max_tokens = 4096 if is_nova else 8192
-    token_budget = max_tokens if max_tokens is not None else default_max_tokens
-
-    # ---------- Payload construction ----------
-    if is_nova:
-        body = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "text": prompt
-                        }
-                    ],
-                }
-            ],
-            "inferenceConfig": {
-                "maxTokens": token_budget,
-                "temperature": temperature,
-                "topP": 0.9,
-            },
-        }
-
-
-    else:  # Claude
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": prompt}],
-                }
-            ],
-            "max_tokens": token_budget,
-            "temperature": temperature,
-        }
-
-
-    # ---------- Invoke with retries ----------
-    input_tokens = 0
-    output_tokens = 0
-
-    for attempt in range(retries):
-        try:
-            resp = client.invoke_model(
-                modelId=model_ref,
-                body=json.dumps(body),
-                contentType="application/json",
-                accept="application/json",
-            )
-
-            result = json.loads(resp["body"].read())
-
-            # ---------- Parse response ----------
-            if is_nova:
-                try:
-                    text = result["output"]["message"]["content"][0]["text"]
-                except (KeyError, IndexError, TypeError):
-                    text = ""
-
-                usage = result.get("usage", {})
-                if not isinstance(usage, dict):
-                    usage = {}
-                input_tokens = usage.get(
-                    "inputTokens",
-                    usage.get("inputTokenCount", usage.get("input_token_count", 0)),
-                )
-                output_tokens = usage.get(
-                    "outputTokens",
-                    usage.get("outputTokenCount", usage.get("output_token_count", 0)),
-                )
-
-            else:  # Claude
-                text = result["content"][0]["text"]
-                input_tokens = result.get("usage", {}).get("input_tokens", 0)
-                output_tokens = result.get("usage", {}).get("output_tokens", 0)
-
-            # ---------- Save response ----------
-            response_file = f"temp_response_{model_name}_{timestamp}.txt"
-            with open(response_file, "w", encoding="utf-8") as f:
-                f.write("=== MODEL RESPONSE ===\n")
-                f.write(f"Model: {model_ref}\n")
-                f.write(f"Timestamp: {datetime.now()}\n")
-                f.write(f"Input Tokens: {input_tokens}\n")
-                f.write(f"Output Tokens: {output_tokens}\n")
-                f.write("=" * 50 + "\n\n")
-                f.write(text)
-
-            print(f"[Bedrock-{model_name}] ✅ Returned {len(text)} chars")
-            print(f"[Bedrock-Log] Response saved to: {response_file}")
-
-            return text.strip(), input_tokens, output_tokens
-
-        except client.exceptions.ServiceUnavailableException:
-            wait = (2 ** attempt) + random.random()
-            print(f"[Bedrock-Throttle] retry {attempt+1}/{retries} in {wait:.1f}s")
-            time.sleep(wait)
-
-        except Exception as e:
-            print(f"[Bedrock-Error] {type(e).__name__}: {e}")
-
-            if attempt < retries - 1:
-                wait = (2 ** attempt) + random.random()
-                time.sleep(wait)
-                continue
-
-            with open("temp_error_prompt.txt", "w", encoding="utf-8") as f:
-                f.write(f"Error: {e}\n\nPrompt:\n{prompt}")
-
-            raise
-
-    return "", 0, 0
+    return text, input_tokens, output_tokens
 
 
 
@@ -828,58 +702,28 @@ def draw_wrapped(can, text, x, y, max_width, font="Helvetica", size=11, line_hei
 # ------------------------------
 def render_section_questions(all_questions, data, blueprint, class_name=None, subject=None, chapters=None, paper_id=None):
     q_counter = 1
-    
-    print("=" * 50)
-    print("RENDER_SECTION_QUESTIONS CALLED!")
-    print("=" * 50)
-    print(f"[DEBUG] Starting render_section_questions")
-    print(f"[DEBUG] Data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-    print(f"[DEBUG] Blueprint type: {type(blueprint)}")
-    print(f"[DEBUG] Blueprint keys: {list(blueprint.keys()) if isinstance(blueprint, dict) else 'Not a dict'}")
-    print(f"[DEBUG] Blueprint content preview: {str(blueprint)[:200]}")
 
-    # Blueprint is already normalized by BlueprintManager.get_blueprint()
-    # No conversion needed here
-    print(f"[DEBUG] Blueprint is already normalized, keys: {list(blueprint.keys())}")
-    
-    # Handle the new JSON structure where sections are at the top level
+    # Resolve sections_data from the data dict
     if "sections" in data:
         sections_data = data["sections"]
-        print(f"[DEBUG] sections_data type: {type(sections_data)}")
-        print(f"[DEBUG] sections_data is list: {isinstance(sections_data, list)}")
-
-        # Check if sections_data is a list (array) or dict
         if isinstance(sections_data, list):
-            print(f"[DEBUG] sections_data is a list with {len(sections_data)} items")
-            # Convert list to dict using section names
-            sections_dict = {}
-            for section in sections_data:
-                if isinstance(section, dict) and "name" in section:
-                    sections_dict[section["name"]] = section
-                else:
-                    print(f"[DEBUG] WARNING: Section item is not dict with name: {section}")
-            sections_data = sections_dict
-            print(f"[DEBUG] Converted sections data from list to dict: {list(sections_data.keys())}")
-        else:
-            print(f"[DEBUG] sections_data is not a list, it's: {type(sections_data)}")
-        print(f"[DEBUG] Using old structure with sections key")
+            sections_data = {s["name"]: s for s in sections_data if isinstance(s, dict) and "name" in s}
     else:
-        # New structure: {"A": {"title": "...", "subsections": {...}}}
         sections_data = data
-        print(f"[DEBUG] Using new structure, sections_data keys: {list(sections_data.keys()) if isinstance(sections_data, dict) else 'Not a dict'}")
-    
-    
+
     for sec, sec_info in blueprint.items():
-        # Debug check
         if not isinstance(sec_info, dict):
-            print(f"[DEBUG] ERROR: Section {sec} info is not a dict: {type(sec_info)}")
-            print(f"[DEBUG] Section info: {sec_info}")
-            raise ValueError(f"Section {sec} has invalid format")
+            raise ValueError(f"Section '{sec}' has invalid blueprint format: {type(sec_info)}")
 
         print(f"[DEBUG] Processing section {sec}: {sec_info.get('title', 'NO TITLE')}")
-        title = sec_info.get('title', 'Section')
+        title = sec_info.get('title', '') or ''
         marks = sec_info.get('marks', 0)
-        all_questions.append(("header", f"SECTION – {sec} {title.upper()} ({marks} MARKS)"))
+        # Only append title if it's non-empty AND not just the section name repeated
+        if title and title.lower() not in ('section', sec.lower()):
+            header_text = f"SECTION – {sec}: {title.upper()} ({marks} MARKS)"
+        else:
+            header_text = f"SECTION – {sec} ({marks} MARKS)"
+        all_questions.append(("header", header_text))
         
         # Get section data - handle both old and new structures
         # Try exact match first
@@ -890,13 +734,11 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
             section_key = sec
             print(f"[DEBUG] Exact match found for '{sec}'")
         else:
-            print(f"[DEBUG] Looking for section key '{sec}' in sections_data keys: {list(sections_data.keys())}")
+            print(f"[DEBUG] No exact match for '{sec}', trying fallback strategies. Available: {list(sections_data.keys())}")
             
             # Get section title for better matching
             section_title = sec_info.get('title', '').lower()
             section_question_types = sec_info.get('question_types', [])
-            print(f"[DEBUG] Section '{sec}' not found. Title: '{section_title}', Question types: {section_question_types}")
-            print(f"[DEBUG] Available JSON keys: {list(sections_data.keys())}")
             
             # Extract blueprint section name parts for matching
             sec_lower = sec.lower()
@@ -920,7 +762,6 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                             if keyword == 'short answer' and 'very short' in key_lower:
                                 continue  # Skip this, it's a different type
                             section_key = key
-                            print(f"[DEBUG] Matched section {sec} to JSON key: {section_key} (by shared keyword: '{keyword}')")
                             break
                     if section_key != sec:
                         break
@@ -931,7 +772,6 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                     key_lower = key.lower()
                     if section_title in key_lower:
                         section_key = key
-                        print(f"[DEBUG] Matched section {sec} ({section_title}) to JSON key: {section_key} (by title)")
                         break
             
             # Strategy 3: Match by overlapping question types
@@ -947,7 +787,6 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                             overlap = [qt for qt in sec_qtypes_lower if qt in json_qtypes_lower]
                             if overlap:
                                 section_key = key
-                                print(f"[DEBUG] Matched section {sec} to JSON key: {section_key} (by overlapping question types: {overlap})")
                                 break
             
             # Strategy 4: Match by section letter ONLY if content also matches
@@ -970,45 +809,36 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                                 content_matches = any(kw in sec_lower and kw in key_lower for kw in shared_keywords)
                                 if content_matches:
                                     section_key = key
-                                    print(f"[DEBUG] Matched section {sec} (letter {sec_letter}) to JSON key: {section_key} (by letter with content validation)")
                                     break
         
         if section_key in sections_data:
             section_data = sections_data[section_key]
-            print(f"[DEBUG] Found section data for {sec}, keys: {list(section_data.keys()) if isinstance(section_data, dict) else 'Not a dict'}")
-            
+            print(f"[DEBUG] Found section data for '{sec}', keys: {list(section_data.keys()) if isinstance(section_data, dict) else type(section_data)}")
+
             # Check if it's the new structure with subsections
             if "subsections" in section_data:
                 subsections = section_data["subsections"]
-                print(f"[DEBUG] Processing subsections for {sec}, type: {type(subsections)}")
 
                 # Handle both list and dict formats for subsections
                 if isinstance(subsections, dict):
                     # Dictionary format: {"reading": [...], "grammar": [...]}
                     for sub, q_list in subsections.items():
                         if not isinstance(q_list, list):
-                            print(f"[DEBUG] WARNING: Subsection {sub} q_list is not a list: {type(q_list)}")
                             continue
-                        print(f"[DEBUG] Processing subsection {sub} with {len(q_list)} questions")
                         for q in q_list:
                             if isinstance(q, dict):
-                                print(f"[DEBUG] Processing question: {q.get('qnum', 'no qnum')} - {q.get('type', 'no type')}")
                                 q_counter = process_question(all_questions, q, q_counter, class_name, subject, chapters, paper_id)
                             else:
-                                print(f"[DEBUG] WARNING: Question in subsection {sub} is not a dict: {type(q)}")
                                 all_questions.append(("q", f"{q_counter}. {str(q)}"))
                                 q_counter += 1
                 elif isinstance(subsections, list):
                     # List format: list of subsection objects
-                    print(f"[DEBUG] Subsections is a list with {len(subsections)} items")
                     for subsection in subsections:
                         if not isinstance(subsection, dict):
-                            print(f"[DEBUG] WARNING: Subsection is not a dict: {type(subsection)}")
                             continue
                         
                         # Handle subsection with passage/extract
                         subsection_name = subsection.get('name', 'Subsection')
-                        print(f"[DEBUG] Processing subsection: {subsection_name}")
                         
                         # Add subsection instruction if present
                         if 'instructions' in subsection and subsection['instructions']:
@@ -1021,7 +851,6 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                             if passage_text:
                                 all_questions.append(("instruction", "Read the passage:"))
                                 all_questions.append(("passage", passage_text))
-                                print(f"[DEBUG] Added passage for subsection {subsection_name}")
 
                         if 'extract' in subsection:
                             extract_text = subsection.get('extract', '')
@@ -1029,7 +858,6 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                                 instruction_text = subsection.get('extract_instruction') or subsection.get('instruction')
                                 all_questions.append(("instruction", instruction_text or "Read the extract:"))
                                 all_questions.append(("passage", extract_text))
-                                print(f"[DEBUG] Added extract for subsection {subsection_name}")
                         
                         # Handle picture_description in subsection
                         if 'picture_description' in subsection:
@@ -1046,23 +874,19 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                         if 'questions' in subsection:
                             questions_list = subsection.get('questions', [])
                             if isinstance(questions_list, list):
-                                print(f"[DEBUG] Processing {len(questions_list)} questions in subsection {subsection_name}")
                                 for q in questions_list:
                                     if isinstance(q, dict):
                                         q_counter = process_question(all_questions, q, q_counter, class_name, subject, chapters, paper_id)
                                     else:
-                                        print(f"[DEBUG] WARNING: Question in subsection is not a dict: {type(q)}")
                                         all_questions.append(("q", f"{q_counter}. {str(q)}"))
                                         q_counter += 1
                         else:
                             # If no questions key, treat the subsection itself as a question
-                            print(f"[DEBUG] No questions key in subsection, treating as question")
                             q_counter = process_question(all_questions, subsection, q_counter, class_name, subject, chapters, paper_id)
                 else:
-                    print(f"[DEBUG] Unknown subsections format: {type(subsections)}")
+                    pass  # unknown subsections format — skip silently
             else:
                 # Old structure - check if questions are in a 'questions' key or directly in section_data
-                print(f"[DEBUG] Processing old structure for {sec}")
                 
                 # Handle sections with passages or extracts
                 if isinstance(section_data, dict):
@@ -1071,7 +895,6 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                         if passage_text:
                             all_questions.append(("instruction", "Read the passage:"))
                             all_questions.append(("passage", passage_text))
-                            print(f"[DEBUG] Added passage for section {sec}")
 
                     if 'extract' in section_data:
                         extract_text = section_data.get('extract', '')
@@ -1085,19 +908,17 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                                 instruction_text = section_instructions
                             all_questions.append(("instruction", instruction_text or "Read the extract:"))
                             all_questions.append(("passage", extract_text))
-                            print(f"[DEBUG] Added extract for section {sec}")
                 
                 # Handle both cases: questions in 'questions' key or section_data is directly a list
                 if isinstance(section_data, dict) and 'questions' in section_data:
                     questions_list = section_data['questions']
-                    print(f"[DEBUG] Found questions list with {len(questions_list) if isinstance(questions_list, list) else 'unknown'} items")
+                    print(f"[DEBUG] Found questions list with {len(questions_list) if isinstance(questions_list, list) else 'N/A'} items")
                     if isinstance(questions_list, list):
                         for q in questions_list:
                             if isinstance(q, dict):
                                 q_counter = process_question(all_questions, q, q_counter, class_name, subject, chapters, paper_id)
                             else:
                                 # Handle string questions
-                                print(f"[DEBUG] Processing string question: {str(q)[:50]}...")
                                 all_questions.append(("q", f"{q_counter}. {str(q)}"))
                                 
                                 # Save question if metadata available
@@ -1110,16 +931,14 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                                 
                                 q_counter += 1
                     else:
-                        print(f"[DEBUG] WARNING: questions is not a list, it's {type(questions_list)}")
+                        pass
                 elif isinstance(section_data, list):
                     # section_data is directly a list of questions
-                    print(f"[DEBUG] section_data is directly a list with {len(section_data)} items")
                     for q in section_data:
                         if isinstance(q, dict):
                             q_counter = process_question(all_questions, q, q_counter, class_name, subject, chapters, paper_id)
                         else:
                             # Handle string questions
-                            print(f"[DEBUG] Processing string question: {str(q)[:50]}...")
                             all_questions.append(("q", f"{q_counter}. {str(q)}"))
                             
                             # Save question if metadata available
@@ -1132,19 +951,31 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                             
                             q_counter += 1
                 else:
-                    print(f"[DEBUG] WARNING: section_data is neither dict with 'questions' key nor a list: {type(section_data)}")
-                    print(f"[DEBUG] section_data content: {str(section_data)[:200]}")
+                    pass
         else:
-            print(f"[DEBUG] No section data found for {sec}")
             all_questions.append(("q", f"No questions found for section {sec}"))
     
-    print(f"[DEBUG] Total questions processed: {len(all_questions)}")
     return all_questions
+
+
+def _marks_suffix(marks_raw):
+    """Return ' [X marks]' / ' [1 mark]' string for appending to question text, or '' if absent."""
+    if marks_raw is None:
+        return ""
+    try:
+        val = float(marks_raw)
+    except (TypeError, ValueError):
+        return ""
+    if val <= 0:
+        return ""
+    int_val = int(val) if val == int(val) else val
+    label = "mark" if int_val == 1 else "marks"
+    return f" [{int_val} {label}]"
+
 
 def process_question(all_questions, q, q_counter, class_name=None, subject=None, chapters=None, paper_id=None):
     # Handle case where q might be a string instead of dict
     if not isinstance(q, dict):
-        print(f"[DEBUG] WARNING: Question is not a dict, it's {type(q)}: {str(q)[:50]}...")
         question_text = str(q)
         all_questions.append(("q", f"{q_counter}. {question_text}"))
         
@@ -1178,7 +1009,7 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
                 for item in sentences:
                     all_questions.append(("subq", f"- {str(item)}"))
             else:
-                print(f"[DEBUG] WARNING: sentences is not a list: {type(sentences)}")
+                pass
         
         # Handle other types with items, sentences, phrases
         else:
@@ -1189,7 +1020,7 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
                         for item in items:
                             all_questions.append(("subq", f"- {str(item)}"))
                     else:
-                        print(f"[DEBUG] WARNING: {k} is not a list: {type(items)}")
+                        pass
         return q_counter + 1
 
     elif "extract" in q:
@@ -1207,9 +1038,8 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
                 # Check for both "text" and "q" fields
                 question_text = subq.get("text", subq.get("q", str(subq)))
                 # Also check for marks field
-                marks = subq.get("marks", "")
-                if marks:
-                    question_text = f"{question_text} ({marks} marks)"
+                marks = subq.get("marks")
+                question_text = f"{question_text}{_marks_suffix(marks)}"
             else:
                 question_text = str(subq)
             all_questions.append(("subq", f"({i}) {question_text}"))
@@ -1217,24 +1047,19 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
     elif q.get("type") == "unseen_passage_or_case_based":
         options = q.get('options', [])
         if not isinstance(options, list):
-            print(f"[DEBUG] WARNING: options is not a list: {type(options)}")
             options = []
-        print(f"[DEBUG] Processing unseen_passage_or_case_based with {len(options)} options")
         all_questions.append(("instruction", q.get('instruction', 'Read the following:')))  # No number for instructions
         for opt in options:
             if not isinstance(opt, dict):
-                print(f"[DEBUG] WARNING: Option is not a dict: {type(opt)}")
                 continue
             opt_questions = opt.get('questions', [])
             if not isinstance(opt_questions, list):
                 opt_questions = []
-            print(f"[DEBUG] Processing option: {opt.get('kind', 'unknown')} with {len(opt_questions)} questions")
             if 'passage' in opt:
                 passage_text = opt.get('passage', '')
                 if passage_text:
                     all_questions.append(("passage", f"[{opt.get('kind', '').replace('_',' ').title()}]\n{passage_text}"))
             for i, subq in enumerate(opt_questions, start=1):
-                print(f"[DEBUG] Processing sub-question {i}: {subq}")
                 # Handle both string and dict formats for questions
                 if isinstance(subq, dict):
                     # Check for both "text" and "q" fields
@@ -1248,14 +1073,12 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
                 all_questions.append(("subq", f"({i}) {question_text}"))
 
     elif "passage" in q and "questions" in q:
-        print(f"[DEBUG] Found passage with questions, type: {q.get('type')}")
         all_questions.append(("instruction", "Read the passage:"))  # No number for instructions
         passage_text = q.get("passage", "")
         if passage_text:
             all_questions.append(("passage", passage_text))
         questions_list = q.get("questions", [])
         if not isinstance(questions_list, list):
-            print(f"[DEBUG] WARNING: questions is not a list: {type(questions_list)}")
             questions_list = []
         for i, subq in enumerate(questions_list, start=1):
             # Handle both string and dict formats for questions
@@ -1263,9 +1086,8 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
                 # Check for both "text" and "q" fields
                 question_text = subq.get("text", subq.get("q", str(subq)))
                 # Also check for marks field
-                marks = subq.get("marks", "")
-                if marks:
-                    question_text = f"{question_text} ({marks} marks)"
+                marks = subq.get("marks")
+                question_text = f"{question_text}{_marks_suffix(marks)}"
             else:
                 question_text = str(subq)
             all_questions.append(("subq", f"({i}) {question_text}"))
@@ -1282,21 +1104,23 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
     elif "text" in q and not ("passage" in q or "extract" in q):
         # Handle questions that have only "text" field (new structure)
         text_content = q.get("text", "")
-        options = q.get("options")
-        
+        _raw_opts = q.get("options")
+        # Normalize dict options {"a": "...", "b": "..."} → list (parallel pipeline format)
+        if isinstance(_raw_opts, dict):
+            options = [str(v) for _, v in sorted(_raw_opts.items())]
+        else:
+            options = _raw_opts
+
         # If options exist separately, strip inline options from question text
         if isinstance(options, list) and options and text_content:
-            # Remove inline options patterns like (a) ... (b) ... etc.
-            # Pattern to match everything from first option label onwards: (a) ... (b) ... (c) ... (d) ...
-            # This removes all inline options that might be embedded in the question text
-            inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE)
+            inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE | re.DOTALL)
             text_content = inline_pattern.sub('', text_content).strip()
-            # Clean up any trailing whitespace
-            text_content = text_content.strip()
-        
+
         if text_content:
-            all_questions.append(("q", f"{qnum}. {text_content}"))
-            
+            marks_raw = q.get("marks")
+            marks_suffix = _marks_suffix(marks_raw)
+            all_questions.append(("q", f"{qnum}. {text_content}{marks_suffix}"))
+
             # Save question for tracking and deduplication
             if class_name and subject:
                 try:
@@ -1306,53 +1130,57 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
                     save_generated_question(text_content, class_name, subject, chapter, question_type, marks, paper_id)
                 except Exception as e:
                     print(f"[Variation] Error saving question: {e}")
-        
+
         # Render MCQ options if present as a block (for two-column layout later)
         if isinstance(options, list) and options:
             labeled = []
             for i, opt in enumerate(options, start=1):
-                label = chr(64 + i)  # A, B, C, ...
-                labeled.append(f"{label}) {str(opt).strip()}")
+                label = chr(96 + i)  # a, b, c, d
+                labeled.append(f"({label}) {str(opt).strip()}")
             all_questions.append(("opts_block", labeled))
-        if 'image_prompt' in q:
-            all_questions.append(('image_gen', q.get('image_prompt', '')))
+        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
+        if _img_p and len(_img_p) > 10:
+            all_questions.append(('image_gen', _img_p))
 
     elif "question" in q and "or" in q:
         question_text = q.get("question", "")
         or_text = q.get("or", "")
+        marks_suffix = _marks_suffix(q.get("marks"))
         if question_text:
-            all_questions.append(("q", f"{qnum}. {question_text}"))
+            all_questions.append(("q", f"{qnum}. {question_text}{marks_suffix}"))
         all_questions.append(("or", "OR"))
         if or_text:
             all_questions.append(("q", or_text))
 
     elif "question" in q:
         question_text = q.get("question", "")
-        options = q.get("options")
-        
+        _raw_opts = q.get("options")
+        if isinstance(_raw_opts, dict):
+            options = [str(v) for _, v in sorted(_raw_opts.items())]
+        else:
+            options = _raw_opts
+
         # If options exist separately, strip inline options from question text
         if isinstance(options, list) and options and question_text:
-            # Remove inline options patterns like (a) ... (b) ... etc.
-            # Pattern to match everything from first option label onwards
-            inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE)
+            inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE | re.DOTALL)
             question_text = inline_pattern.sub('', question_text).strip()
-            # Clean up any trailing whitespace
-            question_text = question_text.strip()
-        
+
         if question_text:
-            all_questions.append(("q", f"{qnum}. {question_text}"))
-        if 'image_prompt' in q:
-            all_questions.append(('image_gen', q.get('image_prompt', '')))
-        
+            marks_suffix = _marks_suffix(q.get("marks"))
+            all_questions.append(("q", f"{qnum}. {question_text}{marks_suffix}"))
+        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
+        if _img_p and len(_img_p) > 10:
+            all_questions.append(('image_gen', _img_p))
+
         # Handle options for MCQ style
         if isinstance(options, list) and options:
             labeled = []
             for i, option in enumerate(options, start=1):
-                label = chr(64 + i)
-                labeled.append(f"{label}) {str(option).strip()}")
+                label = chr(96 + i)  # a, b, c, d
+                labeled.append(f"({label}) {str(option).strip()}")
             all_questions.append(("opts_block", labeled))
         elif options and not isinstance(options, list):
-            print(f"[DEBUG] WARNING: options is not a list: {type(options)}")
+            pass
 
     return q_counter + 1
 
@@ -1441,7 +1269,7 @@ Schema:
 Rules:
 {rules_text}
 - Use only NCERT context from the selected chapters: {', '.join(chapters)}
-- Difficulty level: {difficulty}
+{_difficulty_directive(difficulty)}
 - Output raw JSON only.
 
 Context:
@@ -1497,7 +1325,6 @@ Output only JSON.
             if i < len(sec_data):
                 q = sec_data[i]
                 if not isinstance(q, dict):
-                    print(f"[DEBUG] WARNING: Question is not a dict: {type(q)}")
                     continue
                 if sec == "A":
                     text_content = q.get('text', '')
@@ -1583,13 +1410,13 @@ def generate_english_paper(class_name, subject, chapters, difficulty, pattern, b
                 # If section is a string, use it as is
                 rules_text += f"- {section}\n"
         rules_text += f"- Focus on selected chapters: {', '.join(selected_lessons)}\n"
-        rules_text += f"- Difficulty level: {difficulty}\n"
+        rules_text += _difficulty_directive(difficulty) + "\n"
     else:
         rules_text = f"""- Section A: One unseen passage OR one case-based passage (Answer ANY ONE). Then Note making + Summary.
 - Section B: Grammar + Writing (Gap filling, reordering, ad/poster, speech, debate).
 - Section C: Extracts, short answers, long answers ONLY from Hornbill and Snapshots NCERT chapters.
 - Focus on selected chapters: {', '.join(selected_lessons)}
-- Difficulty level: {difficulty}"""
+{_difficulty_directive(difficulty)}"""
 
     # Clean and limit context text to avoid corruption
     print(f"[Context] Original context length: {len(context_text)} characters")
@@ -1752,7 +1579,7 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
 # ------------------------------
 # PDF renderer
 # ------------------------------
-def render_pdf(class_name, subject, chapters, all_questions, summary):
+def render_pdf(class_name, subject, chapters, all_questions, summary, header_meta=None):
     writer = PdfWriter()
     packet = BytesIO()
     can = canvas.Canvas(packet, pagesize=A4)
@@ -1793,9 +1620,8 @@ def render_pdf(class_name, subject, chapters, all_questions, summary):
                 return f"Summative Assessment - {m.group(1)}"
             return name
 
-        # Pull extra metadata if passed via additional_context (stored earlier in global tmp during generation)
-        # Fallbacks will be provided by caller through summary if needed; we use globals set by universal path
-        header_meta = globals().get("__HEADER_META__", {})
+        if header_meta is None:
+            header_meta = {}
 
         test_type_val = expand_test_type(header_meta.get("test_type", header_meta.get("pattern_name", "")))
         class_val = header_meta.get("class_name", class_name)
@@ -1863,6 +1689,19 @@ def render_pdf(class_name, subject, chapters, all_questions, summary):
             print(f"[PDF-Render] After passage, y={y}")
             y -= 5
 
+        elif typ == "opts_block":
+            # Draw MCQ options in a 2×2 grid
+            opts = list(text) if isinstance(text, (list, tuple)) else []
+            col_x = [70, 310]
+            for idx, opt_text in enumerate(opts[:4]):
+                row, col = divmod(idx, 2)
+                x = col_x[col]
+                opt_y = y - row * 16
+                can.setFont("Helvetica", 11)
+                can.drawString(x, opt_y, str(opt_text)[:60])
+            rows_used = (min(len(opts), 4) + 1) // 2
+            y -= rows_used * 16 + 4
+
         elif typ == "or":
             can.setFont("Helvetica-Bold", 11)
             can.drawCentredString(300, y, "OR")
@@ -1886,7 +1725,7 @@ def render_pdf(class_name, subject, chapters, all_questions, summary):
     packet.seek(0)
     overlay_reader = PdfReader(packet)
 
-    base_path = r"D:\qpg\core\data\base.pdf"
+    base_path = os.path.join(os.path.dirname(__file__), 'data', 'base.pdf')
     if os.path.exists(base_path):
         base_reader = PdfReader(base_path)
         for i, overlay_page in enumerate(overlay_reader.pages):
@@ -1992,9 +1831,155 @@ def apply_tamil_document_styles(doc: Document, font_name: str = TAMIL_DEFAULT_FO
             rFonts.set(qn(f'w:{attr}'), font_name)
 
 
-def render_docx(class_name, subject, chapters, all_questions, summary):
-    # Create a fresh document (don't use base.docx)
-    doc = Document()
+def _expand_test_type(pattern_name: str) -> str:
+    if not pattern_name:
+        return ""
+    name = pattern_name.strip()
+    m = re.match(r"(?i)\s*pt\s*[- ]?\s*(\d+)", name)
+    if m:
+        return f"Periodic Test - {m.group(1)}"
+    m = re.match(r"(?i)\s*fa\s*[- ]?\s*(\d+)", name)
+    if m:
+        return f"Formative Assessment - {m.group(1)}"
+    m = re.match(r"(?i)\s*sa\s*[- ]?\s*(\d+)", name)
+    if m:
+        return f"Summative Assessment - {m.group(1)}"
+    return name
+
+
+def _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, test_type_val):
+    """Replace placeholder tokens in base.docx header via XML iteration."""
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    replacements = {
+        "SUBJECT":       subject_val or "",
+        "TESTTYPE":      test_type_val or "",
+        "CLASS       :": f"CLASS       :  {class_val}" if class_val else "CLASS       :",
+        "TIME        :": f"TIME        :  {time_val}" if time_val else "TIME        :",
+        "MARKS    :":    f"MARKS    :  {marks_val}" if marks_val else "MARKS    :",
+    }
+    hdr_el = doc.sections[0].header._element
+    for t_el in hdr_el.iter(f"{{{W}}}t"):
+        txt = t_el.text or ""
+        for old, new in replacements.items():
+            if old in txt:
+                txt = txt.replace(old, new)
+        t_el.text = txt
+
+
+def _add_passage_box(doc, text, is_tamil=False):
+    """Render a passage in a bordered, shaded single-cell table."""
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.style = 'Table Grid'
+    cell = tbl.rows[0].cells[0]
+    cell.text = ""
+    para = cell.paragraphs[0]
+    run = para.add_run(text)
+    run.font.size = Pt(10.5)
+    if not is_tamil:
+        run.font.name = 'Times New Roman'
+    if is_tamil:
+        set_tamil_font(run)
+    para.paragraph_format.space_after = Pt(6)
+    para.paragraph_format.space_before = Pt(6)
+    para.paragraph_format.left_indent = Inches(0.1)
+    para.paragraph_format.right_indent = Inches(0.1)
+
+    # Light grey shading on cell
+    tcPr = cell._element.get_or_add_tcPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), 'F8F8F8')
+    tcPr.append(shd)
+
+    doc.add_paragraph("")
+
+
+def _add_or_separator(doc):
+    """Add an OR separator with thin paragraph borders above and below."""
+    p = doc.add_paragraph()
+    r = p.add_run("OR")
+    r.bold = True
+    r.font.size = Pt(11)
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    pPr = p._element.get_or_add_pPr()
+    pBdr = OxmlElement('w:pBdr')
+    for side in ('top', 'bottom'):
+        bdr = OxmlElement(f'w:{side}')
+        bdr.set(qn('w:val'), 'single')
+        bdr.set(qn('w:sz'), '6')
+        bdr.set(qn('w:space'), '4')
+        bdr.set(qn('w:color'), 'AAAAAA')
+        pBdr.append(bdr)
+    pPr.append(pBdr)
+
+
+def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, is_tamil=False):
+    """Add a question paragraph with marks right-aligned if present."""
+    match = marks_pattern.search(text)
+    marks_str = f"[{match.group(1)}]" if match else ""
+    clean_text = marks_pattern.sub("", text).rstrip()
+
+    p = doc.add_paragraph()
+    if left_indent:
+        p.paragraph_format.left_indent = left_indent
+    p.paragraph_format.space_after = Pt(6)
+    p.paragraph_format.space_before = Pt(2)
+
+    def _qrun(run):
+        run.font.size = Pt(11)
+        if is_tamil:
+            set_tamil_font(run)
+        else:
+            run.font.name = 'Times New Roman'
+
+    # Split leading number/label (e.g. "1. ", "(i) ", "Q3. ") to bold it separately
+    num_match = re.match(r'^(\([a-zA-Z0-9]+\)\s*|[ivxIVX]+\.\s*|[0-9]+[.)]\s*)', clean_text)
+    if num_match:
+        num_part = num_match.group(1)
+        rest_part = clean_text[len(num_part):]
+    else:
+        num_part = ""
+        rest_part = clean_text
+
+    if marks_str:
+        pPr = p._element.get_or_add_pPr()
+        tabs = OxmlElement('w:tabs')
+        tab = OxmlElement('w:tab')
+        tab.set(qn('w:val'), 'right')
+        tab.set(qn('w:pos'), '8280')
+        tabs.append(tab)
+        pPr.append(tabs)
+
+        if num_part:
+            r_num = p.add_run(num_part)
+            r_num.bold = True
+            _qrun(r_num)
+        r_text = p.add_run(rest_part)
+        _qrun(r_text)
+        r_marks = p.add_run(f"\t{marks_str}")
+        r_marks.bold = True
+        _qrun(r_marks)
+    else:
+        if num_part:
+            r_num = p.add_run(num_part)
+            r_num.bold = True
+            _qrun(r_num)
+        r_text = p.add_run(rest_part)
+        _qrun(r_text)
+
+    return p
+
+
+def render_docx(class_name, subject, chapters, all_questions, summary, header_meta=None):
+    BASE_DOCX = os.path.join(os.path.dirname(__file__), 'data', 'base.docx')
+
+    # Open base.docx as template — its header carries the school design
+    if os.path.exists(BASE_DOCX):
+        doc = Document(BASE_DOCX)
+    else:
+        doc = Document()
     
     # Check if subject is Tamil or if any questions contain Tamil text
     is_tamil = subject.lower() in ['tamil', 'தமிழ்']
@@ -2016,326 +2001,148 @@ def render_docx(class_name, subject, chapters, all_questions, summary):
     section.left_margin = Inches(0.75)
     section.right_margin = Inches(0.75)
 
-    # Get header metadata
+    # Fill header placeholders
+    if header_meta is None:
+        header_meta = {}
+
+    test_type_val = _expand_test_type(header_meta.get("test_type", header_meta.get("pattern_name", "")))
+    class_val = header_meta.get("class_name", class_name) or class_name
+    subject_val = header_meta.get("subject", subject) or subject
+    time_val = str(header_meta.get("duration", "")).strip()
+    marks_val = str(header_meta.get("marks", "")).strip()
+
     try:
-        header_meta = globals().get("__HEADER_META__", {})
-        print(f"[DOCX-Header] Retrieved header_meta: {header_meta}")
-        print(f"[DOCX-Header] class_name param: {class_name}, subject param: {subject}")
-
-        # Expand test type like PT-2 -> Periodic Test - 2
-        def expand_test_type(pattern_name: str) -> str:
-            if not pattern_name:
-                return ""
-            name = pattern_name.strip()
-            import re
-            m = re.match(r"(?i)\s*pt\s*[- ]?\s*(\d+)", name)
-            if m:
-                return f"Periodic Test - {m.group(1)}"
-            m = re.match(r"(?i)\s*fa\s*[- ]?\s*(\d+)", name)
-            if m:
-                return f"Formative Assessment - {m.group(1)}"
-            m = re.match(r"(?i)\s*sa\s*[- ]?\s*(\d+)", name)
-            if m:
-                return f"Summative Assessment - {m.group(1)}"
-            return name
-
-        test_type_val = expand_test_type(header_meta.get("test_type", header_meta.get("pattern_name", "")))
-        class_val = header_meta.get("class_name", class_name) or class_name
-        subject_val = header_meta.get("subject", subject) or subject
-        time_val = str(header_meta.get("duration", "")).strip()
-        marks_val = str(header_meta.get("marks", "")).strip()
-        
-        print(f"[DOCX-Header] Final values - class: '{class_val}', subject: '{subject_val}', time: '{time_val}', marks: '{marks_val}', test_type: '{test_type_val}'")
-
-        # Create header in the document body (appears only once at the top, not on every page)
-        # Ensure no header/footer is set to repeat
-        section = doc.sections[0]
-        section.header_distance = Inches(0)
-        section.footer_distance = Inches(0)
-        # Clear any existing header/footer content
-        header = section.header
-        for paragraph in header.paragraphs:
-            p = paragraph._element
-            p.getparent().remove(p)
-        for table in header.tables:
-            t = table._element
-            t.getparent().remove(t)
-        
-        # Create bordered header table in the document body (not in header section)
-        # This will appear only once at the top of the document
-        header_table = doc.add_table(rows=2, cols=1)
-        header_table.autofit = False
-        header_table.allow_autofit = False
-        header_table.style = 'Normal Table'
-        
-        # Set table borders
-        for row in header_table.rows:
-            for cell in row.cells:
-                # Set cell borders
-                tcPr = cell._element.get_or_add_tcPr()
-                tcBorders = OxmlElement('w:tcBorders')
-                
-                for border_name in ['top', 'left', 'bottom', 'right']:
-                    border = OxmlElement(f'w:{border_name}')
-                    border.set(qn('w:val'), 'single')
-                    border.set(qn('w:sz'), '12')
-                    border.set(qn('w:color'), '000000')
-                    tcBorders.append(border)
-                
-                tcPr.append(tcBorders)
-        
-        # First row - School name, Subject, Test Type
-        school_cell = header_table.rows[0].cells[0]
-        
-        # School name - centered, bold
-        school_para = school_cell.paragraphs[0]
-        school_run = school_para.add_run('RAMCO VIDYA   MANDIR  SR. SEC. SCHOOL, THAMARAIKULAM')
-        school_run.bold = True
-        school_run.font.size = Pt(12)
-        if is_tamil:
-            set_tamil_font(school_run)
-        school_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        school_para.space_after = Pt(2)
-        school_para.space_before = Pt(4)
-        
-        # Subject line - centered
-        if subject_val:
-            subject_para = school_cell.add_paragraph()
-            subject_run = subject_para.add_run(f'Subject: {subject_val}')
-            subject_run.font.size = Pt(10)
-            if is_tamil:
-                set_tamil_font(subject_run)
-            subject_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            subject_para.space_after = Pt(2)
-            subject_para.space_before = Pt(0)
-        
-        # Test type line - centered, bold
-        if test_type_val:
-            testtype_para = school_cell.add_paragraph()
-            testtype_run = testtype_para.add_run(test_type_val)
-            testtype_run.bold = True
-            testtype_run.font.size = Pt(11)
-            if is_tamil:
-                set_tamil_font(testtype_run)
-            testtype_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            testtype_para.space_after = Pt(4)
-            testtype_para.space_before = Pt(0)
-        
-        # Second row - CLASS, EXAM NO, TIME, MARKS
-        info_cell = header_table.rows[1].cells[0]
-        
-        # Create nested table for CLASS/EXAM NO and TIME/MARKS
-        info_table = info_cell.add_table(rows=2, cols=2)
-        info_table.autofit = False
-        
-        # Remove borders from nested table
-        for row in info_table.rows:
-            for cell in row.cells:
-                tcPr = cell._element.get_or_add_tcPr()
-                tcBorders = OxmlElement('w:tcBorders')
-                for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
-                    border = OxmlElement(f'w:{border_name}')
-                    border.set(qn('w:val'), 'none')
-                    tcBorders.append(border)
-                tcPr.append(tcBorders)
-        
-        # Set column widths
-        info_table.columns[0].width = Inches(3.25)
-        info_table.columns[1].width = Inches(3.25)
-        
-        # Row 1: CLASS and TIME
-        class_cell_table = info_table.rows[0].cells[0]
-        class_para_table = class_cell_table.paragraphs[0]
-        clear_paragraph(class_para_table)  # Clear any default text
-        class_text = f'CLASS       :  {class_val}' if class_val else 'CLASS       :'
-        class_run = class_para_table.add_run(class_text)
-        if is_tamil:
-            set_tamil_font(class_run)
-        class_para_table.space_after = Pt(0)
-        class_para_table.space_before = Pt(2)
-        print(f"[DOCX-Header] Set CLASS text: '{class_text}'")
-        
-        time_cell_table = info_table.rows[0].cells[1]
-        time_para_table = time_cell_table.paragraphs[0]
-        clear_paragraph(time_para_table)  # Clear any default text
-        time_text = f'TIME        :  {time_val}' if time_val else 'TIME        :'
-        time_run = time_para_table.add_run(time_text)
-        if is_tamil:
-            set_tamil_font(time_run)
-        time_para_table.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        time_para_table.space_after = Pt(0)
-        time_para_table.space_before = Pt(2)
-        print(f"[DOCX-Header] Set TIME text: '{time_text}'")
-        
-        # Row 2: EXAM NO and MARKS
-        exam_cell_table = info_table.rows[1].cells[0]
-        exam_para_table = exam_cell_table.paragraphs[0]
-        clear_paragraph(exam_para_table)  # Clear any default text
-        exam_run = exam_para_table.add_run('EXAM NO  :')
-        if is_tamil:
-            set_tamil_font(exam_run)
-        exam_para_table.space_after = Pt(2)
-        exam_para_table.space_before = Pt(0)
-        
-        marks_cell_table = info_table.rows[1].cells[1]
-        marks_para_table = marks_cell_table.paragraphs[0]
-        clear_paragraph(marks_para_table)  # Clear any default text
-        marks_text = f'MARKS    :  {marks_val}' if marks_val else 'MARKS    :'
-        marks_run = marks_para_table.add_run(marks_text)
-        if is_tamil:
-            set_tamil_font(marks_run)
-        marks_para_table.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        marks_para_table.space_after = Pt(2)
-        marks_para_table.space_before = Pt(0)
-        print(f"[DOCX-Header] Set MARKS text: '{marks_text}'")
-        
-        # Add a paragraph break after header to ensure it's separate from content
-        doc.add_paragraph("")
-        
-        print(f"[DOCX-Header] Header table created successfully in document body (will appear only once)")
-        
+        _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, test_type_val)
+        print(f"[DOCX-Header] Filled base.docx placeholders — class={class_val!r} subject={subject_val!r} time={time_val!r} marks={marks_val!r} test_type={test_type_val!r}")
     except Exception as e:
-        print(f"[DOCX-Header] WARNING: Failed to create header: {e}")
-        
-        # Fallback: simple text header if table creation fails
-        try:
-            # School name
-            school_para = doc.add_paragraph()
-            school_run = school_para.add_run('RAMCO VIDYA MANDIR SR. SEC. SCHOOL, THAMARAIKULAM')
-            school_run.bold = True
-            school_run.font.size = Pt(12)
-            if is_tamil:
-                set_tamil_font(school_run)
-            school_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            
-            # Subject
-            if subject_val:
-                subject_para = doc.add_paragraph()
-                subject_run = subject_para.add_run(f'Subject: {subject_val}')
-                subject_run.font.size = Pt(10)
-                if is_tamil:
-                    set_tamil_font(subject_run)
-                subject_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            
-            # Test type
-            if test_type_val:
-                testtype_para = doc.add_paragraph()
-                testtype_run = testtype_para.add_run(test_type_val)
-                testtype_run.bold = True
-                testtype_run.font.size = Pt(11)
-                if is_tamil:
-                    set_tamil_font(testtype_run)
-                testtype_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            
-            # CLASS, TIME, MARKS info
-            info_para = doc.add_paragraph()
-            info_text = f'CLASS: {class_val}     TIME: {time_val}     MARKS: {marks_val}'
-            info_run = info_para.add_run(info_text)
-            info_run.font.size = Pt(10)
-            if is_tamil:
-                set_tamil_font(info_run)
-            
-            doc.add_paragraph("")
-        except Exception as fallback_e:
-            print(f"[DOCX-Header] Fallback also failed: {fallback_e}")
-    except Exception as e:
-        print(f"[DOCX-Header] WARNING: Failed to create header: {e}")
+        print(f"[DOCX-Header] WARNING: placeholder fill failed: {e}")
 
-    # No separate title needed - already in header
+    # Set page margins (leave room for the header from base.docx)
+    section = doc.sections[0]
+    section.top_margin = Inches(1.2)
+    section.bottom_margin = Inches(0.75)
+    section.left_margin = Inches(0.75)
+    section.right_margin = Inches(0.75)
 
-    # Body
-    import re
+    # Restrict the school header to the first page only.
+    # In OOXML: add <w:titlePg/> to sectPr (enables different first-page header),
+    # then change any type="default" headerReference to type="first" so pages 2+
+    # have no header reference → blank header.
+    try:
+        sectPr = section._sectPr
+        if sectPr.find(qn('w:titlePg')) is None:
+            titlePg = OxmlElement('w:titlePg')
+            sectPr.insert(0, titlePg)
+        for hdr_ref in sectPr.findall(qn('w:headerReference')):
+            if hdr_ref.get(qn('w:type')) == 'default':
+                hdr_ref.set(qn('w:type'), 'first')
+    except Exception as _e:
+        print(f"[DOCX-Header] first-page-only setup failed: {_e}")
+
     marks_pattern = re.compile(r"\s*\[(\d+)\s*marks?\]", re.IGNORECASE)
 
     for typ, text in all_questions:
-        # Remove trailing [n marks] if present in any text
-        if isinstance(text, str):
-            text = marks_pattern.sub("", text).rstrip()
+        text_str = text if isinstance(text, str) else str(text)
         if typ == "header":
+            # CBSE-style section header: centered, bold, bottom rule
+            sp = doc.add_paragraph()
+            sp.paragraph_format.space_after = Pt(0)
             p = doc.add_paragraph()
-            r = p.add_run(text)
-            r.bold = True
-            r.font.size = Pt(13)
-            if is_tamil:
-                set_tamil_font(r)
-            doc.add_paragraph("")
-        elif typ == "subheader":
-            p = doc.add_paragraph()
-            r = p.add_run(text)
+            r = p.add_run(text_str)
             r.bold = True
             r.font.size = Pt(12)
+            if not is_tamil:
+                r.font.name = 'Times New Roman'
             if is_tamil:
                 set_tamil_font(r)
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(8)
+            p.paragraph_format.space_after = Pt(6)
+            pPr = p._element.get_or_add_pPr()
+            pBdr = OxmlElement('w:pBdr')
+            bdr = OxmlElement('w:bottom')
+            bdr.set(qn('w:val'), 'single')
+            bdr.set(qn('w:sz'), '6')
+            bdr.set(qn('w:space'), '4')
+            bdr.set(qn('w:color'), '555555')
+            pBdr.append(bdr)
+            pPr.append(pBdr)
+        elif typ == "subheader":
+            p = doc.add_paragraph()
+            r = p.add_run(text_str)
+            r.bold = True
+            r.font.size = Pt(11)
+            if not is_tamil:
+                r.font.name = 'Times New Roman'
+            if is_tamil:
+                set_tamil_font(r)
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(4)
         elif typ == "instruction":
             p = doc.add_paragraph()
-            r = p.add_run(text)
+            r = p.add_run(text_str)
+            r.font.size = Pt(11)
+            r.italic = True
+            if not is_tamil:
+                r.font.name = 'Times New Roman'
             if is_tamil:
                 set_tamil_font(r)
-            p.style = doc.styles['List Bullet'] if 'List Bullet' in doc.styles else None
-        elif typ == "q":
-            p = doc.add_paragraph()
-            r = p.add_run(text)
-            if is_tamil:
-                set_tamil_font(r)
-            # Add a small space before options
             p.paragraph_format.space_after = Pt(4)
-        elif typ == "subq":
-            p = doc.add_paragraph()
-            r = p.add_run(text)
-            if is_tamil:
-                set_tamil_font(r)
-            p.paragraph_format.left_indent = Inches(0.25)
-            p.paragraph_format.space_after = Pt(2)
+        elif typ in ("q", "subq"):
+            indent = Inches(0.25) if typ == "subq" else None
+            _add_question_with_marks(doc, text_str, marks_pattern, indent, is_tamil)
         elif typ == "opts":
             p = doc.add_paragraph()
-            r = p.add_run(text)
+            r = p.add_run(text_str)
+            r.font.size = Pt(11)
+            if not is_tamil:
+                r.font.name = 'Times New Roman'
             if is_tamil:
                 set_tamil_font(r)
             p.paragraph_format.left_indent = Inches(0.25)
-            p.paragraph_format.space_after = Pt(8)
+            p.paragraph_format.space_after = Pt(4)
         elif typ == "opts_block":
-            # text is a list of labeled options like ["A) ...", "B) ...", ...]
             try:
                 opts = list(text) if isinstance(text, (list, tuple)) else []
-                # Create 2x2 table for up to 4 options; if 3 options, last cell empty
-                rows, cols = 2, 2
-                tbl = doc.add_table(rows=rows, cols=cols)
-                tbl.autofit = True
-                # Fill cells row-wise: A B / C D
-                for idx in range(rows * cols):
-                    r, c = divmod(idx, cols)
-                    cell_text = opts[idx] if idx < len(opts) else ""
-                    cell = tbl.cell(r, c)
-                    cell.text = ""  # Clear default paragraph
-                    cell_para = cell.paragraphs[0]
-                    cell_run = cell_para.add_run(cell_text)
+                # CBSE style: 2 options per row, no table borders, indented
+                for row_start in range(0, len(opts), 2):
+                    p = doc.add_paragraph()
+                    p.paragraph_format.left_indent = Inches(0.25)
+                    p.paragraph_format.space_after = Pt(2)
+                    p.paragraph_format.space_before = Pt(0)
+                    pPr = p._element.get_or_add_pPr()
+                    tabs = OxmlElement('w:tabs')
+                    tab = OxmlElement('w:tab')
+                    tab.set(qn('w:val'), 'left')
+                    tab.set(qn('w:pos'), '4320')  # ~3 inches
+                    tabs.append(tab)
+                    pPr.append(tabs)
+                    opt1 = opts[row_start]
+                    r1 = p.add_run(opt1)
+                    r1.font.size = Pt(11)
+                    if not is_tamil:
+                        r1.font.name = 'Times New Roman'
                     if is_tamil:
-                        set_tamil_font(cell_run)
-                    # Compact style
-                    for p in cell.paragraphs:
-                        p.paragraph_format.space_after = Pt(2)
+                        set_tamil_font(r1)
+                    if row_start + 1 < len(opts):
+                        opt2 = opts[row_start + 1]
+                        r2 = p.add_run(f"\t{opt2}")
+                        r2.font.size = Pt(11)
+                        if not is_tamil:
+                            r2.font.name = 'Times New Roman'
+                        if is_tamil:
+                            set_tamil_font(r2)
                 doc.add_paragraph("")
             except Exception as e:
                 print(f"[DOCX] opts_block failed: {e}")
         elif typ == "passage":
-            p = doc.add_paragraph()
-            r = p.add_run(text)
-            if is_tamil:
-                set_tamil_font(r)
-            for run in p.runs:
-                run.italic = True
+            _add_passage_box(doc, text_str, is_tamil)
         elif typ == "or":
-            p = doc.add_paragraph()
-            r = p.add_run("OR")
-            r.bold = True
-            if is_tamil:
-                set_tamil_font(r)
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _add_or_separator(doc)
         elif typ == "image":
             try:
-                img_path = os.path.join(settings.MEDIA_ROOT, text) if not os.path.isabs(text) else text
-                run = doc.add_paragraph().add_run()
-                run.add_picture(img_path, width=Inches(5.5))
+                img_path = os.path.join(settings.MEDIA_ROOT, text_str) if not os.path.isabs(text_str) else text_str
+                doc.add_paragraph().add_run().add_picture(img_path, width=Inches(5.5))
             except Exception as e:
                 print(f"[DOCX] Image insert failed: {e}")
 
@@ -2353,64 +2160,53 @@ def render_docx(class_name, subject, chapters, all_questions, summary):
 # ------------------------------
 # Image generation helpers
 # ------------------------------
-def generate_ai_image(prompt: str, width: int = 512, height: int = 512, cfg_scale: float = 8.0) -> str:
-    """Generate an image using Amazon Titan Image Generator v2 and save under MEDIA_ROOT/generated_images.
+def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_scale: float = 8.0) -> str:
+    """Generate an image via Together AI (google/flash-image-2.5) and save under MEDIA_ROOT/generated_images.
     Returns relative media path."""
-    import base64, hashlib
+    import base64, hashlib, requests as _requests
     output_dir = getattr(settings, 'IMAGE_OUTPUT_DIR', os.path.join(settings.MEDIA_ROOT, 'generated_images'))
     os.makedirs(output_dir, exist_ok=True)
     if not prompt or not str(prompt).strip():
         raise ValueError("Empty image prompt")
-    key = hashlib.sha256(f"{prompt}|{width}|{height}|{cfg_scale}".encode('utf-8')).hexdigest()[:24]
+    key = hashlib.sha256(f"{prompt}|{width}|{height}".encode('utf-8')).hexdigest()[:24]
     rel_path = f"generated_images/{key}.png"
     abs_path = os.path.join(settings.MEDIA_ROOT, rel_path)
     if os.path.exists(abs_path):
         return rel_path
-    # Titan v2 accepts specific dimensions; default to 512x512 (known-good)
-    if width != height:
-        print(f"[ImageGen] INFO: Coercing size {width}x{height} to 512x512 for Titan compatibility")
-        width = height = 512
 
-    body = {
-        "taskType": "TEXT_IMAGE",
-        "textToImageParams": {"text": prompt},
-        "imageGenerationConfig": {
-            "numberOfImages": 1,
-            "width": width,
-            "height": height,
-            "cfgScale": cfg_scale,
-            "seed": 0
-        }
-    }
-    model_id = getattr(settings, 'BEDROCK_IMAGE_MODEL_ID', 'amazon.titan-image-generator-v2:0')
-    print(f"[ImageGen] Calling {model_id} | prompt={prompt[:80]}... | size={width}x{height}")
-    resp = client.invoke_model(body=json.dumps(body), contentType="application/json", accept="application/json", modelId=model_id)
-    result = json.loads(resp["body"].read())
-    images = result.get("images") or result.get("artifacts") or result.get("result", {}).get("images")
-    if not images:
-        print(f"[ImageGen] DEBUG Response keys: {list(result.keys())}")
-        raise RuntimeError("No images key in Titan response")
-    # Extract base64 from first item
-    b64 = None
-    first = images[0]
-    if isinstance(first, str):
-        b64 = first
-    elif isinstance(first, dict):
-        # Try common fields
-        for k in ("base64", "b64", "bytesBase64Encoded", "image", "data"):
-            v = first.get(k)
-            if isinstance(v, str) and len(v) > 100:
-                b64 = v
-                break
-        if not b64:
-            # Try any str field
-            for v in first.values():
-                if isinstance(v, str) and len(v) > 100:
-                    b64 = v
-                    break
+    together_api_key = os.environ.get('TOGETHER_API_KEY') or getattr(settings, 'TOGETHER_API_KEY', '')
+    if not together_api_key:
+        raise RuntimeError("TOGETHER_API_KEY not set in environment")
+
+    model_id = getattr(settings, 'TOGETHER_IMAGE_MODEL', 'google/flash-image-2.5')
+    key_preview = together_api_key[:8] + "..." if len(together_api_key) > 8 else "(too short)"
+    print(f"[ImageGen] Calling Together AI {model_id} | key={key_preview} | prompt={prompt[:80]}... | size={width}x{height}")
+
+    resp = _requests.post(
+        "https://api.together.ai/v1/images/generations",
+        headers={"Authorization": f"Bearer {together_api_key}"},
+        json={"model": model_id, "prompt": prompt, "n": 1, "width": width, "height": height},
+        timeout=120,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Together AI HTTP {resp.status_code}: {resp.text[:300]}")
+
+    result = resp.json()
+    data = result.get("data") or []
+    if not data:
+        raise RuntimeError(f"No data in Together AI response: {list(result.keys())}")
+
+    first = data[0]
+    b64 = first.get("b64_json") or first.get("b64")
+    if not b64 and first.get("url"):
+        img_bytes = _requests.get(first["url"], timeout=60).content
+        with open(abs_path, 'wb') as f:
+            f.write(img_bytes)
+        return rel_path
+
     if not b64:
-        print(f"[ImageGen] DEBUG First image object: {first}")
-        raise RuntimeError("Could not extract base64 from Titan response")
+        raise RuntimeError(f"No image data in Together AI response item: {list(first.keys())}")
+
     with open(abs_path, 'wb') as f:
         f.write(base64.b64decode(b64))
     return rel_path
@@ -2477,6 +2273,49 @@ def materialize_images(all_questions, allow=True):
 
 
 # ------------------------------
+# Render helper for parallel pipeline
+# ------------------------------
+_COST_PER_INPUT_1K  = 0.49   # INR per 1k input tokens
+_COST_PER_OUTPUT_1K = 1.47   # INR per 1k output tokens
+
+def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters, additional_context, pattern, total_input_tokens=0, total_output_tokens=0, allow_images=True):
+    """
+    Render a pre-generated paper_data dict to DOCX.
+    Used by the parallel pipeline after generate_paper_parallel() succeeds.
+    Returns (file_path, summary, total_cost, total_input_tokens, total_output_tokens).
+    """
+    import json as _json
+
+    with open("temp_clean.json", "w", encoding="utf-8") as _f:
+        _json.dump(paper_data, _f, ensure_ascii=False, indent=2)
+
+    all_questions = render_section_questions([], paper_data, blueprint, class_name, subject, chapters, None)
+    all_questions = materialize_images(all_questions, allow=allow_images)
+
+    summary = {sec: {"title": sec, "marks": paper_data.get(sec, {}).get("marks", 0)} for sec in paper_data.keys()}
+
+    header_meta = {
+        "class_name": class_name,
+        "subject": subject,
+        "pattern_name": getattr(pattern, "name", ""),
+        "marks": getattr(pattern, "total_marks", 0),
+    }
+    if additional_context:
+        try:
+            ctx_obj = _json.loads(additional_context)
+            if isinstance(ctx_obj, dict):
+                for _k in ("class_name", "duration", "marks", "test_type"):
+                    if ctx_obj.get(_k):
+                        header_meta[_k] = ctx_obj[_k]
+        except Exception:
+            pass
+
+    total_cost = (total_input_tokens / 1000) * _COST_PER_INPUT_1K + (total_output_tokens / 1000) * _COST_PER_OUTPUT_1K
+    file_path, summary = render_docx(class_name, subject, chapters, all_questions, summary, header_meta=header_meta)
+    return file_path, summary, total_cost, total_input_tokens, total_output_tokens
+
+
+# ------------------------------
 # Entrypoint
 # ------------------------------
 def pattern_sections_to_blueprint_dict(pattern):
@@ -2492,9 +2331,12 @@ def pattern_sections_to_blueprint_dict(pattern):
     for section in pattern.sections:
         section_name = section.get('name', 'Section')
         blueprint_dict[section_name] = {
+            'id': section.get('id', ''),
+            'title': section.get('title', ''),    # empty is fine — render header handles it
             'marks': section.get('marks', 0),
             'questions_count': section.get('questions_count', 0),
             'question_types': section.get('question_types', []),
+            'marks_per_question': section.get('marks_per_question', 1),
             'instructions': section.get('instructions', []),
             'constraints': section.get('constraints', {}),
             'subsections': section.get('subsections', [])
@@ -2581,18 +2423,39 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
         print(f"[Universal-Generator] Blueprint type: {'Complex' if is_complex_blueprint else 'Simple'}")
         print(f"[Universal-Generator] Question types: {all_question_types}")
         
-        # Get universal context with variation
-        variation_offset = random.randint(0, 20)  # Random offset for context variation
+        # ── Attempt 1: parallel per-section pipeline ────────────────────────
+        try:
+            from .section_generator import generate_paper_parallel, get_section_context_map
+            print("[Universal-Generator] Trying parallel per-section pipeline...")
+            _context_map = get_section_context_map(class_name, subject, chapters, blueprint_dict, all_question_types)
+            _paper_data, _in_tok, _out_tok = generate_paper_parallel(
+                blueprint=blueprint_dict,
+                pattern=pattern,
+                context_map=_context_map,
+                difficulty=difficulty,
+                class_name=class_name,
+                subject=subject,
+                chapters=chapters,
+            )
+            print("[Universal-Generator] ✅ Parallel pipeline succeeded — rendering")
+            return _render_paper_from_data(
+                _paper_data, blueprint_dict, class_name, subject, chapters,
+                additional_context, pattern,
+                total_input_tokens=_in_tok, total_output_tokens=_out_tok,
+            )
+        except Exception as _par_exc:
+            print(f"[Universal-Generator] ⚠️  Parallel pipeline failed ({_par_exc}), using single-prompt fallback")
+
+        # ── Attempt 2 (fallback): single-prompt approach ─────────────────────
+        variation_offset = random.randint(0, 20)
         context_data = get_universal_context(class_name, subject, chapters, all_question_types, variation_offset=variation_offset)
         context_text = context_data['context_text']
-        
-        # Generate the paper using universal prompt
-        file_path, summary, total_cost = generate_with_universal_prompt(
-            class_name, subject, chapters, difficulty, pattern, blueprint, 
+
+        file_path, summary, total_cost, in_tok, out_tok = generate_with_universal_prompt(
+            class_name, subject, chapters, difficulty, pattern, blueprint,
             context_text, all_question_types, summary_file, model_source, additional_context
         )
-        
-        return file_path, summary, total_cost
+        return file_path, summary, total_cost, in_tok, out_tok
         
     except Exception as e:
         error_msg = f"Universal generation failed: {str(e)}"
@@ -2603,6 +2466,34 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
             f.write(f"Traceback: {traceback.format_exc()}\n")
         
         raise Exception(error_msg)
+
+def _difficulty_directive(difficulty: str) -> str:
+    d = difficulty.strip().lower()
+    if d == "hard":
+        return """DIFFICULTY — HARD (NON-NEGOTIABLE REQUIREMENTS):
+- Every question MUST demand multi-step reasoning or higher-order thinking (Bloom's: analysis, synthesis, evaluation)
+- BANNED question formats: "What is", "Define", "Name", "List" — pure recall is strictly forbidden
+- MCQ: all four options must be factually plausible with subtle distinctions — no obviously wrong distractors
+- Assertion-Reason: pick non-obvious relationships where naive reasoning leads to the WRONG answer
+- Short Answer: require "Explain why", "Justify", "Derive", "Predict", "Compare" — never "State" or "Describe"
+- Long Answer: must integrate concepts from 2+ topics, require critical evaluation or synthesis, not narration
+- Numericals: multi-step with unit conversions, formula derivations, or conceptual twists — single-step sums are banned
+- Case-based: scenario must require inference; answers must NOT be directly lifted from the passage
+- Passages (English): dense academic prose; test inference and implicit meaning — NOT literal comprehension
+- A student who studied only once should answer fewer than 25% of questions correctly
+- Prefer: exceptions to rules, edge cases, counter-intuitive results, cross-topic links, real-world applications"""
+    elif d == "medium":
+        return """DIFFICULTY — MEDIUM:
+- Mix of application (50%) and analytical questions (50%)
+- MCQ: 2 clearly wrong options, 2 plausible distractors
+- Short Answer: require understanding + some application, not just recall
+- Target standard CBSE board-exam level"""
+    else:
+        return """DIFFICULTY — EASY:
+- Majority direct knowledge and basic application questions
+- Clear, unambiguous wording; suitable for revision and below-average students
+- MCQ: one obvious correct answer with straightforward distractors"""
+
 
 def generate_with_universal_prompt(class_name, subject, chapters, difficulty, pattern, blueprint, context_text, question_types, summary_file, model_source, additional_context=""):
     """Generate paper using universal prompt system"""
@@ -2736,7 +2627,6 @@ CONTEXT MATERIAL:
 EXAMINATION SPECIFICATIONS:
 - Class: {class_name}
 - Subject: {subject}
-- Difficulty Level: {difficulty}
 - Chapters to Cover: {', '.join(chapters) if chapters else 'All chapters'}
 
 QUESTION PAPER STRUCTURE:
@@ -2807,9 +2697,7 @@ EXAMPLE OUTPUT FORMAT (WITH PASSAGES):
   }}
 }}
 
-DIFFICULTY GUIDELINES:
-- {difficulty}: Create appropriately challenging questions for this difficulty level
-- Include {"analysis, synthesis, evaluation" if difficulty == "Hard" else "understanding and application"}
+{_difficulty_directive(difficulty)}
 
 OUTPUT REQUIREMENTS:
 - Generate ONLY valid JSON
@@ -3015,8 +2903,7 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
                 except Exception as e:
                     print(f"[Header-Meta] WARN: failed to parse additional_context: {e}")
                     print(f"[Header-Meta] Traceback: {traceback.format_exc()}")
-            globals()['__HEADER_META__'] = header_meta
-            print(f"[Header-Meta] ✅ Set header metadata: {header_meta}")
+            print(f"[Header-Meta] ✅ Built header metadata: {header_meta}")
             print(f"[Header-Meta]   - class_name: '{header_meta.get('class_name')}'")
             print(f"[Header-Meta]   - duration: '{header_meta.get('duration')}'")
             print(f"[Header-Meta]   - marks: '{header_meta.get('marks')}'")
@@ -3027,8 +2914,8 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
             print(f"[Header-Meta] Traceback: {traceback.format_exc()}")
 
         # Render DOCX (download should be Word) and return (file_path, summary) tuple
-        file_path, summary = render_docx(class_name, subject, chapters, all_questions, summary)
-        return file_path, summary, total_cost
+        file_path, summary = render_docx(class_name, subject, chapters, all_questions, summary, header_meta=header_meta)
+        return file_path, summary, total_cost, total_input_tokens, total_output_tokens
         
     except Exception as e:
         error_msg = f"Universal prompt generation failed: {str(e)}"
@@ -3050,8 +2937,8 @@ def generate_paper(class_name, subject, chapters, difficulty, pattern, section=N
     try:
         # Try universal generator first
         print(f"[Generator] Attempting universal generation...")
-        file_path, summary, total_cost = generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section, model_source, additional_context)
-        return file_path, summary, total_cost
+        file_path, summary, total_cost, in_tok, out_tok = generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section, model_source, additional_context)
+        return file_path, summary, total_cost, in_tok, out_tok
         
     except Exception as e:
         print(f"[Generator] ⚠️ Universal generation failed: {e}")
@@ -3082,7 +2969,7 @@ def generate_paper(class_name, subject, chapters, difficulty, pattern, section=N
 
         if subject.lower() in ["english", "english core"]:
             file_path, summary = generate_english_paper(class_name, subject, chapters, difficulty, pattern, blueprint, summary_file, model_source)
-            return file_path, summary, 0.0 # Legacy functions don't calculate cost
+            return file_path, summary, 0.0, 0, 0
         else:
             file_path, summary = generate_science_paper(class_name, subject, chapters, difficulty, pattern, blueprint, summary_file, model_source)
-            return file_path, summary, 0.0 # Legacy functions don't calculate cost
+            return file_path, summary, 0.0, 0, 0

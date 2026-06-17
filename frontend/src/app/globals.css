@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #F8FAFC;
+  --foreground: #0F172A;
 }
 
 @theme inline {
@@ -20,69 +20,38 @@ body {
 }
 
 @layer components {
-  .mesh-gradient {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    z-index: -1;
-    background-color: #f8fafc;
-    background-image: 
-      radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
-      radial-gradient(at 100% 0%, rgba(37, 99, 235, 0.15) 0px, transparent 50%),
-      radial-gradient(at 100% 100%, rgba(29, 78, 216, 0.15) 0px, transparent 50%),
-      radial-gradient(at 0% 100%, rgba(30, 64, 175, 0.15) 0px, transparent 50%);
-    filter: blur(100px);
-    animation: mesh-fade 10s ease-infinite alternate;
-  }
-
-  @keyframes mesh-fade {
-    0% { opacity: 0.8; }
-    100% { opacity: 1; }
-  }
-
   .glass-card {
-    @apply bg-white/70 backdrop-blur-md border border-white/20 shadow-2xl rounded-3xl relative transition-all duration-200;
-  }
-
-  .glass-card:focus-within {
-    @apply z-40;
+    @apply bg-white border border-slate-200 rounded-xl;
   }
 
   .custom-scrollbar::-webkit-scrollbar {
-    width: 8px;
+    width: 5px;
   }
 
   .custom-scrollbar::-webkit-scrollbar-track {
-    background: #f8fafc;
-    border-radius: 10px;
+    background: transparent;
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: #cbd5e1;
+    background: #CBD5E1;
     border-radius: 10px;
-    border: 2px solid #f8fafc;
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: #94a3b8;
+    background: #94A3B8;
   }
 }
+
 @layer utilities {
   @keyframes fade-in {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
 
   @keyframes slide-up {
     from {
       opacity: 0;
-      transform: translateY(20px);
+      transform: translateY(10px);
     }
     to {
       opacity: 1;
@@ -93,7 +62,7 @@ body {
   @keyframes slide-down {
     from {
       opacity: 0;
-      transform: translateY(-20px);
+      transform: translateY(-6px);
     }
     to {
       opacity: 1;
@@ -102,16 +71,16 @@ body {
   }
 
   .animate-fade-in {
-    animation: fade-in 0.6s ease-out forwards;
+    animation: fade-in 0.25s ease-out forwards;
     opacity: 0;
   }
 
   .animate-slide-up {
-    animation: slide-up 0.6s ease-out forwards;
+    animation: slide-up 0.25s ease-out forwards;
     opacity: 0;
   }
 
   .animate-slide-down {
-    animation: slide-down 0.5s ease-out forwards;
+    animation: slide-down 0.2s ease-out forwards;
   }
 }

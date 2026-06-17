@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import apiClient from '@/lib/api';
+import { subjectOptions } from '@/lib/subjects';
+import CustomSelect from '@/components/CustomSelect';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 
@@ -136,14 +138,14 @@ export default function EditExamBlueprintPage() {
                 required
               />
             </div>
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Subject</label>
-              <input 
-                type="text" name="subject" value={formData.subject} onChange={handleInputChange}
-                className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent rounded-2xl font-black text-gray-900 focus:bg-white focus:border-emerald-500 outline-none transition-all"
-                required
-              />
-            </div>
+            <CustomSelect
+              label="Subject"
+              value={formData.subject}
+              onChange={(val) => handleInputChange({ target: { name: 'subject', value: val } })}
+              options={subjectOptions}
+              placeholder="Select Subject"
+              className="space-y-2"
+            />
             <div className="space-y-2">
               <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Code</label>
               <input 

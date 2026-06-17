@@ -13,6 +13,7 @@ import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import CustomSelect from '@/components/CustomSelect';
+import { subjectOptions } from '@/lib/subjects';
 
 function CreateExamContent() {
   const router = useRouter();
@@ -135,15 +136,14 @@ function CreateExamContent() {
 
             {/* Subject */}
             <div className="space-y-3">
-              <label className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest ml-1">
-                <BookOpen size={14} /> Subject
-              </label>
-              <input 
-                type="text" name="subject" value={formData.subject} onChange={handleInputChange}
-                className="w-full px-6 py-4 bg-gray-50/50 border border-gray-100 rounded-2xl font-bold text-gray-900 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/5 transition-all outline-none"
-                placeholder="e.g. Mathematics" required
+              <CustomSelect
+                label="Subject"
+                icon={BookOpen}
+                value={formData.subject}
+                onChange={(val) => handleInputChange({ target: { name: 'subject', value: val } })}
+                options={subjectOptions}
+                placeholder="Select Subject"
               />
-              <p className="text-[10px] text-gray-400 font-medium ml-1">The subject name</p>
             </div>
 
             {/* Section */}

@@ -1,14 +1,14 @@
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
+from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly, AllowAny
 from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint
+from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Subject
 from core import embeddings
-from core.tasks import generate_paper_task
+from core.tasks import generate_paper_task, ingest_material_task
 from core.views import extract_text_from_pdf, extract_text_from_docx
 import os
 import json
@@ -32,12 +32,26 @@ class StandardResultsSetPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 100
 
+def _get_school(user):
+    """Return the school for a user, or None."""
+    try:
+        return user.profile.school
+    except Exception:
+        return None
+
+
+def _user_role(user):
+    try:
+        return user.profile.role
+    except Exception:
+        return None
+
+
 class ExamPatternViewSet(viewsets.ModelViewSet):
     """
     ViewSet for ExamPattern model.
     Provides CRUD operations for exam patterns (formerly called blueprints).
     """
-    queryset = ExamPattern.objects.all().order_by('-created_at')
     serializer_class = ExamPatternSerializer
     pagination_class = LargeResultsSetPagination
     permission_classes = [IsAuthenticatedOrReadOnly]
@@ -45,55 +59,57 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
     filterset_fields = ['class_name', 'subject', 'pattern_source']
     search_fields = ['name', 'subject', 'class_name']
 
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return ExamPattern.objects.all().order_by('-created_at')
+        role = _user_role(user)
+        if role == 'superadmin' or user.is_superuser:
+            return ExamPattern.objects.all().order_by('-created_at')
+        school = _get_school(user)
+        if school:
+            return ExamPattern.objects.filter(created_by__profile__school=school).order_by('-created_at')
+        return ExamPattern.objects.filter(created_by=user).order_by('-created_at')
+
     def perform_create(self, serializer):
-        """Set the created_by field to the current user"""
         serializer.save(created_by=self.request.user)
 
     @action(detail=False, methods=['post'])
     def generate_from_ai(self, request):
-        """Generate a pattern structure from teacher input using AI"""
-        # Use the API-layer service (ai_service) instead of core to ensure connectivity
-        from .ai_service import generate_pattern_via_api
-        
-        class_name = request.data.get("class_name")
-        subject = request.data.get("subject")
-        pattern_name = request.data.get("name")
-        teacher_input = request.data.get("teacher_input")
-        
+        """Queue AI pattern generation as a Celery task. Returns 202 immediately."""
+        from core.tasks import generate_pattern_task
+
+        class_name    = request.data.get("class_name", "")
+        subject       = request.data.get("subject", "")
+        pattern_name  = request.data.get("name", "")
+        teacher_input = request.data.get("teacher_input", "")
+
         if not teacher_input:
             return Response({"error": "Teacher input is required"}, status=status.HTTP_400_BAD_REQUEST)
-            
-        try:
-            # We use the API service which doesn't suppress errors, allowing us to see connection issues
-            pattern_data = generate_pattern_via_api(
-                teacher_input=teacher_input,
-                class_name=class_name,
-                subject=subject,
-                exam_name=pattern_name
-            )
-            
-            # Create the pattern
-            pattern = ExamPattern.objects.create(
-                name=pattern_name,
-                description=f"AI-generated pattern for {class_name} {subject}",
-                subject=subject,
-                class_name=class_name,
-                sections=pattern_data.get('sections', []),
-                total_marks=pattern_data.get('total_marks', 0),
-                total_questions=pattern_data.get('total_questions', 0),
-                pattern_source='ai_generated',
-                ai_prompt=teacher_input,
-                created_by=request.user
-            )
-            
-            serializer = self.get_serializer(pattern)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            # If AI fails, return the error to the frontend so the user knows backend failed
-            return Response(
-                {"error": f"AI Generation Failed: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+
+        # Create placeholder so the frontend gets an id to poll immediately
+        pattern = ExamPattern.objects.create(
+            name=pattern_name or f"AI Pattern — {subject} {class_name}",
+            description=f"AI-generated pattern for {class_name} {subject}",
+            subject=subject,
+            class_name=class_name,
+            sections=[],
+            total_marks=0,
+            total_questions=0,
+            pattern_source='ai_generated',
+            ai_prompt=teacher_input,
+            status='queued',
+            created_by=request.user,
+        )
+
+        task = generate_pattern_task.delay(pattern.id)
+        pattern.task_id = task.id
+        pattern.save(update_fields=['task_id'])
+
+        return Response(
+            {'id': pattern.id, 'task_id': task.id, 'status': 'queued'},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
     @action(detail=False, methods=['get'])
     def by_subject_and_class(self, request):
@@ -112,37 +128,30 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def regenerate(self, request, pk=None):
-        """Regenerate an AI pattern structure from updated prompt"""
+        """Re-queue AI generation from an updated prompt. Returns 202."""
+        from core.tasks import generate_pattern_task
+
         pattern = self.get_object()
-        
         if pattern.pattern_source != 'ai_generated':
             return Response({"error": "Only AI-generated patterns can be regenerated"}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         new_prompt = request.data.get("ai_prompt")
         if not new_prompt:
             return Response({"error": "Prompt is required for regeneration"}, status=status.HTTP_400_BAD_REQUEST)
-            
-        try:
-            from core.pattern_ai_generator import generate_pattern_from_text
-            
-            pattern_data = generate_pattern_from_text(
-                teacher_input=new_prompt,
-                class_name=pattern.class_name,
-                subject=pattern.subject,
-                exam_name=pattern.name
-            )
-            
-            # Update the pattern
-            pattern.sections = pattern_data['sections']
-            pattern.total_marks = pattern_data['total_marks']
-            pattern.total_questions = pattern_data['total_questions']
-            pattern.ai_prompt = new_prompt
-            pattern.save()
-            
-            serializer = self.get_serializer(pattern)
-            return Response(serializer.data)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        pattern.ai_prompt = new_prompt
+        pattern.status    = 'queued'
+        pattern.sections  = []
+        pattern.save(update_fields=['ai_prompt', 'status', 'sections'])
+
+        task = generate_pattern_task.delay(pattern.id)
+        pattern.task_id = task.id
+        pattern.save(update_fields=['task_id'])
+
+        return Response(
+            {'id': pattern.id, 'task_id': task.id, 'status': 'queued'},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class QuestionPaperViewSet(viewsets.ModelViewSet):
@@ -185,13 +194,23 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         })
 
     def get_queryset(self):
-        """Return question papers, optionally filtered by current user"""
-        queryset = QuestionPaper.objects.all().order_by('-created_at')
+        user = self.request.user
+        base = QuestionPaper.objects.all().order_by('-created_at')
+        if not user.is_authenticated:
+            return base
+        role = _user_role(user)
+        if role == 'superadmin' or user.is_superuser:
+            queryset = base
+        else:
+            school = _get_school(user)
+            if school:
+                queryset = base.filter(created_by__profile__school=school)
+            else:
+                queryset = base.filter(created_by=user)
+
         created_by = self.request.query_params.get('created_by')
-        
-        if created_by == 'me' and self.request.user.is_authenticated:
-            queryset = queryset.filter(created_by=self.request.user)
-        
+        if created_by == 'me':
+            queryset = queryset.filter(created_by=user)
         return queryset
 
     def get_serializer_class(self):
@@ -377,6 +396,47 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         return Response({'content': ''})
 
     @action(detail=True, methods=['post'])
+    def rerender(self, request, pk=None):
+        """Re-render the DOCX from the stored paper_data JSON without calling the LLM."""
+        paper = self.get_object()
+        if not paper.paper_data:
+            return Response(
+                {'error': 'No stored paper_data for this paper. Only papers generated after this feature was added can be re-rendered.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            from core.generator import _render_paper_from_data, pattern_sections_to_blueprint_dict
+            from django.core.files import File as DjangoFile
+
+            class_name = paper.class_name
+            if '-' in class_name:
+                class_name = class_name.split('-', 1)[0]
+
+            blueprint = pattern_sections_to_blueprint_dict(paper.pattern)
+            file_path, summary, _, _, _ = _render_paper_from_data(
+                paper_data=paper.paper_data,
+                blueprint=blueprint,
+                class_name=class_name,
+                subject=paper.subject,
+                chapters=paper.chapters,
+                additional_context=None,
+                pattern=paper.pattern,
+            )
+
+            import os
+            from django.conf import settings as django_settings
+            full_path = os.path.join(django_settings.MEDIA_ROOT, file_path)
+            if os.path.exists(full_path):
+                with open(full_path, 'rb') as f:
+                    filename = os.path.basename(file_path)
+                    paper.file.save(filename, DjangoFile(f), save=False)
+            paper.save(update_fields=['file', 'updated_at'])
+
+            return Response({'status': 'Re-rendered', 'file': paper.file.url if paper.file else None})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
     def save_content(self, request, pk=None):
         """Save edited content"""
         paper = self.get_object()
@@ -458,7 +518,6 @@ class MaterialViewSet(viewsets.ModelViewSet):
     ViewSet for Material model.
     Provides CRUD operations for educational materials (textbooks, notes, etc.).
     """
-    queryset = Material.objects.all().select_related('uploaded_by').order_by('-uploaded_at')
     serializer_class = MaterialSerializer
     pagination_class = LargeResultsSetPagination
     permission_classes = [IsAuthenticatedOrReadOnly]
@@ -466,9 +525,25 @@ class MaterialViewSet(viewsets.ModelViewSet):
     filterset_fields = ['class_name', 'subject', 'type', 'unit']
     search_fields = ['title', 'subject', 'class_name']
 
+    def get_queryset(self):
+        user = self.request.user
+        base = Material.objects.all().select_related('uploaded_by').order_by('-uploaded_at')
+        if not user.is_authenticated:
+            return base
+        role = _user_role(user)
+        if role == 'superadmin' or user.is_superuser:
+            return base
+        school = _get_school(user)
+        if school:
+            return base.filter(uploaded_by__profile__school=school)
+        return base.filter(uploaded_by=user)
+
     def perform_create(self, serializer):
-        """Set the uploaded_by field to the current user"""
         serializer.save(uploaded_by=self.request.user)
+
+    def perform_destroy(self, instance):
+        embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit)
+        instance.delete()
 
     def create(self, request, *args, **kwargs):
         """Custom create to handle bulk and multi-chapter uploads with embeddings"""
@@ -480,6 +555,9 @@ class MaterialViewSet(viewsets.ModelViewSet):
         subject = request.data.get("subject")
         material_type = request.data.get("type", "textbook")
         bulk_upload = str(request.data.get("bulk_upload")).lower() == "true"
+        embedding_provider = request.data.get("embedding_provider", "local")
+        if embedding_provider not in ("local", "openrouter"):
+            embedding_provider = "local"
         
         if not all([class_name, subject, material_type]):
             return Response({"error": "Missing required fields: class_name, subject, type"}, 
@@ -543,19 +621,49 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         "file_path": material.file.path,
                     })
 
-            # Ingest embeddings if materials were created
+            # Queue embedding ingestion via Celery
             if materials_to_ingest:
-                chunks_added = embeddings.ingest_bulk(class_name, subject, materials_to_ingest, material_type=material_type)
+                task = ingest_material_task.apply_async(args=[class_name, subject, materials_to_ingest, material_type], kwargs={'provider': embedding_provider})
                 return Response({
-                    "message": f"Successfully uploaded {len(materials_to_ingest)} materials and generated embeddings.",
+                    "message": f"Uploaded {len(materials_to_ingest)} material(s). Embedding ingestion queued ({embedding_provider}).",
                     "count": len(materials_to_ingest),
-                    "chunks": chunks_added
-                }, status=status.HTTP_201_CREATED)
+                    "task_id": task.id,
+                    "provider": embedding_provider,
+                }, status=status.HTTP_202_ACCEPTED)
 
             return Response({"error": "No files were successfully processed"}, status=status.HTTP_400_BAD_REQUEST)
 
         except Exception as e:
             return Response({"error": f"Upload failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], url_path='bulk-delete')
+    def bulk_delete(self, request):
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'error': 'No IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
+        qs = self.get_queryset().filter(id__in=ids)
+        count = qs.count()
+        if count == 0:
+            return Response({'error': 'No matching materials found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Group by subject to detect full-subject wipes
+        from collections import defaultdict
+        by_subject = defaultdict(list)
+        for m in qs.values('class_name', 'subject', 'unit'):
+            by_subject[(m['class_name'], m['subject'])].append(m['unit'])
+
+        # Check if ALL materials for a class+subject are being deleted
+        for (class_name, subject), units in by_subject.items():
+            total_in_subject = Material.objects.filter(class_name=class_name, subject=subject).count()
+            if len(units) >= total_in_subject:
+                # Wipe the entire vector store directory
+                embeddings.delete_subject_embeddings(class_name, subject)
+            else:
+                for unit in units:
+                    embeddings.delete_unit_embeddings(class_name, subject, unit)
+
+        qs.delete()
+        return Response({'message': f'Deleted {count} material(s)'})
 
 
 class BlueprintTemplateViewSet(viewsets.ModelViewSet):
@@ -596,6 +704,50 @@ class ExamBlueprintViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Set the created_by field to the current user"""
         serializer.save(created_by=self.request.user)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def subjects_list(request):
+    """Return all seeded CBSE subjects."""
+    names = list(Subject.objects.values_list('name', flat=True))
+    return Response({'subjects': names})
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def cbse_exam_types(request):
+    """Return CBSE exam types metadata (PT1/PT2/PT3/HY/Board etc.)."""
+    from core.data.cbse_patterns import EXAM_TYPES
+    active = {
+        k: v for k, v in EXAM_TYPES.items()
+        if v.get('status') not in ('discontinued_2017',)
+    }
+    return Response({'exam_types': active})
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def cbse_subject_pattern(request):
+    """
+    Return CBSE official paper pattern for a subject+class combo.
+    Query params: ?subject=Physics&class=12
+    """
+    from core.data.cbse_patterns import get_pattern
+    subject = request.query_params.get('subject', '').strip()
+    class_name = request.query_params.get('class', '').strip()
+    if not subject:
+        return Response({'error': 'subject param required'}, status=400)
+    pattern = get_pattern(subject)
+    if pattern is None:
+        return Response({'error': f'No official CBSE pattern found for subject: {subject}'}, status=404)
+    # Filter to the requested class if provided
+    if class_name and class_name not in pattern.get('classes', []):
+        return Response(
+            {'error': f'{subject} pattern is only defined for classes {pattern.get("classes")}'},
+            status=404,
+        )
+    return Response({'subject': subject, 'class': class_name or None, 'pattern': pattern})
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedOrReadOnly])

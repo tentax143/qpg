@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { 
-  Download, Trash2, RefreshCw, Zap, Sparkles, 
+  Download, Trash2, RefreshCw, Zap,
   Search, Filter, FileText, Calendar, Layers,
   ChevronRight, ExternalLink, Clock, CheckCircle, 
   AlertCircle, Edit, MoreVertical, FileDown, 
@@ -20,6 +20,7 @@ export default function PapersPage() {
   const [success, setSuccess] = useState(null);
   const [filters, setFilters] = useState({ class_name: '', subject: '' });
   const [selectedPapers, setSelectedPapers] = useState([]);
+  const [rerenderingId, setRerenderingId] = useState(null);
 
   useEffect(() => {
     fetchPapers();
@@ -71,8 +72,21 @@ export default function PapersPage() {
     }
   };
 
+  const handleRerender = async (id) => {
+    setRerenderingId(id);
+    try {
+      await apiClient.post(`/papers/${id}/rerender/`);
+      setSuccess('Paper re-rendered successfully');
+      fetchPapers(false);
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Re-render failed');
+    } finally {
+      setRerenderingId(null);
+    }
+  };
+
   if (loading) return (
-    <div className="min-h-screen mesh-gradient flex items-center justify-center">
+    <div className="min-h-screen flex items-center justify-center">
       <div className="w-12 h-12 border-4 border-blue-600/30 border-t-blue-600 rounded-full animate-spin"></div>
     </div>
   );
@@ -92,7 +106,6 @@ export default function PapersPage() {
         
         <div className="flex flex-wrap items-center gap-3">
           <Link href="/generator" className="flex items-center gap-2 bg-blue-600 text-white px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-wider shadow-xl shadow-blue-200 hover:bg-blue-700 transition-all hover:-translate-y-1 active:translate-y-0">
-            <Sparkles size={18} />
             Generate New Paper
           </Link>
         </div>
@@ -234,8 +247,21 @@ export default function PapersPage() {
                             </a>
                           </>
                         )}
+                        {paper.status === 'done' && paper.has_paper_data && (
+                          <button
+                            onClick={() => handleRerender(paper.id)}
+                            disabled={rerenderingId === paper.id}
+                            className="p-2.5 bg-violet-600 text-white rounded-xl shadow-lg shadow-violet-200 hover:scale-110 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
+                            title="Re-render DOCX"
+                          >
+                            {rerenderingId === paper.id
+                              ? <RefreshCw size={18} className="animate-spin" />
+                              : <Zap size={18} />
+                            }
+                          </button>
+                        )}
                         {paper.status === 'failed' && (
-                          <button 
+                          <button
                             onClick={() => handleRetry(paper.id)}
                             className="p-2.5 bg-amber-500 text-white rounded-xl shadow-lg shadow-amber-200 hover:scale-110 active:scale-95 transition-all"
                             title="Retry Generation"

@@ -7,12 +7,25 @@ from .views import (
     BlueprintTemplateViewSet,
     ExamBlueprintViewSet,
     get_subjects_for_class,
+    subjects_list,
+    cbse_exam_types,
+    cbse_subject_pattern,
     get_chapters,
     get_blueprints,
     get_blueprint_details,
     model_choice,
 )
-from .auth_views import login, register, logout, user_profile, user_management, delete_user, change_password
+from .auth_views import login, logout, user_profile, user_management, delete_user, change_password
+from .admin_views import (
+    superadmin_dashboard,
+    schools_list,
+    school_detail,
+    school_users,
+    school_user_remove,
+    school_usage,
+    school_papers,
+    my_school,
+)
 
 # Create a router and register our viewsets
 router = DefaultRouter()
@@ -22,28 +35,35 @@ router.register(r'materials', MaterialViewSet, basename='material')
 router.register(r'templates', BlueprintTemplateViewSet, basename='blueprinttemplate')
 router.register(r'blueprints', ExamBlueprintViewSet, basename='examblueprint')
 
-# The API URLs are determined automatically by the router
 urlpatterns = [
     path('auth/login/', login, name='api_login'),
-    path('auth/register/', register, name='api_register'),
     path('auth/logout/', logout, name='api_logout'),
     path('auth/profile/', user_profile, name='api_profile'),
     path('auth/change-password/', change_password, name='api_change_password'),
-    
-    # Utility Endpoints
+
+    # User management
+    path('users/', user_management, name='api_user_management'),
+    path('users/<int:pk>/', delete_user, name='api_delete_user'),
+
+    # Utility endpoints
+    path('subjects/', subjects_list, name='api_subjects'),
+    path('cbse/exam-types/', cbse_exam_types, name='api_cbse_exam_types'),
+    path('cbse/pattern/', cbse_subject_pattern, name='api_cbse_subject_pattern'),
     path('get_subjects_for_class/', get_subjects_for_class, name='api_get_subjects'),
     path('get_chapters/', get_chapters, name='api_get_chapters'),
     path('get_blueprints/', get_blueprints, name='api_get_blueprints'),
     path('get_blueprint_details/<str:blueprint_id>/', get_blueprint_details, name='api_get_blueprint_details'),
     path('config/model-choice/', model_choice, name='api_model_choice'),
-    path('users/', user_management, name='api_user_management'),
-    path('users/<int:pk>/', delete_user, name='api_delete_user'),
-    
-    # Discovery utility endpoints for generator
-    path('get_subjects_for_class/', get_subjects_for_class, name='api_get_subjects'),
-    path('get_chapters/', get_chapters, name='api_get_chapters'),
-    path('get_blueprints/', get_blueprints, name='api_get_blueprints'),
-    path('get_blueprint_details/<str:blueprint_id>/', get_blueprint_details, name='api_get_blueprint_details'),
-    
+
+    # SuperAdmin — school management
+    path('admin/dashboard/', superadmin_dashboard, name='api_superadmin_dashboard'),
+    path('admin/schools/', schools_list, name='api_schools_list'),
+    path('admin/schools/<int:pk>/', school_detail, name='api_school_detail'),
+    path('admin/schools/<int:pk>/users/', school_users, name='api_school_users'),
+    path('admin/schools/<int:pk>/users/<int:user_id>/', school_user_remove, name='api_school_user_remove'),
+    path('admin/schools/<int:pk>/usage/', school_usage, name='api_school_usage'),
+    path('admin/schools/<int:pk>/papers/', school_papers, name='api_school_papers'),
+    path('admin/my-school/', my_school, name='api_my_school'),
+
     path('', include(router.urls)),
 ]

@@ -7,7 +7,7 @@ from django.contrib.auth import login as django_login, logout as django_logout
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from .auth_serializers import (
-    LoginSerializer, RegisterSerializer, UserSerializer,
+    LoginSerializer, UserSerializer,
     CreateUserSerializer, PasswordUpdateSerializer, ProfileUpdateSerializer
 )
 
@@ -32,23 +32,6 @@ def login(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['POST'])
-@authentication_classes([])
-@permission_classes([AllowAny])
-def register(request):
-    """
-    Register endpoint - creates new user and returns token
-    """
-    serializer = RegisterSerializer(data=request.data)
-    if serializer.is_valid():
-        user = serializer.save()
-        token, _ = Token.objects.get_or_create(user=user)
-        return Response({
-            'token': token.key,
-            'user': UserSerializer(user).data
-        }, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 @api_view(['POST'])
 def logout(request):
@@ -70,36 +53,81 @@ def logout(request):
 @api_view(['GET', 'POST'])
 def user_management(request):
     """
-    List and create users (Admin only)
+    List and create users.
+    - superadmin: sees all users
+    - school_admin: sees only users in their school
     """
-    if not (request.user.is_staff or request.user.is_superuser):
+    try:
+        role = request.user.profile.role
+    except Exception:
+        role = None
+
+    is_superadmin = role == 'superadmin'
+    is_school_admin = role == 'school_admin'
+
+    if not (is_superadmin or is_school_admin or request.user.is_staff or request.user.is_superuser):
         return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
-        users = User.objects.all().order_by('-date_joined')
+        if is_superadmin or request.user.is_superuser:
+            users = User.objects.all().select_related('profile__school').order_by('-date_joined')
+        elif is_school_admin:
+            try:
+                school = request.user.profile.school
+                users = User.objects.filter(profile__school=school).select_related('profile__school').order_by('-date_joined') if school else User.objects.none()
+            except Exception:
+                users = User.objects.none()
+        else:
+            users = User.objects.all().select_related('profile__school').order_by('-date_joined')
         return Response(UserSerializer(users, many=True).data)
 
     elif request.method == 'POST':
         serializer = CreateUserSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            user = serializer.save()
+            # Assign school and role for school admins creating users
+            if is_school_admin:
+                try:
+                    profile = user.profile
+                    profile.school = request.user.profile.school
+                    profile.role = 'teacher'  # school admins can only create teachers
+                    profile.require_password_change = True
+                    profile.save()
+                except Exception:
+                    pass
+            return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['DELETE'])
 def delete_user(request, pk):
     """
-    Delete a user (Admin only)
+    Delete a user.
+    - superadmin: can delete anyone except themselves
+    - school_admin: can only delete users in their school
     """
-    if not (request.user.is_staff or request.user.is_superuser):
+    try:
+        role = request.user.profile.role
+    except Exception:
+        role = None
+
+    if not (role in ('superadmin', 'school_admin') or request.user.is_staff or request.user.is_superuser):
         return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
-    
+
     user_to_delete = get_object_or_404(User, pk=pk)
-    
-    if user_to_delete.is_superuser:
-        return Response({'error': 'Cannot delete superuser'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
+    if user_to_delete.id == request.user.id:
+        return Response({'error': 'Cannot delete yourself'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # School admin: enforce school boundary
+    if role == 'school_admin':
+        try:
+            school = request.user.profile.school
+            if not school or user_to_delete.profile.school_id != school.id:
+                return Response({'error': 'Cannot delete users outside your school'}, status=status.HTTP_403_FORBIDDEN)
+        except Exception:
+            return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+
     user_to_delete.delete()
     return Response({'message': 'User deleted successfully'})
 

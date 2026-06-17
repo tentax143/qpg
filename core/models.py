@@ -3,6 +3,38 @@ from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+
+class School(models.Model):
+    name = models.CharField(max_length=200)
+    address = models.TextField(blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    email = models.EmailField(blank=True)
+    monthly_token_budget = models.BigIntegerField(default=0)  # 0 = unlimited
+    is_active = models.BooleanField(default=True)
+    # Cumulative usage — persists even after papers are deleted
+    total_papers_generated = models.BigIntegerField(default=0)
+    total_tokens_used = models.BigIntegerField(default=0)
+    total_cost_accumulated = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class Subject(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class ExamPattern(models.Model):
     """
     Unified exam pattern model that combines blueprint and pattern functionality.
@@ -26,9 +58,20 @@ class ExamPattern(models.Model):
         ('manual', 'Manual Creation'),
         ('ai_generated', 'AI Generated'),
         ('imported', 'Imported'),
+        ('cbse_official', 'CBSE Official'),
     ]
     pattern_source = models.CharField(max_length=20, choices=PATTERN_SOURCE_CHOICES, default='manual')
     ai_prompt = models.TextField(blank=True)  # Store original teacher input for reference
+
+    # Async generation tracking (mirrors QuestionPaper.status / task_id pattern)
+    STATUS_CHOICES = [
+        ('queued',      'Queued'),
+        ('generating',  'Generating'),
+        ('done',        'Done'),
+        ('failed',      'Failed'),
+    ]
+    status  = models.CharField(max_length=20, choices=STATUS_CHOICES, default='done')
+    task_id = models.CharField(max_length=255, blank=True, null=True)
 
     # Timestamps
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
@@ -63,6 +106,12 @@ class ExamPattern(models.Model):
                 total += subsec.get('questions_count', 0)
         return total
 
+    def save(self, *args, **kwargs):
+        if self.sections:
+            self.total_marks = self.get_total_marks()
+            self.total_questions = self.get_total_questions()
+        super().save(*args, **kwargs)
+
 class QuestionPaper(models.Model):
     class_name = models.CharField(max_length=10)   # "11-A"
     subject = models.CharField(max_length=50)      # "Biology"
@@ -73,7 +122,10 @@ class QuestionPaper(models.Model):
     status = models.CharField(max_length=20, default="queued")  # queued/generating/done/cancelled
     task_id = models.CharField(max_length=255, blank=True, null=True)  # Celery task ID
     edited_content = models.TextField(blank=True, null=True)  # Store edited content from the editor
-    cost = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True) # Cost of generation
+    paper_data = models.JSONField(null=True, blank=True)      # Raw generated JSON — used for re-rendering
+    cost = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    input_tokens = models.BigIntegerField(default=0)
+    output_tokens = models.BigIntegerField(default=0)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)  # Track when the paper was last edited
@@ -157,8 +209,28 @@ class ExamBlueprint(models.Model):
 # User profile for auth features
 # ==============================
 class UserProfile(models.Model):
+    ROLE_SUPERADMIN = 'superadmin'
+    ROLE_SCHOOL_ADMIN = 'school_admin'
+    ROLE_TEACHER = 'teacher'
+
+    ROLE_CHOICES = [
+        ('superadmin', 'Super Admin'),
+        ('school_admin', 'School Admin'),
+        ('teacher', 'Teacher'),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     require_password_change = models.BooleanField(default=True)
+    school = models.ForeignKey('School', on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='teacher')
+
+    @property
+    def is_superadmin(self):
+        return self.role == self.ROLE_SUPERADMIN
+
+    @property
+    def is_school_admin(self):
+        return self.role == self.ROLE_SCHOOL_ADMIN
 
     def __str__(self):
         return f"Profile({self.user.username})"

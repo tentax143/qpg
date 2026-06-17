@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { 
-  Plus, X, Upload, Eye, EyeOff, Zap, Sparkles, 
-  Settings, BookOpen, Layers, BarChart, FilePlus, 
+  Plus, X, Upload, Eye, EyeOff, Zap,
+  Settings, BookOpen, Layers, BarChart, FilePlus,
   ArrowRight, RefreshCcw, ChevronRight, Users, Clock, Star,
   CheckCircle, Info, Undo, AlertCircle, GraduationCap
 } from 'lucide-react';
@@ -299,7 +299,7 @@ function GeneratorContent() {
   };
 
   if (loading) return (
-    <div className="min-h-screen mesh-gradient flex items-center justify-center">
+    <div className="min-h-screen flex items-center justify-center">
       <div className="w-12 h-12 border-4 border-blue-600/30 border-t-blue-600 rounded-full animate-spin"></div>
     </div>
   );
@@ -417,55 +417,79 @@ function GeneratorContent() {
               </div>
 
               {/* Chapters Selection */}
-              <div className="space-y-4 pt-4 border-t border-gray-100">
-                <label className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
-                  <BookOpen size={16} className="text-blue-500" />
-                  Chapters/Units Selection
-                </label>
-                
-                <div className={`p-6 bg-gray-50/50 border-2 border-dashed border-gray-200 rounded-3xl min-h-[120px] transition-all ${selectedChapters.length > 0 ? 'border-blue-200 bg-blue-50/20' : ''}`}>
-                  {selectedChapters.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-full text-gray-400 py-4">
-                      <BookOpen size={30} className="mb-2 opacity-20" />
-                      <p className="text-sm font-bold fst-italic">No chapters selected yet.</p>
-                      {!formData.subject && <p className="text-[10px] uppercase font-black tracking-widest mt-1 text-gray-500">Select a subject first</p>}
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap gap-3">
-                      {selectedChapters.map(chapter => (
-                        <div key={chapter} className="flex items-center gap-3 bg-blue-600 text-white pl-5 pr-3 py-3 rounded-2xl font-black text-sm shadow-lg shadow-blue-200 animate-in zoom-in-95">
-                          {chapter}
-                          <button 
-                            type="button" 
-                            onClick={() => handleRemoveChapter(chapter)}
-                            className="w-6 h-6 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center transition-colors"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
+              <div className="space-y-3 pt-4 border-t border-gray-100">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
+                    <BookOpen size={16} className="text-blue-500" />
+                    Chapters/Units Selection
+                  </label>
+                  {availableChapters.length > 0 && (
+                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
+                      {selectedChapters.length}/{availableChapters.length} selected
+                    </span>
                   )}
                 </div>
 
-                <div className="flex flex-col md:flex-row gap-4">
-                  <div className="flex-1">
-                    <CustomSelect
-                      value=""
-                      onChange={(val) => {
-                        if (val) {
-                          handleAddChapter(val);
-                        }
-                      }}
-                      options={availableChapters
-                        .filter(ch => !selectedChapters.includes(ch))
-                        .map(ch => ({ label: ch, value: ch }))
-                      }
-                      placeholder={loadingChapters ? 'Loading chapters...' : formData.subject ? 'Select a chapter to add' : 'Select a subject first'}
-                      disabled={!formData.subject || loadingChapters}
-                    />
+                {!formData.subject ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-gray-400 border-2 border-dashed border-gray-200 rounded-2xl">
+                    <BookOpen size={28} className="mb-2 opacity-20" />
+                    <p className="text-[10px] uppercase font-black tracking-widest text-gray-500">Select a subject first</p>
                   </div>
-                </div>
+                ) : loadingChapters ? (
+                  <div className="flex items-center justify-center py-8 text-gray-400">
+                    <div className="w-4 h-4 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin mr-2" />
+                    <span className="text-sm font-bold">Loading chapters…</span>
+                  </div>
+                ) : availableChapters.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-gray-400 border-2 border-dashed border-gray-200 rounded-2xl">
+                    <BookOpen size={28} className="mb-2 opacity-20" />
+                    <p className="text-sm font-bold">No chapters found for this subject</p>
+                  </div>
+                ) : (
+                  <div className="border border-gray-200 rounded-2xl overflow-hidden">
+                    {/* Select All */}
+                    <label className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100 transition-colors select-none">
+                      <input
+                        type="checkbox"
+                        checked={selectedChapters.length === availableChapters.length}
+                        ref={el => { if (el) el.indeterminate = selectedChapters.length > 0 && selectedChapters.length < availableChapters.length; }}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedChapters([...availableChapters]);
+                          } else {
+                            setSelectedChapters([]);
+                          }
+                        }}
+                        className="w-4 h-4 accent-blue-600 cursor-pointer"
+                      />
+                      <span className="text-xs font-black text-gray-700 uppercase tracking-wider">Select All</span>
+                    </label>
+
+                    {/* Chapter list */}
+                    <div className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
+                      {availableChapters.map((chapter) => {
+                        const checked = selectedChapters.includes(chapter);
+                        return (
+                          <label
+                            key={chapter}
+                            className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-blue-50/50 transition-colors select-none ${checked ? 'bg-blue-50/30' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => checked ? handleRemoveChapter(chapter) : handleAddChapter(chapter)}
+                              className="w-4 h-4 accent-blue-600 cursor-pointer flex-shrink-0"
+                            />
+                            <span className={`text-sm ${checked ? 'font-bold text-blue-700' : 'font-medium text-gray-700'}`}>
+                              {chapter}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <p className="text-[10px] font-bold text-gray-500 uppercase ml-1 flex items-center gap-1">
                   <Info size={12} />
                   Choose one or more chapters to cover in the paper.
@@ -565,7 +589,6 @@ function GeneratorContent() {
                     </>
                   ) : (
                     <>
-                      <Sparkles size={18} className="group-hover:animate-pulse transition-transform group-hover:rotate-12" />
                       Generate Paper
                     </>
                   )}

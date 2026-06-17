@@ -46,7 +46,14 @@ class BlueprintManager:
                                 "title": section.get("title", ""),
                                 "marks": section.get("marks", 0),
                                 "question_types": section.get("question_types", []),
-                                "subsections": section.get("subsections", {})
+                                "subsections": section.get("subsections", {}),
+                                "questions_count": section.get("questions_count", 0),
+                                "marks_per_question": section.get("marks_per_question", 1),
+                                "id": section.get("id", section_name),
+                                "instructions": section.get("instructions", []),
+                                "constraints": section.get("constraints", {}),
+                                "passage_instruction": section.get("passage_instruction"),
+                                "extract_instruction": section.get("extract_instruction"),
                             }
                     return result
 
@@ -64,7 +71,14 @@ class BlueprintManager:
                         "title": section.get("title", ""),
                         "marks": section.get("marks", 0),
                         "question_types": section.get("question_types", []),
-                        "subsections": section.get("subsections", {})
+                        "subsections": section.get("subsections", {}),
+                        "questions_count": section.get("questions_count", 0),
+                        "marks_per_question": section.get("marks_per_question", 1),
+                        "id": section.get("id", section_name),
+                        "instructions": section.get("instructions", []),
+                        "constraints": section.get("constraints", {}),
+                        "passage_instruction": section.get("passage_instruction"),
+                        "extract_instruction": section.get("extract_instruction"),
                     }
             return result
 

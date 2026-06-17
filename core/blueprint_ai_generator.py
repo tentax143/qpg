@@ -3,22 +3,9 @@ AI-powered Blueprint Generator
 Converts teacher's text input into proper JSON blueprint structure
 """
 import json
-import boto3
-from botocore.config import Config
+from . import mantle_client
 
-# Bedrock setup
-client = boto3.client(
-    "bedrock-runtime",
-    region_name="us-east-1",
-    config=Config(
-        read_timeout=300,
-        connect_timeout=60,
-        retries={'max_attempts': 3}
-    )
-)
-
-# Use Claude for blueprint generation
-MODEL_ID = "arn:aws:bedrock:us-east-1:659260838757:inference-profile/global.anthropic.claude-sonnet-4-20250514-v1:0"
+MODEL_ID = mantle_client.GEN_MODEL
 
 def generate_blueprint_from_text(teacher_input, class_name, subject):
     """
@@ -81,23 +68,12 @@ IMPORTANT:
 Generate the blueprint JSON now:"""
 
     try:
-        # Call Bedrock
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            "max_tokens": 2000,
-            "temperature": 0.3,  # Lower temperature for more consistent output
-        }
-
-        response = client.invoke_model(
-            body=json.dumps(body),
-            contentType="application/json",
-            accept="application/json",
-            modelId=MODEL_ID,
+        ai_response, _, _ = mantle_client.converse(
+            model_id=MODEL_ID,
+            prompt=prompt,
+            max_tokens=2000,
+            temperature=0.3,
         )
-
-        result = json.loads(response["body"].read())
-        ai_response = result["content"][0]["text"]
 
         # Clean the response
         ai_response = ai_response.strip()
@@ -118,8 +94,6 @@ Generate the blueprint JSON now:"""
 
     except json.JSONDecodeError as e:
         print(f"Error parsing AI response: {e}")
-        print(f"AI Response: {ai_response}")
-        # Return a default blueprint structure
         return create_default_blueprint(class_name, subject)
     except Exception as e:
         print(f"Error generating blueprint: {e}")

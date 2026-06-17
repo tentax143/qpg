@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  Plus, Sparkles, ArrowLeft, Wand2, Info, 
+  Plus, ArrowLeft, Wand2, Info,
   BookOpen, GraduationCap, FileText, CheckCircle, 
   Settings, Calculator, Send, Hash, RefreshCw, 
   Eye, FileInput, ChevronDown, Activity, AlignLeft,
@@ -108,7 +108,6 @@ export default function AICreateBlueprintPage() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
         <div className="flex items-center gap-5">
           <div className="w-16 h-16 bg-white shadow-2xl shadow-purple-500/10 border border-purple-100 rounded-[28px] flex items-center justify-center group transform hover:rotate-6 transition-all duration-500">
-            <Sparkles size={32} className="text-purple-600" />
           </div>
           <div>
             <h1 className="text-3xl font-black text-gray-900 tracking-tight">AI Pattern Generator</h1>

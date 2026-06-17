@@ -14,15 +14,16 @@ class UserSerializer(serializers.ModelSerializer):
 class ExamPatternSerializer(serializers.ModelSerializer):
     """Serializer for ExamPattern model"""
     created_by = UserSerializer(read_only=True)
-    
+
     class Meta:
         model = ExamPattern
         fields = [
             'id', 'name', 'description', 'subject', 'class_name',
             'sections', 'total_marks', 'total_questions', 'pattern_source',
-            'ai_prompt', 'created_by', 'created_at', 'updated_at'
+            'ai_prompt', 'status', 'task_id',
+            'created_by', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'status', 'task_id', 'created_at', 'updated_at']
 
 
 class QuestionPaperSerializer(serializers.ModelSerializer):
@@ -49,12 +50,17 @@ class QuestionPaperListSerializer(serializers.ModelSerializer):
     """Simplified serializer for listing question papers"""
     pattern_name = serializers.CharField(source='pattern.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
-    
+    has_paper_data = serializers.SerializerMethodField()
+
+    def get_has_paper_data(self, obj):
+        return obj.paper_data is not None
+
     class Meta:
         model = QuestionPaper
         fields = [
             'id', 'class_name', 'subject', 'pattern_name', 'difficulty',
-            'status', 'cost', 'created_by_name', 'created_at', 'file'
+            'status', 'cost', 'created_by_name', 'created_at', 'file',
+            'has_paper_data'
         ]
         read_only_fields = fields
 

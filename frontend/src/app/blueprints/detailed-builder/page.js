@@ -8,7 +8,7 @@ import {
   Info, FileText, Layers, MessageSquare, 
   ChevronDown, ChevronUp, Zap, Wand2,
   AlertCircle, FileInput, TextCursorInput, RefreshCw,
-  BookOpen, GraduationCap, Target, Settings2, Sparkles
+  BookOpen, GraduationCap, Target, Settings2
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -445,11 +445,11 @@ export default function DetailedBlueprintBuilder() {
           >
             <FileInput size={18} /> Load Sample
           </button>
-          <button 
+          <button
             onClick={() => setShowImportModal(true)}
             className="px-6 py-3.5 bg-blue-50 text-blue-700 rounded-2xl font-bold text-sm border border-blue-100 shadow-sm hover:shadow-md hover:bg-blue-100/50 transition-all flex items-center gap-2 active:scale-95"
           >
-            <Sparkles size={18} /> Import from Text
+            Import from Text
           </button>
           <Link href="/blueprints" className="px-6 py-3.5 bg-gray-900 text-white rounded-2xl font-bold text-sm shadow-xl shadow-gray-200 hover:bg-black transition-all flex items-center gap-2 hover:-translate-y-1 active:scale-95">
             <ArrowLeft size={18} />

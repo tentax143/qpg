@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 const apiClient = axios.create({
   baseURL: API_URL,
@@ -19,7 +19,7 @@ const SESSION_TIMEOUT = 3600 * 1000;
 apiClient.interceptors.request.use(
   (config) => {
     // Skip session check for auth endpoints
-    if (config.url.startsWith('/auth/') || config.url.startsWith('/login') || config.url.startsWith('/register')) {
+    if (config.url.startsWith('/auth/login') || config.url.startsWith('/auth/logout')) {
       return config;
     }
 

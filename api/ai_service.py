@@ -1,33 +1,20 @@
 import json
-import boto3
-from botocore.config import Config
 import re
+import sys
+import os
 
-# Use standard Claude 3 Sonnet which is widely available
-# The core module uses a specific inference profile that might be failing
-# We use this local fallback to ensure functionality
-MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core import mantle_client
 
-def get_bedrock_client():
-    return boto3.client(
-        "bedrock-runtime",
-        region_name="us-east-1",
-        config=Config(
-            read_timeout=300,
-            connect_timeout=60,
-            retries={'max_attempts': 3}
-        )
-    )
+MODEL_ID = mantle_client.GEN_MODEL
+
 
 def generate_pattern_via_api(teacher_input, class_name, subject, exam_name=""):
     """
-    API-layer implementation of pattern generation.
-    Bypasses the core module to ensure reliable execution with correct Model IDs.
+    API-layer implementation of pattern generation using Mantle bearer-token auth.
     """
-    client = get_bedrock_client()
-    
     prompt = f"""You are an expert at converting teacher's exam pattern descriptions into structured JSON patterns.
-    
+
 TEACHER'S INPUT:
 {teacher_input}
 
@@ -77,43 +64,29 @@ Return ONLY valid JSON.
 """
 
     try:
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            "max_tokens": 3000,
-            "temperature": 0.1,
-        }
-
-        response = client.invoke_model(
-            body=json.dumps(body),
-            contentType="application/json",
-            accept="application/json",
-            modelId=MODEL_ID,
+        ai_response, _, _ = mantle_client.converse(
+            model_id=MODEL_ID,
+            prompt=prompt,
+            max_tokens=3000,
+            temperature=0.1,
         )
 
-        result = json.loads(response["body"].read())
-        ai_response = result["content"][0]["text"]
-
-        # Clean JSON markdown if present
+        # Strip markdown code fences if present
         ai_response = ai_response.strip()
         if ai_response.startswith("```json"):
             ai_response = ai_response[7:]
-        if ai_response.startswith("```"):
+        elif ai_response.startswith("```"):
             ai_response = ai_response[3:]
         if ai_response.endswith("```"):
             ai_response = ai_response[:-3]
 
         pattern = json.loads(ai_response.strip())
-        
-        # Basic validation
+
         if "sections" not in pattern:
             pattern["sections"] = []
-            
+
         return pattern
 
     except Exception as e:
-        # Re-raise exception to be caught by the view, allowing frontend to see the error
-        # instead of silently falling back to defaults
-        print(f"Bedrock API Error: {str(e)}")
-        raise e
-    
+        print(f"Mantle API Error: {str(e)}")
+        raise

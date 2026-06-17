@@ -1,0 +1,507 @@
+'use client';
+
+import { useState, useEffect, use } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import apiClient from '@/lib/api';
+import {
+  ArrowLeft, Users, BarChart3, FileText, Settings,
+  Plus, Trash2, Edit3, Check, X, ChevronDown,
+} from 'lucide-react';
+
+const TABS = [
+  { id: 'overview', label: 'Overview', icon: Settings },
+  { id: 'users', label: 'Users', icon: Users },
+  { id: 'usage', label: 'Usage', icon: BarChart3 },
+  { id: 'papers', label: 'Papers', icon: FileText },
+];
+
+const STATUS_COLORS = {
+  done: 'bg-emerald-50 text-emerald-700',
+  generating: 'bg-blue-50 text-blue-700',
+  queued: 'bg-slate-100 text-slate-600',
+  failed: 'bg-red-50 text-red-700',
+  cancelled: 'bg-slate-100 text-slate-500',
+};
+
+export default function SchoolDetailPage({ params }) {
+  const { id } = use(params);
+  const router = useRouter();
+  const [tab, setTab] = useState('overview');
+  const [school, setSchool] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [usage, setUsage] = useState(null);
+  const [papers, setPapers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tabLoading, setTabLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({});
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'teacher' });
+  const [addUserError, setAddUserError] = useState(null);
+  const [addUserLoading, setAddUserLoading] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem('user') || 'null');
+    if (!user || user.role !== 'superadmin') { router.replace('/dashboard'); return; }
+    fetchSchool();
+  }, [id]);
+
+  useEffect(() => {
+    if (!school) return;
+    if (tab === 'users') fetchUsers();
+    else if (tab === 'usage') fetchUsage();
+    else if (tab === 'papers') fetchPapers();
+  }, [tab, school]);
+
+  async function fetchSchool() {
+    try {
+      const r = await apiClient.get(`/admin/schools/${id}/`);
+      setSchool(r.data);
+      setEditForm({
+        name: r.data.name,
+        address: r.data.address,
+        phone: r.data.phone,
+        email: r.data.email,
+        monthly_token_budget: r.data.monthly_token_budget,
+        is_active: r.data.is_active,
+      });
+    } catch (e) {
+      setError(e.response?.data?.error || 'Failed to load school');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function fetchUsers() {
+    setTabLoading(true);
+    try { const r = await apiClient.get(`/admin/schools/${id}/users/`); setUsers(r.data); }
+    catch (e) { console.error(e); }
+    finally { setTabLoading(false); }
+  }
+
+  async function fetchUsage() {
+    setTabLoading(true);
+    try { const r = await apiClient.get(`/admin/schools/${id}/usage/`); setUsage(r.data); }
+    catch (e) { console.error(e); }
+    finally { setTabLoading(false); }
+  }
+
+  async function fetchPapers() {
+    setTabLoading(true);
+    try { const r = await apiClient.get(`/admin/schools/${id}/papers/`); setPapers(r.data); }
+    catch (e) { console.error(e); }
+    finally { setTabLoading(false); }
+  }
+
+  async function handleSaveEdit() {
+    try {
+      const r = await apiClient.patch(`/admin/schools/${id}/`, {
+        ...editForm,
+        monthly_token_budget: parseInt(editForm.monthly_token_budget) || 0,
+      });
+      setSchool(r.data);
+      setEditing(false);
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to update');
+    }
+  }
+
+  async function handleDeleteSchool() {
+    if (!window.confirm(`Delete "${school.name}"? This cannot be undone.`)) return;
+    try {
+      await apiClient.delete(`/admin/schools/${id}/`);
+      router.push('/superadmin/schools');
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to delete school');
+    }
+  }
+
+  async function handleAddUser(e) {
+    e.preventDefault();
+    setAddUserError(null);
+    if (!newUser.username || !newUser.password) { setAddUserError('Username and password are required'); return; }
+    setAddUserLoading(true);
+    try {
+      const r = await apiClient.post(`/admin/schools/${id}/users/`, newUser);
+      setUsers(prev => [...prev, r.data]);
+      setNewUser({ username: '', email: '', password: '', role: 'teacher' });
+      setShowAddUser(false);
+    } catch (e) {
+      const errs = e.response?.data;
+      setAddUserError(typeof errs === 'object' ? Object.values(errs).flat().join(' ') : 'Failed to create user');
+    } finally {
+      setAddUserLoading(false);
+    }
+  }
+
+  async function handleRemoveUser(userId, username) {
+    if (!window.confirm(`Remove user "${username}"? This will delete their account.`)) return;
+    try {
+      await apiClient.delete(`/admin/schools/${id}/users/${userId}/`);
+      setUsers(prev => prev.filter(u => u.id !== userId));
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to remove user');
+    }
+  }
+
+  if (loading) return <div className="flex justify-center py-20"><div className="w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>;
+  if (error) return <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>;
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <Link href="/superadmin/schools" className="text-slate-400 hover:text-slate-600 transition-colors">
+          <ArrowLeft className="w-5 h-5" />
+        </Link>
+        <div className="flex-1">
+          <h1 className="text-xl font-semibold text-slate-900">{school.name}</h1>
+          <p className="text-sm text-slate-400">
+            {school.member_count} member{school.member_count !== 1 ? 's' : ''} · {school.paper_count} paper{school.paper_count !== 1 ? 's' : ''}
+          </p>
+        </div>
+        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${school.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+          {school.is_active ? 'Active' : 'Inactive'}
+        </span>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-slate-200">
+        {TABS.map(t => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
+                tab === t.id
+                  ? 'border-blue-600 text-blue-700'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab content */}
+      {tab === 'overview' && (
+        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-900">School Information</h2>
+            <div className="flex gap-2">
+              {editing ? (
+                <>
+                  <button onClick={handleSaveEdit} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                    <Check className="w-3.5 h-3.5" /> Save
+                  </button>
+                  <button onClick={() => setEditing(false)} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors">
+                    <X className="w-3.5 h-3.5" /> Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => setEditing(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors">
+                    <Edit3 className="w-3.5 h-3.5" /> Edit
+                  </button>
+                  <button onClick={handleDeleteSchool} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors">
+                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4">
+            {[
+              { label: 'School Name', field: 'name', type: 'text' },
+              { label: 'Address', field: 'address', type: 'textarea' },
+              { label: 'Phone', field: 'phone', type: 'text' },
+              { label: 'Email', field: 'email', type: 'email' },
+              { label: 'Monthly Token Budget', field: 'monthly_token_budget', type: 'number' },
+            ].map(({ label, field, type }) => (
+              <div key={field} className="flex items-start gap-4">
+                <span className="text-sm text-slate-500 w-40 shrink-0 pt-1">{label}</span>
+                {editing ? (
+                  type === 'textarea' ? (
+                    <textarea
+                      value={editForm[field]}
+                      onChange={e => setEditForm(prev => ({ ...prev, [field]: e.target.value }))}
+                      rows={2}
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    />
+                  ) : (
+                    <input
+                      type={type}
+                      value={editForm[field]}
+                      onChange={e => setEditForm(prev => ({ ...prev, [field]: e.target.value }))}
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  )
+                ) : (
+                  <span className="text-sm text-slate-900">
+                    {field === 'monthly_token_budget'
+                      ? (school[field] > 0 ? school[field].toLocaleString() + ' tokens' : 'Unlimited')
+                      : (school[field] || <span className="text-slate-400">—</span>)
+                    }
+                  </span>
+                )}
+              </div>
+            ))}
+            {editing && (
+              <div className="flex items-center gap-4">
+                <span className="text-sm text-slate-500 w-40 shrink-0">Status</span>
+                <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editForm.is_active}
+                    onChange={e => setEditForm(prev => ({ ...prev, is_active: e.target.checked }))}
+                    className="w-4 h-4 text-blue-600 border-slate-300 rounded"
+                  />
+                  Active
+                </label>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'users' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-slate-500">{users.length} user{users.length !== 1 ? 's' : ''} in this school</p>
+            <button
+              onClick={() => setShowAddUser(!showAddUser)}
+              className="inline-flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Add User
+            </button>
+          </div>
+
+          {showAddUser && (
+            <div className="bg-white border border-slate-200 rounded-xl p-5">
+              <h3 className="text-sm font-semibold text-slate-900 mb-4">New User</h3>
+              {addUserError && <div className="mb-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{addUserError}</div>}
+              <form onSubmit={handleAddUser} className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Username *</label>
+                  <input
+                    type="text"
+                    value={newUser.username}
+                    onChange={e => setNewUser(p => ({ ...p, username: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
+                  <input
+                    type="email"
+                    value={newUser.email}
+                    onChange={e => setNewUser(p => ({ ...p, email: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Password *</label>
+                  <input
+                    type="password"
+                    value={newUser.password}
+                    onChange={e => setNewUser(p => ({ ...p, password: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                    minLength={8}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Role</label>
+                  <select
+                    value={newUser.role}
+                    onChange={e => setNewUser(p => ({ ...p, role: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="teacher">Teacher</option>
+                    <option value="school_admin">School Admin</option>
+                  </select>
+                </div>
+                <div className="col-span-2 flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={addUserLoading}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+                  >
+                    {addUserLoading ? <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Create User'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddUser(false); setAddUserError(null); }}
+                    className="px-4 py-2 border border-slate-300 text-slate-600 text-sm rounded-lg hover:bg-slate-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            {tabLoading ? (
+              <div className="flex justify-center py-10"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
+            ) : users.length === 0 ? (
+              <div className="py-12 text-center text-sm text-slate-400">No users in this school yet</div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">User</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Role</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Joined</th>
+                    <th className="px-4 py-3 w-12" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {users.map(u => (
+                    <tr key={u.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-4 py-3">
+                        <div>
+                          <p className="font-medium text-slate-900">{u.username}</p>
+                          {u.email && <p className="text-xs text-slate-400">{u.email}</p>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                          u.role === 'school_admin' ? 'bg-violet-50 text-violet-700' : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          {u.role === 'school_admin' ? 'School Admin' : 'Teacher'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right text-xs text-slate-400">
+                        {new Date(u.date_joined).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => handleRemoveUser(u.id, u.username)}
+                          className="text-slate-300 hover:text-red-500 transition-colors"
+                          title="Remove user"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'usage' && (
+        <div className="space-y-4">
+          {tabLoading ? (
+            <div className="flex justify-center py-10"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
+          ) : usage ? (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {[
+                  { label: 'Total Papers', value: usage.total_papers },
+                  { label: 'Completed', value: usage.done_papers },
+                  { label: 'Total Tokens', value: usage.total_tokens > 0 ? usage.total_tokens.toLocaleString() : '—' },
+                  { label: 'Total Cost', value: `₹${Number(usage.total_cost).toFixed(4)}` },
+                ].map(({ label, value }) => (
+                  <div key={label} className="bg-white border border-slate-200 rounded-xl p-4">
+                    <p className="text-xs text-slate-500 mb-1">{label}</p>
+                    <p className="text-xl font-semibold text-slate-900">{value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl p-5">
+                <h3 className="text-sm font-semibold text-slate-900 mb-4">This Month</h3>
+                <div className="space-y-3">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Tokens used</span>
+                    <span className="font-medium text-slate-900">{usage.monthly_tokens.toLocaleString()}</span>
+                  </div>
+                  {usage.monthly_token_budget > 0 && (
+                    <>
+                      <div className="w-full bg-slate-100 rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full transition-all ${
+                            (usage.budget_used_pct || 0) > 90 ? 'bg-red-500' :
+                            (usage.budget_used_pct || 0) > 70 ? 'bg-amber-500' : 'bg-blue-500'
+                          }`}
+                          style={{ width: `${Math.min(usage.budget_used_pct || 0, 100)}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs text-slate-400">
+                        <span>{usage.budget_used_pct || 0}% of budget used</span>
+                        <span>Budget: {usage.monthly_token_budget.toLocaleString()} tokens</span>
+                      </div>
+                    </>
+                  )}
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Cost this month</span>
+                    <span className="font-medium text-slate-900">₹{Number(usage.monthly_cost).toFixed(4)}</span>
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="text-sm text-slate-400">No usage data available</div>
+          )}
+        </div>
+      )}
+
+      {tab === 'papers' && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          {tabLoading ? (
+            <div className="flex justify-center py-10"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
+          ) : papers.length === 0 ? (
+            <div className="py-12 text-center text-sm text-slate-400">No papers generated yet</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Paper</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">By</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Cost</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Date</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {papers.map(p => (
+                  <tr key={p.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-slate-900">{p.subject}</p>
+                      <p className="text-xs text-slate-400">Class {p.class_name} · {p.difficulty}</p>
+                    </td>
+                    <td className="px-4 py-3 text-slate-500">{p.created_by || '—'}</td>
+                    <td className="px-4 py-3 text-center">
+                      <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${STATUS_COLORS[p.status] || 'bg-slate-100 text-slate-500'}`}>
+                        {p.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-xs text-slate-500">
+                      {p.cost ? `₹${Number(p.cost).toFixed(4)}` : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-xs text-slate-400">
+                      {new Date(p.created_at).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

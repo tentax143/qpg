@@ -33,12 +33,17 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-qpg-dev-key-no
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["*"]  # Allow all hosts for development, change in production
+ALLOWED_HOSTS = ["*", "qgen.ramcoad.com"]
+
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 CSRF_TRUSTED_ORIGINS = [
+    "https://qgen.ramcoad.com",
     "https://questionpapergeneration.duckdns.org",
     "http://localhost:3000",
-    "http://127.0.0.1:3000"
+    "http://127.0.0.1:3000",
+    "http://localhost:4000",
+    "http://127.0.0.1:4000",
 ]
 
 
@@ -163,15 +168,12 @@ SESSION_COOKIE_AGE = 3600  # Session expires after 1 hour (3600 seconds)
 SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request
 
 # Celery settings
-CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
-CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0"
+CELERY_BROKER_URL = "redis://127.0.0.1:6380/0"
+CELERY_RESULT_BACKEND = "redis://127.0.0.1:6380/0"
 
 
-# Embedding Configuration
-USE_OLLAMA = True  # Set to False to use AWS Bedrock instead
-OLLAMA_MODEL = "all-minilm:l6-v2"  # Your actual Ollama model
-OLLAMA_SERVER = "http://127.0.0.1:11434"
-OLLAMA_SERVERS = ["http://127.0.0.1:11434"]
+# Embedding: OpenRouter nvidia/llama-nemotron-embed-vl-1b-v2:free
+# OPENROUTER_API_KEY is read from .env
 
 # REST Framework Configuration
 REST_FRAMEWORK = {
@@ -182,18 +184,30 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticatedOrReadOnly',
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
     ],
 }
 
 # CORS Configuration - Allow frontend to communicate with backend
 CORS_ALLOWED_ORIGINS = [
+    "https://qgen.ramcoad.com",
     "http://localhost:3000",
     "http://localhost:3001",
+    "http://localhost:4000",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
+    "http://127.0.0.1:4000",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
+
+# Silence ChromaDB telemetry noise — their capture() has a signature bug in this version
+import logging
+logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb.telemetry.product").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 
 

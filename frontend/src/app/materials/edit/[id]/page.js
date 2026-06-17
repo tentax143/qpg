@@ -12,6 +12,7 @@ import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import CustomSelect from '@/components/CustomSelect';
+import { subjectOptions } from '@/lib/subjects';
 
 export default function EditMaterialPage() {
   const router = useRouter();
@@ -140,18 +141,15 @@ export default function EditMaterialPage() {
                 className="space-y-2"
               />
 
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-[10px] font-black text-gray-700 uppercase tracking-widest ml-1">
-                  <FileText size={14} className="text-[#1e293b]" /> Subject
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={formData.subject}
-                  onChange={(e) => handleFieldChange('subject', e.target.value)}
-                  className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-4 focus:ring-[#1e293b]/5 focus:border-[#1e293b] outline-none transition-all font-bold text-gray-700"
-                />
-              </div>
+              <CustomSelect
+                label="Subject"
+                icon={FileText}
+                value={formData.subject}
+                onChange={(val) => handleFieldChange('subject', val)}
+                options={subjectOptions}
+                placeholder="Select Subject"
+                className="space-y-2"
+              />
 
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-[10px] font-black text-gray-700 uppercase tracking-widest ml-1">

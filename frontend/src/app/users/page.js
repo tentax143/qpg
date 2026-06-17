@@ -12,13 +12,20 @@ import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 
+const ROLE_BADGE = {
+  superadmin: 'bg-amber-100/80 text-amber-700 border border-amber-200',
+  school_admin: 'bg-violet-100/80 text-violet-700 border border-violet-200',
+  teacher: 'bg-gray-100/80 text-gray-600 border border-gray-300',
+};
+
 export default function UsersPage() {
   const [users, setUsers] = useState([]);
   const [papers, setPapers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
-  
+  const [currentUser, setCurrentUser] = useState(null);
+
   // New User Form State
   const [newUser, setNewUser] = useState({
     username: '',
@@ -28,6 +35,8 @@ export default function UsersPage() {
   });
 
   useEffect(() => {
+    const stored = localStorage.getItem('user');
+    if (stored) setCurrentUser(JSON.parse(stored));
     fetchData();
   }, []);
 
@@ -93,6 +102,9 @@ export default function UsersPage() {
           <div className="flex items-center gap-2 mb-2">
             <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-black uppercase tracking-wider rounded-full">Administration</span>
             <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+            {currentUser?.school_name && (
+              <span className="px-3 py-1 bg-slate-100 text-slate-600 text-[10px] font-black uppercase tracking-wider rounded-full">{currentUser.school_name}</span>
+            )}
           </div>
           <h1 className="text-4xl font-black text-gray-900 leading-tight tracking-tight">User Management</h1>
           <p className="text-gray-600 font-medium text-lg mt-1 tracking-tight">Configure access and review generated content across the system.</p>
@@ -146,20 +158,22 @@ export default function UsersPage() {
               <p className="text-[9px] text-gray-500 font-bold ml-1 uppercase tracking-wider italic">User will be asked to change on first login.</p>
             </div>
 
-            <div className="lg:pt-10">
-              <label className="flex items-center gap-4 group cursor-pointer p-4 bg-gray-50/80 border border-gray-200 rounded-2xl hover:bg-white hover:shadow-lg hover:shadow-gray-200/50 transition-all duration-300 hover:-translate-y-0.5">
-                <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-300 ${newUser.is_staff ? 'bg-[#1e293b] border-[#1e293b]' : 'border-gray-200 bg-white'}`}>
-                  <input
-                    type="checkbox"
-                    className="hidden"
-                    checked={newUser.is_staff}
-                    onChange={(e) => setNewUser({...newUser, is_staff: e.target.checked})}
-                  />
-                  {newUser.is_staff && <Shield size={12} className="text-white" />}
-                </div>
-                <span className="text-xs font-black text-gray-700 uppercase tracking-widest">Assign Staff Privileges</span>
-              </label>
-            </div>
+            {(!currentUser || currentUser.role === 'superadmin' || currentUser.is_superuser) && (
+              <div className="lg:pt-10">
+                <label className="flex items-center gap-4 group cursor-pointer p-4 bg-gray-50/80 border border-gray-200 rounded-2xl hover:bg-white hover:shadow-lg hover:shadow-gray-200/50 transition-all duration-300 hover:-translate-y-0.5">
+                  <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-300 ${newUser.is_staff ? 'bg-[#1e293b] border-[#1e293b]' : 'border-gray-200 bg-white'}`}>
+                    <input
+                      type="checkbox"
+                      className="hidden"
+                      checked={newUser.is_staff}
+                      onChange={(e) => setNewUser({...newUser, is_staff: e.target.checked})}
+                    />
+                    {newUser.is_staff && <Shield size={12} className="text-white" />}
+                  </div>
+                  <span className="text-xs font-black text-gray-700 uppercase tracking-widest">Assign Staff Privileges</span>
+                </label>
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end">
@@ -202,12 +216,12 @@ export default function UsersPage() {
                     </div>
                   </td>
                   <td className="px-6 py-6 font-bold">
-                    <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all duration-300 ${
-                      u.is_superuser ? 'bg-amber-100/80 text-amber-700 border border-amber-200' : 
-                      u.is_staff ? 'bg-purple-100/80 text-purple-700 border border-purple-200' : 'bg-gray-100/80 text-gray-600 border border-gray-300'
-                    }`}>
-                      {u.is_superuser ? 'Superuser' : u.is_staff ? 'Staff' : 'User'}
-                    </span>
+                    <div className="flex flex-col gap-1">
+                      <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${ROLE_BADGE[u.role] || ROLE_BADGE.teacher}`}>
+                        {u.role === 'superadmin' ? 'Super Admin' : u.role === 'school_admin' ? 'School Admin' : 'Teacher'}
+                      </span>
+                      {u.school_name && <span className="text-[9px] text-gray-400 pl-1">{u.school_name}</span>}
+                    </div>
                   </td>
                   <td className="px-8 py-6">
                     <div className="flex items-center gap-2 text-[10px] font-black text-gray-600 uppercase tracking-tight">

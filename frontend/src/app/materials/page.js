@@ -105,13 +105,12 @@ export default function MaterialsPage() {
     
     try {
       setLoading(true);
-      // Assuming a bulk delete endpoint or sequential deletes
-      await Promise.all(selectedItems.map(id => apiClient.delete(`/materials/${id}/`)));
-      setSuccess(`${selectedItems.length} materials deleted successfully`);
+      await apiClient.post('/materials/bulk-delete/', { ids: selectedItems });
+      setSuccess(`${selectedItems.length} material(s) deleted successfully`);
       setMaterials(prev => prev.filter(m => !selectedItems.includes(m.id)));
       setSelectedItems([]);
     } catch (err) {
-      setError('Failed to perform bulk delete');
+      setError(err.response?.data?.error || 'Failed to perform bulk delete');
     } finally {
       setLoading(false);
     }

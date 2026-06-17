@@ -1,0 +1,187 @@
+{
+  "Section C — Long Answer": {
+    "section_id": "SEC_C",
+    "section_name": "Section C — Long Answer",
+    "questions": [
+      {
+        "qnum": 15,
+        "type": "SA",
+        "text": "Reproductive health is a holistic concept encompassing physical, emotional, and social well-being. Describe any four essential components of a national programme aimed at creating a reproductively healthy society, drawing from the various action plans and support systems mentioned for our country.",
+        "marks": 4.0
+      }
+    ],
+    "title": "",
+    "marks": 4
+  },
+  "Section B — Short Answer": {
+    "section_id": "SEC_B",
+    "section_name": "Section B — Short Answer",
+    "questions": [
+      {
+        "qnum": 11,
+        "type": "SA",
+        "text": "Explain why reproductive health education, focusing on safe sexual practices and STI awareness, is particularly crucial for adolescents. How does it contribute to a socially responsible society?",
+        "marks": 2.0
+      },
+      {
+        "qnum": 12,
+        "type": "SA",
+        "text": "Apart from creating awareness, what are the two broad aspects of support a Reproductive and Child Health Care programme provides to tackle reproduction-related problems? Give one example for each aspect.",
+        "marks": 2.0
+      },
+      {
+        "qnum": 13,
+        "type": "SA",
+        "text": "The implementation of better strategies is necessary for efficient reproductive healthcare. Justify this statement with reference to the statutory ban on amniocentesis for sex-determination.",
+        "marks": 2.0
+      },
+      {
+        "qnum": 14,
+        "type": "SA",
+        "text": "Why is it important to educate fertile couples and people of marriageable age group about birth control options, as mentioned in the text? Explain one related reason.",
+        "marks": 2.0
+      }
+    ],
+    "title": "",
+    "marks": 8
+  },
+  "Section A — Multiple Choice Questions": {
+    "section_id": "SEC_A",
+    "section_name": "Section A — Multiple Choice Questions",
+    "questions": [
+      {
+        "qnum": 1,
+        "type": "MCQ",
+        "text": "What is the primary step towards achieving a reproductively healthy society, as emphasized in the national action plans?",
+        "options": {
+          "a": "Providing advanced surgical facilities for infertility treatments",
+          "b": "Legally banning sex-determination tests",
+          "c": "Counseling and creating awareness about reproductive health and STIs",
+          "d": "Mandating institutional delivery for all pregnancies"
+        },
+        "answer": "c",
+        "marks": 1.0
+      },
+      {
+        "qnum": 2,
+        "type": "MCQ",
+        "text": "Study the diagram below showing two scenarios. Scenario A depicts a society with high awareness campaigns on safe sexual practices, while Scenario B shows one without such programs. Which conclusion can be best drawn regarding Scenario A?",
+        "image_prompt": "A split diagram. Left side (Scenario A) shows a group of diverse young adults looking at informative posters about STIs and contraception, with a low, flat line graph labeled 'STI Incidence'. Right side (Scenario B) shows a similar group in a dim setting, looking confused, with a steeply rising line graph labeled 'STI Incidence'.",
+        "options": {
+          "a": "It leads to a higher rate of medical termination of pregnancy.",
+          "b": "It is ineffective without mandatory immunization programs.",
+          "c": "It contributes to building a socially responsible and healthy society.",
+          "d": "It increases the need for statutory bans on diagnostic techniques."
+        },
+        "answer": "c",
+        "marks": 1.0
+      },
+      {
+        "qnum": 3,
+        "type": "MCQ",
+        "text": "A couple is seeking guidance under the Reproductive and Child Health Care programme. Which of the following would NOT be considered a core aspect of medical care provided to them?",
+        "options": {
+          "a": "Management of infertility issues",
+          "b": "Counselling on safe sexual practices",
+          "c": "Postnatal care for the mother and child",
+          "d": "Financial planning for the child's education"
+        },
+        "answer": "d",
+        "marks": 1.0
+      },
+      {
+        "qnum": 4,
+        "type": "MCQ",
+        "text": "The implementation of better techniques and new strategies in reproductive health care is primarily aimed at:",
+        "options": {
+          "a": "Reducing the cost of all medical procedures.",
+          "b": "Providing more efficient care and assistance to people.",
+          "c": "Focusing solely on adolescent health problems.",
+          "d": "Replacing all traditional methods of birth control."
+        },
+        "answer": "b",
+        "marks": 1.0
+      },
+      {
+        "qnum": 5,
+        "type": "MCQ",
+        "text": "Statutory ban on amniocentesis for sex-determination is a program that merits attention because it aims to:",
+        "options": {
+          "a": "Promote the use of advanced genetic screening technologies.",
+          "b": "Increase the overall rate of prenatal diagnostic procedures.",
+          "c": "Legally check the increasing menace of female foeticide.",
+          "d": "Ensure mandatory sex determination for all pregnancies."
+        },
+        "answer": "c",
+        "marks": 1.0
+      },
+      {
+        "qnum": 6,
+        "type": "MCQ",
+        "text": "Which of the following is a combination of infrastructural needs for the successful implementation of reproductive health action plans?",
+        "options": {
+          "a": "Professional expertise, material support, and legal frameworks only.",
+          "b": "Strong infrastructural facilities, professional expertise, and material support.",
+          "c": "Mass media campaigns and statutory bans only.",
+          "d": "Adolescent education programs and immunization drives only."
+        },
+        "answer": "b",
+        "marks": 1.0
+      },
+      {
+        "qnum": 7,
+        "type": "MCQ",
+        "text": "Educating people in the marriageable age group about available birth control options primarily addresses which aspect of the Reproductive and Child Health Care programme?",
+        "options": {
+          "a": "Treatment of sexually transmitted infections.",
+          "b": "Prevention of menstrual irregularities.",
+          "c": "Care of pregnant mothers and postnatal management.",
+          "d": "Planning and spacing of pregnancies for maternal and child health."
+        },
+        "answer": "d",
+        "marks": 1.0
+      },
+      {
+        "qnum": 8,
+        "type": "MCQ",
+        "text": "Massive child immunization programs are highlighted as a merit because they:",
+        "options": {
+          "a": "Directly reduce the incidence of sexually transmitted diseases.",
+          "b": "Are a key component of building a reproductively healthy society.",
+          "c": "Replace the need for antenatal care for the mother.",
+          "d": "Focus solely on the physical health of adolescents."
+        },
+        "answer": "b",
+        "marks": 1.0
+      },
+      {
+        "qnum": 9,
+        "type": "MCQ",
+        "text": "A 'reproductively healthy society' as described in the text encompasses well-being in:",
+        "options": {
+          "a": "Only the physical and emotional aspects of reproduction.",
+          "b": "Physical, emotional, behavioural, and social aspects of reproduction.",
+          "c": "The economic and educational status of individuals.",
+          "d": "The legal and political frameworks governing reproduction."
+        },
+        "answer": "b",
+        "marks": 1.0
+      },
+      {
+        "qnum": 10,
+        "type": "MCQ",
+        "text": "Medical assistance and care for problems like contraception and infertility fall under which broader category as per the text?",
+        "options": {
+          "a": "Adolescence awareness programs.",
+          "b": "Reproduction-related problems requiring professional support.",
+          "c": "Statutory bans for social correction.",
+          "d": "Exclusive post-natal care initiatives."
+        },
+        "answer": "b",
+        "marks": 1.0
+      }
+    ],
+    "title": "",
+    "marks": 10
+  }
+}

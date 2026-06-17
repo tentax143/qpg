@@ -8,7 +8,7 @@ import {
   User, Hash, Zap, BookOpen, Layers, 
   ChevronRight, ChevronDown, ChevronUp, Code,
   Settings, Info, ShieldCheck, Download, Plus,
-  Sparkles, Clock, GraduationCap, CheckCircle, FileText
+  Clock, GraduationCap, CheckCircle, FileText
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -96,7 +96,6 @@ export default function PatternDetailPage() {
                 <h1 className="text-3xl font-black text-gray-900 tracking-tight uppercase">{pattern.name}</h1>
                 {pattern.pattern_source === 'ai_generated' && (
                   <span className="px-3 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-black uppercase tracking-widest rounded-full flex items-center gap-1.5 border border-emerald-100">
-                    <Sparkles size={12} />
                     AI Generated
                   </span>
                 )}
@@ -349,7 +348,6 @@ export default function PatternDetailPage() {
           {pattern.ai_prompt && (
             <div className="bg-white rounded-[32px] shadow-sm border border-gray-100 overflow-hidden">
               <div className="p-6 border-b border-gray-50 bg-white/50 flex items-center gap-3">
-                <Sparkles className="text-emerald-500" size={20} />
                 <h2 className="text-lg font-black text-gray-900 uppercase tracking-tight">Original Teacher Input (AI Generated)</h2>
               </div>
               <div className="p-8">

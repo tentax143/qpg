@@ -4,23 +4,10 @@ Converts teacher's text input into comprehensive exam patterns with instructions
 Replaces the old blueprint system with a unified pattern approach.
 """
 import json
-import boto3
-from botocore.config import Config
 import re
+from . import mantle_client
 
-# Bedrock setup
-client = boto3.client(
-    "bedrock-runtime",
-    region_name="us-east-1",
-    config=Config(
-        read_timeout=300,
-        connect_timeout=60,
-        retries={'max_attempts': 3}
-    )
-)
-
-# Use Claude for pattern generation
-MODEL_ID = "arn:aws:bedrock:us-east-1:659260838757:inference-profile/global.anthropic.claude-sonnet-4-20250514-v1:0"
+MODEL_ID = mantle_client.GEN_MODEL
 
 
 def generate_pattern_from_text(teacher_input, class_name, subject, exam_name=""):
@@ -154,23 +141,12 @@ IMPORTANT:
 Generate the pattern JSON now:"""
 
     try:
-        # Call Bedrock
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            "max_tokens": 3000,
-            "temperature": 0.2,  # Lower temperature for consistent output
-        }
-
-        response = client.invoke_model(
-            body=json.dumps(body),
-            contentType="application/json",
-            accept="application/json",
-            modelId=MODEL_ID,
+        ai_response, _, _ = mantle_client.converse(
+            model_id=MODEL_ID,
+            prompt=prompt,
+            max_tokens=3000,
+            temperature=0.2,
         )
-
-        result = json.loads(response["body"].read())
-        ai_response = result["content"][0]["text"]
 
         # Clean the response
         ai_response = ai_response.strip()
@@ -191,7 +167,6 @@ Generate the pattern JSON now:"""
 
     except json.JSONDecodeError as e:
         print(f"Error parsing AI response: {e}")
-        print(f"AI Response: {ai_response}")
         return create_default_pattern(class_name, subject, exam_name)
     except Exception as e:
         print(f"Error generating pattern: {e}")
