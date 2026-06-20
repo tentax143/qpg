@@ -10,7 +10,7 @@ Use --force to delete and re-create all.
 
 from django.core.management.base import BaseCommand
 from core.models import ExamPattern
-from core.data.cbse_patterns import PATTERNS, EXAM_TYPES
+from core.data.cbse_patterns import PATTERNS, PATTERNS_MIDDLE_SCHOOL, EXAM_TYPES
 
 
 def _sections_from_pattern(pattern: dict) -> list:
@@ -20,8 +20,30 @@ def _sections_from_pattern(pattern: dict) -> list:
 
     for s in sections_raw:
         name = s.get("name", "")
+
+        # Compound subject format: sections keyed by subject (Biology, Chemistry, etc.)
+        if "subject" in s:
+            result.append({
+                "name": name,
+                "subject": s["subject"],
+                "title": s["subject"],
+                "marks": s.get("total", 0),
+                "questions": s.get("count", 0),
+                "internal_choice": s.get("internal_choice", False),
+                "choices": s.get("choices", 0),
+                "hots": s.get("hots", 0),
+                "cbq": s.get("cbq", 0),
+                "notes": s.get("notes", ""),
+                "question_types": s.get("question_types", []),
+            })
+            continue
+
+        # Traditional format: sections keyed by question type (MCQ, VSA, SA, etc.)
         q_type = s.get("type", "")
-        count = s.get("count") or s.get("attempt") or 0
+        provided = s.get("count") or 0
+        attempt = s.get("attempt")
+        # Use provided count for generation; fall back to attempt if count absent
+        count = provided or attempt or 0
         marks_each = s.get("marks_each")
         total = s.get("total") or (
             count * marks_each if isinstance(marks_each, (int, float)) else 0
@@ -33,7 +55,8 @@ def _sections_from_pattern(pattern: dict) -> list:
             "name": name,
             "title": q_type,
             "marks": total,
-            "questions": count,
+            "questions": count,       # total questions printed in paper
+            "attempt": attempt,       # MO-01: students attempt this many (None if N/A)
             "marks_each": marks_each,
             "internal_choice": choice,
             "notes": notes,
@@ -93,7 +116,9 @@ class Command(BaseCommand):
         created_count = 0
         skipped_count = 0
 
-        for subject_name, pattern in PATTERNS.items():
+        all_patterns = list(PATTERNS.items()) + list(PATTERNS_MIDDLE_SCHOOL.items())
+
+        for subject_name, pattern in all_patterns:
             if only_subject and subject_name.lower() != only_subject.lower():
                 continue
 

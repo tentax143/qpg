@@ -15,6 +15,7 @@ export default function NewSchoolPage() {
     email: '',
     monthly_token_budget: '',
     is_active: true,
+    access_shared_vector_store: false,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -136,6 +137,25 @@ export default function NewSchoolPage() {
               className="w-4 h-4 text-blue-600 border-slate-300 rounded"
             />
             <label htmlFor="is_active" className="text-sm text-slate-700">Active</label>
+          </div>
+
+          <div className="border border-blue-100 bg-blue-50 rounded-lg p-4 space-y-1">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="access_shared_vector_store"
+                name="access_shared_vector_store"
+                checked={form.access_shared_vector_store}
+                onChange={handleChange}
+                className="w-4 h-4 text-blue-600 border-slate-300 rounded"
+              />
+              <label htmlFor="access_shared_vector_store" className="text-sm font-medium text-slate-700">
+                Grant access to shared textbook vector store
+              </label>
+            </div>
+            <p className="text-xs text-slate-500 ml-6">
+              A copy of all shared textbook data (subjects, chapters, embeddings) will be copied to this school. Private materials from other schools are not shared.
+            </p>
           </div>
 
           <div className="flex gap-3 pt-2">

@@ -103,28 +103,45 @@ function rawToEditorSection(s, idx) {
   const letterMatch = rawName.match(/^([A-Z])/i);
   const id = letterMatch ? letterMatch[1].toUpperCase() : String.fromCharCode(65 + idx);
 
-  const count     = typeof s.count === 'number' ? s.count : (s.sub ? s.sub.length : 1);
-  const total     = typeof s.total === 'number' ? s.total : count;
+  const isCompound = Boolean(s.subject);
+  const count     = typeof s.count === 'number' ? s.count
+                  : typeof s.questions === 'number' ? s.questions
+                  : (s.sub ? s.sub.length : 1);
+  const total     = typeof s.total === 'number' ? s.total
+                  : typeof s.marks === 'number' ? s.marks
+                  : count;
   const marksEach = typeof s.marks_each === 'number'
     ? s.marks_each
     : (count > 0 ? Math.round((total / count) * 10) / 10 : 1);
 
   let notes = s.notes || '';
-  if (!notes && s.sub) {
-    notes = s.sub.slice(0, 4).map(q => q.type?.slice(0, 45)).filter(Boolean).join('; ');
-  }
-  if (s.internal_choice && s.choices && !notes.includes(s.choices)) {
-    notes = [notes, s.choices].filter(Boolean).join(' | ');
+  if (isCompound) {
+    // For compound sections, build notes from HOTS/CBQ/choice metadata
+    const parts = [];
+    if (s.hots)    parts.push(`${s.hots} HOTS`);
+    if (s.cbq)     parts.push(`${s.cbq} CBQ`);
+    if (s.choices) parts.push(`${s.choices} internal choice${s.choices > 1 ? 's' : ''}`);
+    if (s.notes)   parts.push(s.notes);
+    notes = parts.join(' | ');
+  } else {
+    if (!notes && s.sub) {
+      notes = s.sub.slice(0, 4).map(q => q.type?.slice(0, 45)).filter(Boolean).join('; ');
+    }
+    if (s.internal_choice && s.choices && !notes.includes(s.choices)) {
+      notes = [notes, s.choices].filter(Boolean).join(' | ');
+    }
   }
 
   return {
     id,
-    name:               `Section ${id}`,
+    name:               isCompound ? `§ ${id} — ${s.subject}` : `Section ${id}`,
     questions_count:    count,
-    marks_per_question: marksEach,
+    marks_per_question: isCompound ? 'Varies' : marksEach,
     marks:              total,
-    question_type:      inferQType(s.type || s.title || ''),
+    question_type:      isCompound ? s.subject : inferQType(s.type || s.title || ''),
     instructions:       notes,
+    // Preserve compound metadata for display
+    ...(isCompound && { subject: s.subject, isCompound: true, hots: s.hots, cbq: s.cbq }),
   };
 }
 
@@ -141,33 +158,69 @@ function patternToText(rawPattern, examKey, subj, cls) {
   ];
 
   for (const s of (rawPattern.sections || [])) {
-    const rawName  = (s.name || '').split(/[—–\-]/)[0].trim();
-    const type     = s.type || s.title || '';
-    const count    = typeof s.count === 'number' ? s.count : (s.sub ? s.sub.length : null);
-    const mEach    = typeof s.marks_each === 'number' ? s.marks_each : null;
-    const total    = typeof s.total === 'number' ? s.total : null;
+    const rawName    = (s.name || '').split(/[—–\-]/)[0].trim();
+    const isCompound = Boolean(s.subject);
 
-    lines.push(`Section ${rawName} — ${type}`);
+    if (isCompound) {
+      // Compound subject section (e.g. Biology, History, etc.)
+      const subject  = s.subject;
+      const count    = s.count  ?? s.questions ?? 0;
+      const total    = s.total  ?? s.marks     ?? 0;
+      const hots     = s.hots   ?? 0;
+      const cbq      = s.cbq    ?? 0;
+      const choices  = s.choices ?? 0;
 
-    if (count !== null && mEach !== null && total !== null) {
-      lines.push(`${count} question${count !== 1 ? 's' : ''} × ${mEach} mark${mEach !== 1 ? 's' : ''} each = ${total} marks`);
-    } else if (total !== null) {
-      lines.push(`Total: ${total} marks`);
-      if (s.sub) {
-        for (const sub of s.sub) {
-          const q  = sub.q   ? `${sub.q}: ` : '';
-          const t  = sub.type ? sub.type.slice(0, 60) : '';
-          const m  = sub.marks ? ` (${sub.marks} marks)` : '';
-          lines.push(`  ${q}${t}${m}`);
+      lines.push(`§ ${rawName} — ${subject} (${count} questions, ${total} marks)`);
+
+      // Blueprint summary
+      const blueprintInfo = [
+        hots   ? `${hots} HOTS`          : null,
+        cbq    ? `${cbq} CBQ`            : null,
+        choices ? `${choices} internal choice${choices > 1 ? 's' : ''}` : (s.internal_choice ? 'Internal choice' : null),
+      ].filter(Boolean);
+      if (blueprintInfo.length) lines.push(blueprintInfo.join(' · '));
+
+      // Notes line
+      if (s.notes) lines.push(s.notes);
+
+      // Per-question-type breakdown
+      if (Array.isArray(s.question_types) && s.question_types.length) {
+        for (const qt of s.question_types) {
+          const typeLabel = qt.type || '';
+          const tot       = qt.total ?? (qt.count * qt.marks_each);
+          lines.push(`  ${qt.range || `${qt.count}Q`}: ${typeLabel} (${qt.count} × ${qt.marks_each}M = ${tot}M)`);
         }
       }
+    } else {
+      // Traditional section keyed by question type
+      const type  = s.type || s.title || '';
+      const count = typeof s.count === 'number' ? s.count : (s.sub ? s.sub.length : null);
+      const mEach = typeof s.marks_each === 'number' ? s.marks_each : null;
+      const total = typeof s.total === 'number' ? s.total : null;
+
+      lines.push(`Section ${rawName} — ${type}`);
+
+      if (count !== null && mEach !== null && total !== null) {
+        lines.push(`${count} question${count !== 1 ? 's' : ''} × ${mEach} mark${mEach !== 1 ? 's' : ''} each = ${total} marks`);
+      } else if (total !== null) {
+        lines.push(`Total: ${total} marks`);
+        if (s.sub) {
+          for (const sub of s.sub) {
+            const q = sub.q    ? `${sub.q}: ` : '';
+            const t = sub.type ? sub.type.slice(0, 60) : '';
+            const m = sub.marks ? ` (${sub.marks} marks)` : '';
+            lines.push(`  ${q}${t}${m}`);
+          }
+        }
+      }
+
+      const extras = [];
+      if (s.notes)    extras.push(s.notes);
+      if (s.choices && typeof s.choices === 'string')  extras.push(s.choices);
+      if (s.internal_choice && !s.choices) extras.push('Internal choice available');
+      if (extras.length) lines.push(extras.join(' | '));
     }
 
-    const extras = [];
-    if (s.notes)    extras.push(s.notes);
-    if (s.choices)  extras.push(s.choices);
-    if (s.internal_choice && !s.choices) extras.push('Internal choice available');
-    if (extras.length) lines.push(extras.join(' | '));
     lines.push('');
   }
 
@@ -658,12 +711,22 @@ export default function CreatePatternPage() {
 
                           {/* Section letter badge */}
                           <div className="flex items-center gap-3 min-w-[80px]">
-                            <div className="w-10 h-10 rounded-2xl bg-blue-600 flex items-center justify-center shrink-0">
+                            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${section.isCompound ? 'bg-indigo-600' : 'bg-blue-600'}`}>
                               <span className="text-white font-black text-sm">{section.id}</span>
                             </div>
                             <div>
-                              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Section</p>
-                              <p className="text-xs font-black text-gray-700">{section.id}</p>
+                              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                                {section.isCompound ? '§' : 'Section'}
+                              </p>
+                              <p className="text-xs font-black text-gray-700">
+                                {section.isCompound ? section.subject : section.id}
+                              </p>
+                              {section.isCompound && (
+                                <div className="flex gap-1 mt-0.5">
+                                  {section.hots > 0 && <span className="text-[8px] font-black text-amber-600 bg-amber-50 rounded px-1">{section.hots} HOTS</span>}
+                                  {section.cbq > 0 && <span className="text-[8px] font-black text-purple-600 bg-purple-50 rounded px-1">{section.cbq} CBQ</span>}
+                                </div>
+                              )}
                             </div>
                           </div>
 

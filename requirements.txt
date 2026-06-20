@@ -32,6 +32,13 @@ torch==2.1.2
 # HTTP Requests
 requests==2.31.0
 
+# Molecular structure rendering (for chemistry CBQ questions)
+rdkit
+
+# Web Scraping (CBSE SQP fetcher)
+beautifulsoup4==4.15.0
+lxml
+
 # JSON Processing
 jsonschema==4.20.0
 

@@ -74,9 +74,9 @@ class MaterialSerializer(serializers.ModelSerializer):
         model = Material
         fields = [
             'id', 'class_name', 'subject', 'unit', 'title', 'type', 'type_display',
-            'file', 'metadata', 'uploaded_by', 'uploaded_at'
+            'file', 'metadata', 'school', 'uploaded_by', 'uploaded_at'
         ]
-        read_only_fields = ['id', 'uploaded_at']
+        read_only_fields = ['id', 'school', 'uploaded_at']
 
 
 class BlueprintTemplateSerializer(serializers.ModelSerializer):

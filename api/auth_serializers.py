@@ -7,11 +7,12 @@ class UserSerializer(serializers.ModelSerializer):
     role = serializers.SerializerMethodField()
     school_id = serializers.SerializerMethodField()
     school_name = serializers.SerializerMethodField()
+    allowed_subject = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser',
-                  'last_login', 'date_joined', 'role', 'school_id', 'school_name')
+                  'last_login', 'date_joined', 'role', 'school_id', 'school_name', 'allowed_subject')
         read_only_fields = ('id', 'last_login', 'date_joined')
 
     def get_role(self, obj):
@@ -32,6 +33,9 @@ class UserSerializer(serializers.ModelSerializer):
             return school.name if school else None
         except Exception:
             return None
+
+    def get_allowed_subject(self, obj):
+        return getattr(obj.profile, 'allowed_subject', None) if hasattr(obj, 'profile') else None
 
 class CreateUserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)

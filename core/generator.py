@@ -27,6 +27,13 @@ VAL_MODEL_ID = mantle_client.VAL_MODEL
 
 
 
+def _qt_str(qt) -> str:
+    """Safely extract a lowercase type string from a question_type that may be str or dict."""
+    if isinstance(qt, dict):
+        return str(qt.get("type", "")).lower()
+    return str(qt).lower()
+
+
 # ------------------------------
 # Mantle helper (replaces call_bedrock)
 # ------------------------------
@@ -182,7 +189,7 @@ def get_legacy_blueprint(class_name, subject, section=None):
 # ------------------------------
 # Universal Context Retrieval
 # ------------------------------
-def get_universal_context(class_name, subject, chapters, question_types=None, variation_offset=0):
+def get_universal_context(class_name, subject, chapters, question_types=None, variation_offset=0, school_id=None):
     """
     Universal context retrieval system that works for all subjects and question types.
     Uses variation_offset to retrieve different context chunks each time for more variation.
@@ -225,19 +232,20 @@ def get_universal_context(class_name, subject, chapters, question_types=None, va
     if question_types:
         # Add subject-specific queries based on question types
         for qtype in question_types:
-            if qtype in ["unseen_passage", "case_based"]:
+            ql = _qt_str(qtype)
+            if ql in ["unseen_passage", "case_based"]:
                 base_queries.append(f"{subject} reading comprehension passages")
                 base_queries.append(f"{subject} case studies examples")
-            elif qtype in ["mcq", "assertion_reason"]:
+            elif ql in ["mcq", "assertion_reason"]:
                 base_queries.append(f"{subject} multiple choice questions")
                 base_queries.append(f"{subject} facts and concepts")
-            elif qtype in ["writing_tasks", "grammar"]:
+            elif ql in ["writing_tasks", "grammar"]:
                 base_queries.append(f"{subject} writing skills")
                 base_queries.append(f"{subject} grammar rules")
-            elif qtype in ["extract_based", "short_answer", "long_answer"]:
+            elif ql in ["extract_based", "short_answer", "long_answer"]:
                 base_queries.append(f"{subject} detailed explanations")
                 base_queries.append(f"{subject} important topics")
-            elif qtype in ["numerical", "proof"]:
+            elif ql in ["numerical", "proof"]:
                 base_queries.append(f"{subject} solved examples")
                 base_queries.append(f"{subject} mathematical problems")
     
@@ -256,11 +264,12 @@ def get_universal_context(class_name, subject, chapters, question_types=None, va
                 # Vary n_results slightly for variation
                 n_results = 50 + variation_offset % 10
                 results = embeddings.query(
-                    class_name=class_name, 
-                    subject=subject, 
+                    class_name=class_name,
+                    subject=subject,
                     unit=chapter,
-                    query_text=query, 
-                    n_results=n_results
+                    query_text=query,
+                    n_results=n_results,
+                    school_id=school_id,
                 )
                 
                 if results and "documents" in results:
@@ -480,31 +489,32 @@ def get_question_type_instructions(question_types, subject):
     instructions = []
     
     for qtype in question_types:
-        if qtype == "unseen_passage":
+        ql = _qt_str(qtype)
+        if ql == "unseen_passage":
             instructions.append("• Unseen Passage: Include a reading comprehension passage with 5-6 questions based on the passage")
-        elif qtype == "case_based":
+        elif ql == "case_based":
             instructions.append("• Case-based: Create scenario-based questions that test application of concepts")
-        elif qtype == "mcq":
+        elif ql == "mcq":
             instructions.append("• Multiple Choice: Create 4-option MCQs with one correct answer and plausible distractors")
-        elif qtype == "assertion_reason":
+        elif ql == "assertion_reason":
             instructions.append("• Assertion-Reason: Create statements with assertion and reason, test logical relationship")
-        elif qtype == "grammar":
+        elif ql == "grammar":
             instructions.append("• Grammar: Focus on grammatical concepts, sentence correction, and language usage")
-        elif qtype == "writing_tasks":
+        elif ql == "writing_tasks":
             instructions.append("• Writing Tasks: Include essay writing, letter writing, or other composition tasks")
-        elif qtype == "extract_based":
+        elif ql == "extract_based":
             instructions.append("• Extract-based: Provide literary extracts and ask questions based on them")
-        elif qtype == "short_answer":
+        elif ql == "short_answer":
             instructions.append("• Short Answer: Create questions requiring brief, focused responses (2-3 sentences)")
-        elif qtype == "long_answer":
+        elif ql == "long_answer":
             instructions.append("• Long Answer: Create questions requiring detailed, comprehensive responses")
-        elif qtype == "very_short_answer":
+        elif ql == "very_short_answer":
             instructions.append("• Very Short Answer: Create questions requiring one-word or one-sentence responses")
-        elif qtype == "numerical":
+        elif ql == "numerical":
             instructions.append("• Numerical: Create problems requiring mathematical calculations and solutions")
-        elif qtype == "proof":
+        elif ql == "proof":
             instructions.append("• Proof: Create questions requiring mathematical proofs or logical reasoning")
-        elif qtype == "or_choice":
+        elif ql == "or_choice":
             instructions.append("• Either/Or: Provide alternative questions where students choose one to answer")
     
     return "\n".join(instructions) if instructions else ""
@@ -718,8 +728,12 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
         print(f"[DEBUG] Processing section {sec}: {sec_info.get('title', 'NO TITLE')}")
         title = sec_info.get('title', '') or ''
         marks = sec_info.get('marks', 0)
-        # Only append title if it's non-empty AND not just the section name repeated
-        if title and title.lower() not in ('section', sec.lower()):
+        # M-03: include sub-subject name for compound papers
+        sub_subject = sec_info.get('section_subject', '') or ''
+        if sub_subject:
+            # e.g. "SECTION A — BIOLOGY (26 MARKS)"
+            header_text = f"SECTION {sec} — {sub_subject.upper()} ({marks} MARKS)"
+        elif title and title.lower() not in ('section', sec.lower()):
             header_text = f"SECTION – {sec}: {title.upper()} ({marks} MARKS)"
         else:
             header_text = f"SECTION – {sec} ({marks} MARKS)"
@@ -782,8 +796,8 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                         json_qtypes = key_data.get('question_types', [])
                         if json_qtypes:
                             # Check if any question types overlap
-                            json_qtypes_lower = [str(qt).lower() for qt in json_qtypes]
-                            sec_qtypes_lower = [str(qt).lower() for qt in section_question_types]
+                            json_qtypes_lower = [_qt_str(qt) for qt in json_qtypes]
+                            sec_qtypes_lower = [_qt_str(qt) for qt in section_question_types]
                             overlap = [qt for qt in sec_qtypes_lower if qt in json_qtypes_lower]
                             if overlap:
                                 section_key = key
@@ -890,6 +904,11 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                 
                 # Handle sections with passages or extracts
                 if isinstance(section_data, dict):
+                    if 'image_path' in section_data:
+                        img_path = section_data.get('image_path', '')
+                        if img_path and os.path.isfile(img_path):
+                            all_questions.append(("image", img_path))
+
                     if 'passage' in section_data:
                         passage_text = section_data.get('passage', '')
                         if passage_text:
@@ -1104,6 +1123,7 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
     elif "text" in q and not ("passage" in q or "extract" in q):
         # Handle questions that have only "text" field (new structure)
         text_content = q.get("text", "")
+        q_type = q.get("type", "")
         _raw_opts = q.get("options")
         # Normalize dict options {"a": "...", "b": "..."} → list (parallel pipeline format)
         if isinstance(_raw_opts, dict):
@@ -1121,13 +1141,27 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
             marks_suffix = _marks_suffix(marks_raw)
             all_questions.append(("q", f"{qnum}. {text_content}{marks_suffix}"))
 
+            # Render sub_questions for image_based / source_based CBQ
+            sub_qs = q.get("sub_questions") or []
+            if isinstance(sub_qs, list) and sub_qs:
+                _letters = "abcdefghij"
+                for _si, _sq in enumerate(sub_qs):
+                    _lbl = f"({_letters[_si]})" if _si < len(_letters) else f"({_si + 1})"
+                    if isinstance(_sq, dict):
+                        _sq_text   = str(_sq.get("text", "")).strip()
+                        _sq_marks  = _sq.get("marks")
+                        _sq_suffix = _marks_suffix(_sq_marks)
+                        if _sq_text:
+                            all_questions.append(("subq", f"{_lbl} {_sq_text}{_sq_suffix}"))
+                    elif isinstance(_sq, str) and _sq.strip():
+                        all_questions.append(("subq", f"{_lbl} {_sq.strip()}"))
+
             # Save question for tracking and deduplication
             if class_name and subject:
                 try:
-                    question_type = q.get("type", "")
                     marks = q.get("marks", 1)
                     chapter = chapters[0] if chapters else None
-                    save_generated_question(text_content, class_name, subject, chapter, question_type, marks, paper_id)
+                    save_generated_question(text_content, class_name, subject, chapter, q_type, marks, paper_id)
                 except Exception as e:
                     print(f"[Variation] Error saving question: {e}")
 
@@ -1141,6 +1175,17 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
         if _img_p and len(_img_p) > 10:
             all_questions.append(('image_gen', _img_p))
+
+        # M-04: map work note
+        map_note = str(q.get('map_note', '') or '').strip()
+        if map_note or q_type == "map_work":
+            all_questions.append(("instruction", map_note or "[Attach outline map — examiner to supply]"))
+
+        # M-02: OR alternative for LA questions
+        or_alt = str(q.get('or_alternative', '') or '').strip()
+        if or_alt:
+            all_questions.append(("or", "OR"))
+            all_questions.append(("q", f"{qnum}. {or_alt}{_marks_suffix(q.get('marks'))}"))
 
     elif "question" in q and "or" in q:
         question_text = q.get("question", "")
@@ -1188,11 +1233,11 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
 # ------------------------------
 # Science/Maths generator
 # ------------------------------
-def generate_science_paper(class_name, subject, chapters, difficulty, pattern, blueprint, summary_file=None, model_source='aws'):
+def generate_science_paper(class_name, subject, chapters, difficulty, pattern, blueprint, summary_file=None, model_source='aws', school_id=None):
     contexts = []
     for ch in chapters:
         results = embeddings.query(class_name=class_name, subject=subject, unit=ch,
-                                   query_text=f"{subject} important NCERT concepts", n_results=100)
+                                   query_text=f"{subject} important NCERT concepts", n_results=100, school_id=school_id)
         for docs in results["documents"]:
             contexts.extend(docs)
     context_text = "\n".join(contexts)
@@ -1275,7 +1320,7 @@ Rules:
 Context:
 {context_text}
 """
-    raw_json, _, _ = call_bedrock(gen_prompt, GEN_MODEL_ID, temperature=0.7)
+    raw_json, _, _ = call_bedrock(gen_prompt, GEN_MODEL_ID, temperature=0.7, max_tokens=16384)
 
     validator_prompt = f"""
 You are a strict JSON validator.
@@ -1285,7 +1330,7 @@ Output only JSON.
 
 {raw_json}
 """
-    validated, _, _ = call_bedrock(validator_prompt, VAL_MODEL_ID, temperature=0.3)
+    validated, _, _ = call_bedrock(validator_prompt, VAL_MODEL_ID, temperature=0.3, max_tokens=16384)
     data = enforce_json(validated)
     
     # Log generation results to summary file
@@ -1359,18 +1404,14 @@ Output only JSON.
 # ------------------------------
 # English Core generator
 # ------------------------------
-def generate_english_paper(class_name, subject, chapters, difficulty, pattern, blueprint, summary_file=None, model_source='aws'):
+def generate_english_paper(class_name, subject, chapters, difficulty, pattern, blueprint, summary_file=None, model_source='aws', school_id=None):
     # Blueprint is already normalized by BlueprintManager.get_blueprint()
     print(f"[Blueprint] Blueprint structure (already normalized): {list(blueprint.keys()) if isinstance(blueprint, dict) else 'Not a dict'}")
 
-    lesson_names = [
-        "The Portrait of a Lady", "We're Not Afraid to Die... if We Can Be Together",
-        "Discovering Tut: The Saga Continues", "A Photograph",
-        "The Laburnum Top", "The Voice of the Rain",
-        "The Summer of the Beautiful White Horse", "The Address", "Mother's Day"
-    ]
+    from .data.cbse_patterns import get_english_lessons
+    lesson_names = get_english_lessons(class_name)
 
-    # Use selected chapters if available, otherwise use all lesson names
+    # Use selected chapters if available, otherwise fall back to full class lesson list
     selected_lessons = chapters if chapters else lesson_names
 
     print(f"[Embeddings] Querying embeddings for {len(selected_lessons)} chapters...")
@@ -1378,7 +1419,7 @@ def generate_english_paper(class_name, subject, chapters, difficulty, pattern, b
     for ch in selected_lessons:
         print(f"[Embeddings] Querying chapter: {ch}")
         results = embeddings.query(class_name=class_name, subject=subject, unit=ch,
-                                   query_text="important NCERT extract content", n_results=50)
+                                   query_text="important NCERT extract content", n_results=50, school_id=school_id)
         print(f"[Embeddings] Found {len(results['documents'])} document chunks for {ch}")
         for docs in results["documents"]:
             contexts.extend(docs)
@@ -1467,8 +1508,8 @@ Generate the question paper now:
     print(f"[Generation] Starting question paper generation...")
     print(f"[Generation] Using model: {GEN_MODEL_ID}")
     
-    raw_json, _, _ = call_bedrock(gen_prompt, GEN_MODEL_ID, temperature=0.7)
-    
+    raw_json, _, _ = call_bedrock(gen_prompt, GEN_MODEL_ID, temperature=0.7, max_tokens=16384)
+
     # Log the complete raw response
     print(f"[Generation] Raw response received: {len(raw_json)} characters")
     print(f"[Generation] Raw response preview: {raw_json[:200]}...")
@@ -1509,8 +1550,8 @@ INPUT JSON TO FIX:
 OUTPUT: Return ONLY the corrected JSON, no explanations.
 """
     
-    validated, _, _ = call_bedrock(validator_prompt, VAL_MODEL_ID, temperature=0.3)
-    
+    validated, _, _ = call_bedrock(validator_prompt, VAL_MODEL_ID, temperature=0.3, max_tokens=16384)
+
     print(f"[Validation] Validation response received: {len(validated)} characters")
     print(f"[Validation] Validation response preview: {validated[:200]}...")
     
@@ -1574,6 +1615,53 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
     summary = {sec: {"title": sec_info["title"], "marks": sec_info["marks"]}
                for sec, sec_info in blueprint.items()}
     return render_docx(class_name, subject, chapters, all_questions, summary)
+
+
+# ------------------------------
+# Math notation helpers
+# ------------------------------
+_UNICODE_SUP = {
+    '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+    '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+    'n': 'ⁿ', 'a': 'ᵃ', 'b': 'ᵇ', 'm': 'ᵐ', 'x': 'ˣ',
+    't': 'ᵗ', 'i': 'ⁱ', 'k': 'ᵏ', 'r': 'ʳ',
+    '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
+}
+
+def preprocess_math_text(text):
+    """Convert math shorthand to Unicode for plain-text/PDF rendering.
+    ^2 → ², ^(n-1) → ⁿ⁻¹, standalone * → ×
+    """
+    if not isinstance(text, str):
+        return text
+    def _sup(m):
+        exp = m.group(1) or m.group(2) or m.group(3) or ''
+        return ''.join(_UNICODE_SUP.get(c, c) for c in exp)
+    text = re.sub(r'\^\(([^)]+)\)|\^\{([^}]+)\}|\^([-+]?[A-Za-z0-9])', _sup, text)
+    # Standalone * as multiplication → ×  (e.g. 3*4, A*B but not ** or *= )
+    text = re.sub(r'(?<=[0-9A-Za-z|)])\*(?=[0-9A-Za-z|(√])', '×', text)
+    return text
+
+
+_MATH_RUN_RE = re.compile(r'(\^(?:\([^)]*\)|\{[^}]*\}|[-+]?[A-Za-z0-9]))')
+
+def _add_math_runs(p, text, qrun_fn, bold=False):
+    """Add text to a python-docx paragraph with ^ exponents as superscript runs."""
+    text = re.sub(r'(?<=[0-9A-Za-z|)])\*(?=[0-9A-Za-z|(√])', '×', text)
+    for part in _MATH_RUN_RE.split(text):
+        if not part:
+            continue
+        if part.startswith('^'):
+            exp = part[1:]
+            if len(exp) > 1 and exp[0] in '({' and exp[-1] in ')}':
+                exp = exp[1:-1]
+            r = p.add_run(exp)
+            r.font.superscript = True
+        else:
+            r = p.add_run(part)
+        if bold:
+            r.bold = True
+        qrun_fn(r)
 
 
 # ------------------------------
@@ -1667,20 +1755,20 @@ def render_pdf(class_name, subject, chapters, all_questions, summary, header_met
 
         elif typ == "subheader":
             can.setFont("Helvetica-Bold", 12)
-            y = draw_wrapped(can, text, 60, y, 470)
+            y = draw_wrapped(can, preprocess_math_text(text), 60, y, 470)
             y -= 10
 
         elif typ == "instruction":
             can.setFont("Helvetica", 11)
-            y = draw_wrapped(can, text, 60, y, 470)  # Instructions without numbers
+            y = draw_wrapped(can, preprocess_math_text(text), 60, y, 470)
 
         elif typ == "q":
             can.setFont("Helvetica", 11)
-            y = draw_wrapped(can, text, 60, y, 470)
+            y = draw_wrapped(can, preprocess_math_text(text), 60, y, 470)
 
         elif typ == "subq":
             can.setFont("Helvetica", 11)
-            y = draw_wrapped(can, text, 80, y, 440)
+            y = draw_wrapped(can, preprocess_math_text(text), 80, y, 440)
 
         elif typ == "passage":
             print(f"[PDF-Render] Rendering passage: {len(text)} chars, y={y}")
@@ -1847,10 +1935,11 @@ def _expand_test_type(pattern_name: str) -> str:
     return name
 
 
-def _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, test_type_val):
+def _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, test_type_val, school_name_val=""):
     """Replace placeholder tokens in base.docx header via XML iteration."""
     W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     replacements = {
+        "SCHOOLNAME":    school_name_val or "",
         "SUBJECT":       subject_val or "",
         "TESTTYPE":      test_type_val or "",
         "CLASS       :": f"CLASS       :  {class_val}" if class_val else "CLASS       :",
@@ -1956,8 +2045,7 @@ def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, is_tami
             r_num = p.add_run(num_part)
             r_num.bold = True
             _qrun(r_num)
-        r_text = p.add_run(rest_part)
-        _qrun(r_text)
+        _add_math_runs(p, rest_part, _qrun)
         r_marks = p.add_run(f"\t{marks_str}")
         r_marks.bold = True
         _qrun(r_marks)
@@ -1966,8 +2054,7 @@ def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, is_tami
             r_num = p.add_run(num_part)
             r_num.bold = True
             _qrun(r_num)
-        r_text = p.add_run(rest_part)
-        _qrun(r_text)
+        _add_math_runs(p, rest_part, _qrun)
 
     return p
 
@@ -2010,10 +2097,11 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
     subject_val = header_meta.get("subject", subject) or subject
     time_val = str(header_meta.get("duration", "")).strip()
     marks_val = str(header_meta.get("marks", "")).strip()
+    school_name_val = str(header_meta.get("school_name", "")).strip()
 
     try:
-        _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, test_type_val)
-        print(f"[DOCX-Header] Filled base.docx placeholders — class={class_val!r} subject={subject_val!r} time={time_val!r} marks={marks_val!r} test_type={test_type_val!r}")
+        _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, test_type_val, school_name_val)
+        print(f"[DOCX-Header] Filled base.docx placeholders — school={school_name_val!r} class={class_val!r} subject={subject_val!r} time={time_val!r} marks={marks_val!r} test_type={test_type_val!r}")
     except Exception as e:
         print(f"[DOCX-Header] WARNING: placeholder fill failed: {e}")
 
@@ -2104,19 +2192,23 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
         elif typ == "opts_block":
             try:
                 opts = list(text) if isinstance(text, (list, tuple)) else []
-                # CBSE style: 2 options per row, no table borders, indented
-                for row_start in range(0, len(opts), 2):
+                # Use 2-per-row only when all options are short enough to fit side-by-side.
+                # If any option exceeds 45 chars, fall back to one option per line.
+                two_col = all(len(o) <= 45 for o in opts)
+                step = 2 if two_col else 1
+                for row_start in range(0, len(opts), step):
                     p = doc.add_paragraph()
                     p.paragraph_format.left_indent = Inches(0.25)
                     p.paragraph_format.space_after = Pt(2)
                     p.paragraph_format.space_before = Pt(0)
-                    pPr = p._element.get_or_add_pPr()
-                    tabs = OxmlElement('w:tabs')
-                    tab = OxmlElement('w:tab')
-                    tab.set(qn('w:val'), 'left')
-                    tab.set(qn('w:pos'), '4320')  # ~3 inches
-                    tabs.append(tab)
-                    pPr.append(tabs)
+                    if two_col:
+                        pPr = p._element.get_or_add_pPr()
+                        tabs = OxmlElement('w:tabs')
+                        tab = OxmlElement('w:tab')
+                        tab.set(qn('w:val'), 'left')
+                        tab.set(qn('w:pos'), '4320')  # ~3 inches
+                        tabs.append(tab)
+                        pPr.append(tabs)
                     opt1 = opts[row_start]
                     r1 = p.add_run(opt1)
                     r1.font.size = Pt(11)
@@ -2124,7 +2216,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
                         r1.font.name = 'Times New Roman'
                     if is_tamil:
                         set_tamil_font(r1)
-                    if row_start + 1 < len(opts):
+                    if two_col and row_start + 1 < len(opts):
                         opt2 = opts[row_start + 1]
                         r2 = p.add_run(f"\t{opt2}")
                         r2.font.size = Pt(11)
@@ -2304,7 +2396,7 @@ def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters
         try:
             ctx_obj = _json.loads(additional_context)
             if isinstance(ctx_obj, dict):
-                for _k in ("class_name", "duration", "marks", "test_type"):
+                for _k in ("class_name", "duration", "marks", "test_type", "school_name"):
                     if ctx_obj.get(_k):
                         header_meta[_k] = ctx_obj[_k]
         except Exception:
@@ -2330,22 +2422,50 @@ def pattern_sections_to_blueprint_dict(pattern):
     blueprint_dict = {}
     for section in pattern.sections:
         section_name = section.get('name', 'Section')
+        title = section.get('title', '')
+
+        # CBSE-seeded sections store count as 'questions'; user blueprints use 'questions_count'
+        q_count = (
+            section.get('questions_count')
+            or section.get('questions')
+            or 0
+        )
+
+        # CBSE-seeded sections store type in 'title' ("MCQ + Assertion-Reason");
+        # parse it into a list when 'question_types' is empty/absent.
+        qt = section.get('question_types') or []
+        if not qt and title:
+            qt = [t.strip() for t in re.split(r'[,+&/]|\band\b', title) if t.strip()]
+
+        marks = section.get('marks', 0)
+        marks_per_q = section.get('marks_per_question') or section.get('marks_each') or (
+            round(marks / q_count, 1) if q_count else 1
+        )
+
         blueprint_dict[section_name] = {
             'id': section.get('id', ''),
-            'title': section.get('title', ''),    # empty is fine — render header handles it
-            'marks': section.get('marks', 0),
-            'questions_count': section.get('questions_count', 0),
-            'question_types': section.get('question_types', []),
-            'marks_per_question': section.get('marks_per_question', 1),
+            'title': title,
+            'marks': marks,
+            'questions_count': q_count,
+            'question_types': qt,
+            'marks_per_question': marks_per_q,
             'instructions': section.get('instructions', []),
             'constraints': section.get('constraints', {}),
-            'subsections': section.get('subsections', [])
+            'subsections': section.get('subsections', []),
+            # C-01: preserve per-section sub-subject for compound papers
+            'section_subject': section.get('subject', ''),
+            # MO-01: preserve attempt-N-of-M counts
+            # Seeded format stores 'attempt' directly; raw pattern dict uses 'attempt' too
+            'attempt_count': section.get('attempt'),
+            'provided_count': q_count,   # questions_count = the full provided set
+            # Store raw question_types detail for mixed-marks detection
+            'question_type_details': section.get('question_types', []),
         }
 
     return blueprint_dict if blueprint_dict else None
 
 
-def generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context=""):
+def generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None):
     """
     Universal question paper generator that works for all subjects and question types.
     Uses database-driven blueprints and adaptive prompt generation.
@@ -2388,17 +2508,17 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
         print(f"[Universal-Generator] Blueprint dict type: {type(blueprint_dict)}")
         print(f"[Universal-Generator] Blueprint dict keys: {list(blueprint_dict.keys())}")
 
-        # Check if this is a complex blueprint (has sections with subsections) or simple blueprint
+        # Check if this is a complex blueprint (has non-empty subsections)
         is_complex_blueprint = False
         for section_key, section_data in blueprint_dict.items():
-            if isinstance(section_data, dict) and 'subsections' in section_data:
+            if isinstance(section_data, dict) and section_data.get('subsections'):
                 is_complex_blueprint = True
                 break
-        
+
         if is_complex_blueprint:
             # Extract question types from complex blueprint structure
             for section_key, section_data in blueprint_dict.items():
-                if isinstance(section_data, dict) and 'subsections' in section_data:
+                if isinstance(section_data, dict) and section_data.get('subsections'):
                     subsections = section_data['subsections']
                     # Handle both list and dict formats for subsections
                     if isinstance(subsections, list):
@@ -2418,8 +2538,14 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
                 section_question_types = section_data.get('question_types', [])
                 all_question_types.extend(section_question_types)
         
-        # Remove duplicates while preserving order
-        all_question_types = list(dict.fromkeys(all_question_types))
+        # Remove duplicates while preserving order (dict items are not hashable)
+        seen_keys, unique_types = set(), []
+        for qt in all_question_types:
+            key = str(qt)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_types.append(qt)
+        all_question_types = unique_types
         print(f"[Universal-Generator] Blueprint type: {'Complex' if is_complex_blueprint else 'Simple'}")
         print(f"[Universal-Generator] Question types: {all_question_types}")
         
@@ -2427,7 +2553,7 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
         try:
             from .section_generator import generate_paper_parallel, get_section_context_map
             print("[Universal-Generator] Trying parallel per-section pipeline...")
-            _context_map = get_section_context_map(class_name, subject, chapters, blueprint_dict, all_question_types)
+            _context_map = get_section_context_map(class_name, subject, chapters, blueprint_dict, all_question_types, school_id=school_id)
             _paper_data, _in_tok, _out_tok = generate_paper_parallel(
                 blueprint=blueprint_dict,
                 pattern=pattern,
@@ -2448,7 +2574,7 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
 
         # ── Attempt 2 (fallback): single-prompt approach ─────────────────────
         variation_offset = random.randint(0, 20)
-        context_data = get_universal_context(class_name, subject, chapters, all_question_types, variation_offset=variation_offset)
+        context_data = get_universal_context(class_name, subject, chapters, all_question_types, variation_offset=variation_offset, school_id=school_id)
         context_text = context_data['context_text']
 
         file_path, summary, total_cost, in_tok, out_tok = generate_with_universal_prompt(
@@ -2504,6 +2630,34 @@ def generate_with_universal_prompt(class_name, subject, chapters, difficulty, pa
     # Blueprint is already normalized by BlueprintManager.get_blueprint()
     blueprint_dict = blueprint
 
+    # Detect compound subjects (Science = Biology+Chemistry+Physics;
+    # Social Science = History+Geography+Political Science+Economics)
+    compound_subject_spec = ""
+    pattern_sections = getattr(pattern, 'sections', None) or []
+    if pattern_sections and isinstance(pattern_sections[0], dict) and 'subject' in pattern_sections[0]:
+        lines = [
+            f"IMPORTANT: This is a COMPOUND subject paper. Generate questions separately for each component subject:",
+        ]
+        for sec in pattern_sections:
+            sec_name = sec.get('name', '')
+            sec_subj = sec.get('subject', '')
+            sec_marks = sec.get('marks', 0)
+            sec_qs = sec.get('questions', 0)
+            sec_notes = sec.get('notes', '')
+            # MI-02: include chapter routing per sub-subject in the compound spec
+        # chapters list is from the user's selection; map them by sub-subject heuristic
+        sec_chapter_hint = ""
+        if chapters:
+            sec_chapter_hint = f" (draw chapters relevant to {sec_subj} from: {', '.join(chapters)})"
+        lines.append(
+                f"  § {sec_name} — {sec_subj}: {sec_qs} questions, {sec_marks} marks{sec_chapter_hint}"
+                + (f". {sec_notes}" if sec_notes else "")
+            )
+        lines.append("Each section must be labelled with the component subject name (e.g. '§ A — Biology').")
+        lines.append("IMPORTANT: All questions in each § must be strictly from that section's component subject only.")
+        compound_subject_spec = "\n".join(lines)
+        print(f"[Universal-Prompt] Compound subject detected: {[s.get('subject') for s in pattern_sections]}")
+
     # Extract passage and extract instructions from pattern sections
     passage_instructions = ""
     if hasattr(pattern, 'sections') and pattern.sections:
@@ -2527,10 +2681,10 @@ def generate_with_universal_prompt(class_name, subject, chapters, difficulty, pa
                             passage_instructions += f"\n- {section_name} > {sub_name}: {subsection['extract_instruction']}"
                             print(f"[Universal-Prompt]   Found extract instruction for {sub_name}")
 
-    # Check if this is a complex blueprint (has sections with subsections) or simple blueprint
+    # Check if this is a complex blueprint (has non-empty subsections)
     is_complex_blueprint = False
     for section_key, section_data in blueprint_dict.items():
-        if isinstance(section_data, dict) and 'subsections' in section_data:
+        if isinstance(section_data, dict) and section_data.get('subsections'):
             is_complex_blueprint = True
             break
 
@@ -2549,9 +2703,10 @@ def generate_with_universal_prompt(class_name, subject, chapters, difficulty, pa
             section_marks = section_data.get('marks', 0)
             section_qtypes = section_data.get('question_types', [])
 
+            qtype_strs = [qt.get('type', str(qt)) if isinstance(qt, dict) else str(qt) for qt in section_qtypes]
             sections_spec += f"""
 Section {section_name} - {section_title} ({section_marks} marks):
-Question Types: {', '.join(section_qtypes)}
+Question Types: {', '.join(qtype_strs)}
 """
         # Still use the original blueprint structure for the schema
         blueprint_schema = json.dumps(blueprint, indent=2)
@@ -2628,6 +2783,12 @@ EXAMINATION SPECIFICATIONS:
 - Class: {class_name}
 - Subject: {subject}
 - Chapters to Cover: {', '.join(chapters) if chapters else 'All chapters'}
+{f"{chr(10)}{compound_subject_spec}" if compound_subject_spec else ""}
+CHAPTER DISTRIBUTION — CRITICAL:
+You MUST spread questions across ALL {len(chapters) if chapters else 1} chapter(s) listed above.
+{chr(10).join(f'  Chapter {i+1}: {c}' for i, c in enumerate(chapters)) if chapters else ''}
+Do NOT take all or most questions from a single chapter. Each chapter must contribute at least one question.
+Aim for roughly equal representation: ~{max(1, round((blueprint and sum(v.get('marks',0) for v in blueprint.values() if isinstance(v,dict)) or 20) / max(1, len(chapters))))} marks per chapter.
 
 QUESTION PAPER STRUCTURE:
 {sections_spec}
@@ -2642,6 +2803,14 @@ CRITICAL VARIATION REQUIREMENTS:
 IMPORTANT: Generate COMPLETELY DIFFERENT questions from any previous papers. Each question must be unique and original.
 {variation_instructions}
 
+MATHEMATICAL NOTATION RULES (strictly follow for all math subjects):
+- Powers/exponents: write as x² y³ Aⁿ⁻¹ using Unicode superscripts, NOT x^2 or A^(n-1)
+- Multiplication: use × (U+00D7), NOT * or x  (e.g. 3 × 4, |A| × |B|)
+- Determinants/absolute value: use | | notation as-is (e.g. |A|, |adj A|)
+- Fractions in text: write as "p/q" or "p over q"
+- Square root: write √x not sqrt(x)
+- Common expressions: n² not n^2, xⁿ not x^n, (n-1) as superscript means write ⁿ⁻¹
+
 GENERATION GUIDELINES:
 1. Create questions that are appropriate for {class_name} level students
 2. Ensure questions test understanding, application, and analysis
@@ -2655,6 +2824,7 @@ GENERATION GUIDELINES:
 10. CREATE UNIQUE QUESTIONS - Avoid repeating common question patterns or wordings
 11. Use different examples, scenarios, and approaches for each question
 12. Vary the complexity and angles of questions even for the same topic
+13. DISTRIBUTE questions across ALL listed chapters — never cluster in one chapter
 
 {passage_section}
 
@@ -2900,6 +3070,8 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
                         if 'test_type' in ctx_obj and ctx_obj['test_type']:
                             header_meta['test_type'] = ctx_obj['test_type']
                             print(f"[Header-Meta] Using test_type from form: {ctx_obj['test_type']}")
+                        if 'school_name' in ctx_obj and ctx_obj['school_name']:
+                            header_meta['school_name'] = ctx_obj['school_name']
                 except Exception as e:
                     print(f"[Header-Meta] WARN: failed to parse additional_context: {e}")
                     print(f"[Header-Meta] Traceback: {traceback.format_exc()}")
@@ -2927,7 +3099,7 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
         
         raise Exception(error_msg)
 
-def generate_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context=""):
+def generate_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None):
     """
     Main entry point for question paper generation.
     Now uses the universal generator by default, with fallback to legacy system.
@@ -2937,7 +3109,7 @@ def generate_paper(class_name, subject, chapters, difficulty, pattern, section=N
     try:
         # Try universal generator first
         print(f"[Generator] Attempting universal generation...")
-        file_path, summary, total_cost, in_tok, out_tok = generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section, model_source, additional_context)
+        file_path, summary, total_cost, in_tok, out_tok = generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section, model_source, additional_context, school_id=school_id)
         return file_path, summary, total_cost, in_tok, out_tok
         
     except Exception as e:

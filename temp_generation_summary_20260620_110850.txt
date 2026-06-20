@@ -1,0 +1,17 @@
+=== LEGACY QUESTION PAPER GENERATION ===
+Timestamp: 2026-06-20 11:08:50.942182
+Class: 10
+Subject: Social Science
+Chapters: The Rise of Nationalism in Europe, Nationalism in India, The Making of a Global World, Resources and Development, Forest and Wildlife Resources, Power-sharing, Federalism, DEVELOPMENT, SECTORS OF THE INDIAN ECONOMY
+Difficulty: Hard
+Pattern: CBSE Board Social Science Class 10
+Fallback reason: Universal generation failed - Universal generation failed: sequence item 0: expected str instance, dict found
+Model Source: local
+==================================================
+
+=== GENERATION RESULTS ===
+Raw JSON Length: 30127 chars
+Validated JSON Length: 30123 chars
+Questions Generated: 5 sections
+==================================================
+

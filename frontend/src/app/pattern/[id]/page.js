@@ -142,26 +142,93 @@ export default function PatternDetailPage() {
               <h2 className="text-lg font-black text-gray-900 uppercase tracking-tight">Pattern Sections</h2>
             </div>
             <div className="p-8 space-y-4">
-              {pattern.sections && pattern.sections.map((section, idx) => (
+              {pattern.sections && pattern.sections.map((section, idx) => {
+                const isCompound = Boolean(section.subject);
+                return (
                 <div key={idx} className="border border-gray-100 rounded-3xl overflow-hidden shadow-sm hover:shadow-md transition-shadow">
-                  <button 
+                  <button
                     onClick={() => toggleSection(idx)}
                     className="w-full flex items-center justify-between p-6 bg-white text-left group"
                   >
-                    <div className="flex items-center gap-6">
-                      <span className="text-blue-600 font-black text-base uppercase tracking-tight">{section.name || `Section ${idx + 1}`}</span>
-                      <div className="flex items-center gap-3">
-                        <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-black uppercase rounded-full border border-blue-100">{section.marks} marks</span>
-                        <span className="px-3 py-1 bg-indigo-50 text-indigo-600 text-[10px] font-black uppercase rounded-full border border-indigo-100">{section.questions_count} questions</span>
+                    <div className="flex items-center gap-4">
+                      <span className="inline-flex items-center justify-center w-10 h-10 bg-blue-600 text-white rounded-2xl font-black text-sm shrink-0">
+                        {section.name || idx + 1}
+                      </span>
+                      <div>
+                        {isCompound ? (
+                          <p className="text-base font-black text-gray-900 tracking-tight">
+                            § {section.name} — {section.subject}
+                          </p>
+                        ) : (
+                          <p className="text-blue-600 font-black text-base uppercase tracking-tight">
+                            {section.title || section.name || `Section ${idx + 1}`}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="px-2 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-black uppercase rounded-full border border-blue-100">{section.marks}M</span>
+                          <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 text-[9px] font-black uppercase rounded-full border border-indigo-100">
+                            {section.questions ?? section.questions_count ?? '?'}Q
+                          </span>
+                          {isCompound && section.hots > 0 && (
+                            <span className="px-2 py-0.5 bg-amber-50 text-amber-700 text-[9px] font-black uppercase rounded-full border border-amber-100">{section.hots} HOTS</span>
+                          )}
+                          {isCompound && section.cbq > 0 && (
+                            <span className="px-2 py-0.5 bg-purple-50 text-purple-700 text-[9px] font-black uppercase rounded-full border border-purple-100">{section.cbq} CBQ</span>
+                          )}
+                          {section.internal_choice && (
+                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-[9px] font-black uppercase rounded-full border border-emerald-100">
+                              Choice{section.choices ? ` (${section.choices})` : ''}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                     {expandedSections[idx] ? <ChevronUp size={20} className="text-gray-400" /> : <ChevronDown size={20} className="text-gray-400 group-hover:text-blue-600" />}
                   </button>
-                  
+
                   {expandedSections[idx] && (
                     <div className="px-8 pb-8 pt-2 bg-slate-50/30">
                       <div className="space-y-6">
-                        {/* Section Metadata Row */}
+
+                        {/* Compound subject: question-type breakdown table */}
+                        {isCompound ? (
+                          <div className="space-y-3">
+                            {/* Notes */}
+                            {section.notes && (
+                              <p className="text-xs text-gray-500 leading-relaxed bg-white rounded-2xl px-4 py-3 border border-gray-100">
+                                {section.notes}
+                              </p>
+                            )}
+                            {/* Question types mini-table */}
+                            {section.question_types?.length > 0 && (
+                              <div className="rounded-2xl overflow-hidden border border-gray-100">
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="bg-gray-50 border-b border-gray-100">
+                                      <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Q Range</th>
+                                      <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Type</th>
+                                      <th className="text-center px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Count</th>
+                                      <th className="text-center px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Each</th>
+                                      <th className="text-center px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Total</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {section.question_types.map((qt, qi) => (
+                                      <tr key={qi} className="border-t border-gray-50 hover:bg-blue-50/30 transition-colors">
+                                        <td className="px-3 py-2 font-mono text-[10px] font-bold text-gray-700">{qt.range || `${qt.count}Q`}</td>
+                                        <td className="px-3 py-2 text-gray-700">{qt.type}</td>
+                                        <td className="px-3 py-2 text-center font-bold text-gray-700">{qt.count}</td>
+                                        <td className="px-3 py-2 text-center font-bold text-gray-700">{qt.marks_each}M</td>
+                                        <td className="px-3 py-2 text-center font-black text-blue-700">{qt.total ?? qt.count * qt.marks_each}M</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                        /* Traditional section: existing metadata layout */
                         <div className="flex flex-wrap items-center gap-12 border-b border-gray-100 pb-6">
                           <div>
                             <div className="flex items-center gap-2 mb-1">
@@ -178,12 +245,13 @@ export default function PatternDetailPage() {
                             <div className="flex gap-2">
                               {section.question_types ? (
                                 Array.isArray(section.question_types) ? section.question_types.map((t, i) => (
-                                  <span key={i} className="text-sm font-black text-gray-900">{t}{i < section.question_types.length - 1 ? ',' : ''}</span>
+                                  <span key={i} className="text-sm font-black text-gray-900">{typeof t === 'string' ? t : t.type}{i < section.question_types.length - 1 ? ',' : ''}</span>
                                 )) : <span className="text-sm font-black text-gray-900">{section.question_types}</span>
                               ) : <span className="text-sm font-black text-gray-900">Mixed</span>}
                             </div>
                           </div>
                         </div>
+                        )}
 
                         {/* Instructions */}
                         {(section.instructions || section.special_instructions || section.passage_instruction || section.extract_instruction || section.passage_config?.enabled) && (
@@ -329,18 +397,21 @@ export default function PatternDetailPage() {
                           </div>
                         )}
 
-                        {/* Question Range */}
-                        <div className="flex items-center gap-2 pt-4 border-t border-gray-50">
-                          <Clock size={14} className="text-gray-300" />
-                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                            Covers Questions {section.start_q || '—'} to {section.end_q || '—'}
-                          </p>
-                        </div>
+                        {/* Question Range (traditional sections only) */}
+                        {!isCompound && (
+                          <div className="flex items-center gap-2 pt-4 border-t border-gray-50">
+                            <Clock size={14} className="text-gray-300" />
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                              Covers Questions {section.start_q || '—'} to {section.end_q || '—'}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
                 </div>
-              ))}
+              );
+              })}
             </div>
           </div>
 

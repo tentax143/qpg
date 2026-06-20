@@ -1,0 +1,12 @@
+=== UNIVERSAL QUESTION PAPER GENERATION ===
+Timestamp: 2026-06-20 11:26:33.321984
+Class: 10
+Subject: Social Science
+Chapters: Agriculture, CONSUMER RIGHTS, DEVELOPMENT, Federalism, Forest and Wildlife Resources, GLOBALISATION AND THE INDIAN ECONOMY, Gender, Religion and Caste, Lifelines of National Economy, MONEY AND CREDIT, Manufacturing Industries, Minerals and Energy Resources, Nationalism in India, Outcomes of Democracy, Political Parties, Power-sharing, Print Culture and the Modern World, Resources and Development, SECTORS OF THE INDIAN ECONOMY, The Age of Industrialisation, The Making of a Global World, The Rise of Nationalism in Europe, Water Resources
+Difficulty: Hard
+Pattern: CBSE Board Social Science Class 10
+Section: All
+Model Source: local
+Additional Context Length: 0 chars
+==================================================
+

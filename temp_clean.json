@@ -1,187 +1,431 @@
 {
-  "Section C — Long Answer": {
-    "section_id": "SEC_C",
-    "section_name": "Section C — Long Answer",
+  "B": {
+    "section_id": "B",
+    "section_name": "B",
     "questions": [
       {
-        "qnum": 15,
-        "type": "SA",
-        "text": "Reproductive health is a holistic concept encompassing physical, emotional, and social well-being. Describe any four essential components of a national programme aimed at creating a reproductively healthy society, drawing from the various action plans and support systems mentioned for our country.",
-        "marks": 4.0
-      }
-    ],
-    "title": "",
-    "marks": 4
-  },
-  "Section B — Short Answer": {
-    "section_id": "SEC_B",
-    "section_name": "Section B — Short Answer",
-    "questions": [
+        "qnum": 10,
+        "type": "map_work",
+        "text": "On the given outline map of India, locate and label the following: (a) A region where plantation agriculture is practised for coffee. (b) A state where maize is a major crop. (c) A state known for the production of groundnut.",
+        "marks": 2.0,
+        "map_note": "[Attach outline map of India — examiner to supply]",
+        "competency_type": "application"
+      },
       {
         "qnum": 11,
-        "type": "SA",
-        "text": "Explain why reproductive health education, focusing on safe sexual practices and STI awareness, is particularly crucial for adolescents. How does it contribute to a socially responsible society?",
-        "marks": 2.0
+        "type": "mcq",
+        "text": "Consider a farmer in Odisha growing rice for family consumption and a farmer in Haryana growing rice using HYV seeds and chemical fertilizers for the market. The primary factor that leads economists to categorize these under different farming types is the difference in:",
+        "marks": 2.0,
+        "options": [
+          "a) The geographical conditions required for rice cultivation.",
+          "b) The variety of rice seeds used.",
+          "c) The degree of integration with the market and production motive.",
+          "d) The type of labour employed in cultivation."
+        ],
+        "competency_type": "application"
       },
       {
         "qnum": 12,
-        "type": "SA",
-        "text": "Apart from creating awareness, what are the two broad aspects of support a Reproductive and Child Health Care programme provides to tackle reproduction-related problems? Give one example for each aspect.",
-        "marks": 2.0
+        "type": "sa",
+        "text": "A student argues that 'slash and burn' agriculture is an example of sustainable development because it allows nature to replenish soil fertility. Critically evaluate this argument by identifying the flaw in its reasoning, considering modern demographic pressures.",
+        "marks": 2.0,
+        "competency_type": "constructed"
       },
       {
         "qnum": 13,
-        "type": "SA",
-        "text": "The implementation of better strategies is necessary for efficient reproductive healthcare. Justify this statement with reference to the statutory ban on amniocentesis for sex-determination.",
-        "marks": 2.0
+        "type": "assertion_reason",
+        "text": "Assertion (A): The 'Zaid' cropping season is crucial for farmers despite its short duration. Reason (R): It allows for the cultivation of water-intensive fruits and vegetables that have high market demand during summer, filling a seasonal supply gap.",
+        "marks": 2.0,
+        "competency_type": "application"
       },
       {
         "qnum": 14,
-        "type": "SA",
-        "text": "Why is it important to educate fertile couples and people of marriageable age group about birth control options, as mentioned in the text? Explain one related reason.",
-        "marks": 2.0
+        "type": "case_based",
+        "text": "Read the following excerpt and answer the questions that follow:\n\n\"Rinjha's family practices agriculture on a small patch using hoes and digging sticks. They rely on monsoon rains and shift to a new patch when fertility declines. The produce is solely for sustaining the family.\"\n\n(i) Identify and name the specific type of farming described.\n(ii) Contrary to the description, this farming is often labeled as 'unsustainable' in contemporary India. Provide one geographical reason to justify this critique.\n(iii) Suggest one institutional reform that could help a family like Rinjha's transition to a more secure livelihood without necessarily migrating.",
+        "marks": 2.0,
+        "competency_type": "application"
+      },
+      {
+        "qnum": 15,
+        "type": "mcq",
+        "text": "Analyzing India's agricultural economy, if the government's primary policy shift moves from ensuring 'increase in production' to ensuring 'increase in farmers' income', the most significant institutional change required would likely be in:",
+        "marks": 2.0,
+        "options": [
+          "a) Promoting higher doses of modern inputs like HYV seeds.",
+          "b) Strengthening the network of transport and communication from farm to market.",
+          "c) Protecting crops from pests using more effective insecticides.",
+          "d) Expanding the area under cultivation for staple cereals."
+        ],
+        "competency_type": "application"
+      },
+      {
+        "qnum": 16,
+        "type": "sa",
+        "text": "Compare the geographical conditions required for the cultivation of rice and wheat. How do these differing conditions spatially separate their primary zones of production in India?",
+        "marks": 2.0,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 17,
+        "type": "mcq",
+        "text": "In the context of cropping patterns, sugarcane is an exception. Despite being an annual crop, it is not classified under Rabi, Kharif, or Zaid. The most logical explanation for this anomaly is that sugarcane:",
+        "marks": 2.0,
+        "options": [
+          "a) Requires manual labour throughout the year.",
+          "b) Has a growing period that overlaps multiple traditional seasons.",
+          "c) Is grown only in peninsular India where seasons are not distinct.",
+          "d) Is primarily a plantation crop and seasons are irrelevant."
+        ],
+        "competency_type": "application"
+      },
+      {
+        "qnum": 18,
+        "type": "assertion_reason",
+        "text": "Assertion (A): Commercial farming in India often leads to regional specialization in crop production. Reason (R): The use of capital-intensive inputs and market-oriented production incentivizes farmers to grow crops best suited to the agro-climatic conditions of their region for maximum profit.",
+        "marks": 2.0,
+        "competency_type": "application"
+      },
+      {
+        "qnum": 19,
+        "type": "sa",
+        "text": "Explain why the distinction between a 'commercial crop' and a 'subsistence crop' is not fixed but varies from one region to another, using the example of rice cultivation in India.",
+        "marks": 2.0,
+        "competency_type": "constructed"
       }
     ],
-    "title": "",
-    "marks": 8
+    "title": "Geography",
+    "marks": 20,
+    "_competency_report": {
+      "total_marks": 79.60000000000002,
+      "application_pct": 66.1,
+      "recall_pct": 0.0,
+      "constructed_pct": 33.9,
+      "untagged_pct": 0.0,
+      "compliant": true,
+      "violations": []
+    }
   },
-  "Section A — Multiple Choice Questions": {
-    "section_id": "SEC_A",
-    "section_name": "Section A — Multiple Choice Questions",
+  "C": {
+    "section_id": "C",
+    "section_name": "C",
+    "passage": "The State of Arunachal Pradesh passes a law requiring all official communication and education in schools to be conducted in the state's recognized tribal languages. Concurrently, the Central Government announces a new national education policy emphasizing the use of Hindi and English for competitive exams and national integration. A group of citizens from Arunachal Pradesh challenges the state law in court, arguing it contradicts the central policy and creates barriers for students seeking national employment. The Central Government, meanwhile, argues that states have the freedom to promote their languages under the Constitution, but national policies must prevail for uniformity. The court must adjudicate on the limits of state power in a federal system.",
+    "questions": [
+      {
+        "qnum": 20,
+        "type": "source_based",
+        "text": "Read the passage above and answer the following:",
+        "marks": 2.2,
+        "competency_type": "application",
+        "sub_questions": [
+          {
+            "text": "Analyze one argument that supports the Arunachal Pradesh government's law, using a feature of Indian federalism.",
+            "marks": 1
+          },
+          {
+            "text": "Identify one feature of federalism highlighted by the Central Government's stance in this dispute.",
+            "marks": 1
+          },
+          {
+            "text": "Predict the likely constitutional principle the court would use to resolve this conflict, justifying your choice.",
+            "marks": 2
+          }
+        ]
+      },
+      {
+        "qnum": 21,
+        "type": "assertion_reason",
+        "text": "Assertion (A): The outcomes of democracy are expected to be uniformly superior to any non-democratic regime in all economic measures.\nReason (R): Democracies are fundamentally designed to prioritize economic growth over all other social and political goals.\nChoose the correct option:",
+        "marks": 2.2,
+        "competency_type": "application",
+        "options": [
+          "Both A and R are true and R is the correct explanation of A.",
+          "Both A and R are true but R is NOT the correct explanation of A.",
+          "A is true but R is false.",
+          "A is false but R is true."
+        ]
+      },
+      {
+        "qnum": 22,
+        "type": "short_answer",
+        "text": "A farmer in Punjab uses HYV seeds, chemical fertilizers, and irrigation to grow rice primarily for sale in urban markets. In Odisha, a farmer uses traditional seeds and family labor to grow rice mainly for household consumption. Justify why both these practices are correctly classified as 'agriculture' yet represent fundamentally different economic systems.",
+        "marks": 2.2,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 23,
+        "type": "mcq",
+        "text": "Consider the following statements about the role of print culture in the rise of nationalism in Europe:\n1. It created a new culture of dialogue and debate.\n2. It standardized national languages and unified people.\n3. It was primarily used by monarchs to suppress revolutionary ideas.\n4. It allowed dissenting groups to circulate their ideas beyond local boundaries.\nWhich combination of statements correctly explains its transformative impact?",
+        "marks": 2.2,
+        "competency_type": "application",
+        "options": [
+          "1, 2 and 3",
+          "1, 2 and 4",
+          "2, 3 and 4",
+          "1, 3 and 4"
+        ]
+      },
+      {
+        "qnum": 24,
+        "type": "short_answer",
+        "text": "Critically evaluate why, despite the legal framework for consumer rights, a consumer might still find it difficult to get compensation for a defective product purchased from a large e-commerce platform.",
+        "marks": 2.2,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 25,
+        "type": "mcq",
+        "text": "In the context of 'The Making of a Global World', the late 19th-century flow of capital investment and labour from Europe had divergent consequences. Which of the following pairs these consequences correctly with their respective regions?",
+        "marks": 2.2,
+        "competency_type": "application",
+        "options": [
+          "For Africa: Economic prosperity from mining investments; For Asia: Political stability from European administration.",
+          "For Americas: Agricultural expansion and settlement; For Asia: Increased poverty and social disruption.",
+          "For Europe: Depopulation due to emigration; For Africa: Industrial development matching Europe's pace.",
+          "For Americas: Decline in agricultural output; For Asia: Strengthening of indigenous economic systems."
+        ]
+      },
+      {
+        "qnum": 26,
+        "type": "assertion_reason",
+        "text": "Assertion (A): In a democracy, political parties are a necessary condition for a representative government.\nReason (R): Parties reflect fundamental political divisions in a society and aggregate diverse demands into a few policy positions.\nChoose the correct option:",
+        "marks": 2.2,
+        "competency_type": "application",
+        "options": [
+          "Both A and R are true and R is the correct explanation of A.",
+          "Both A and R are true but R is NOT the correct explanation of A.",
+          "A is true but R is false.",
+          "A is false but R is true."
+        ]
+      },
+      {
+        "qnum": 27,
+        "type": "short_answer",
+        "text": "Compare how the objectives of the 'conservation of forests and wildlife' and the 'development of mineral resources' can come into direct conflict, using a specific example.",
+        "marks": 2.2,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 28,
+        "type": "mcq",
+        "text": "A study of two villages shows that in Village A, with high literacy and political awareness, a new road was built efficiently. In Village B, with low literacy and caste-based voting, the same project was delayed and funds were misappropriated. This contrast best demonstrates which aspect of democracy's outcomes?",
+        "marks": 2.2,
+        "competency_type": "application",
+        "options": [
+          "Democracy's superior economic growth rate.",
+          "The role of social divisions in undermining political competition.",
+          "How democratic governance is dependent on an enlightened citizenry.",
+          "The inevitability of corruption in all democratic systems."
+        ]
+      }
+    ],
+    "title": "Political Science",
+    "marks": 20,
+    "_competency_report": {
+      "total_marks": 79.60000000000002,
+      "application_pct": 66.1,
+      "recall_pct": 0.0,
+      "constructed_pct": 33.9,
+      "untagged_pct": 0.0,
+      "compliant": true,
+      "violations": []
+    }
+  },
+  "A": {
+    "section_id": "A",
+    "section_name": "A",
     "questions": [
       {
         "qnum": 1,
-        "type": "MCQ",
-        "text": "What is the primary step towards achieving a reproductively healthy society, as emphasized in the national action plans?",
-        "options": {
-          "a": "Providing advanced surgical facilities for infertility treatments",
-          "b": "Legally banning sex-determination tests",
-          "c": "Counseling and creating awareness about reproductive health and STIs",
-          "d": "Mandating institutional delivery for all pregnancies"
-        },
-        "answer": "c",
-        "marks": 1.0
+        "type": "map_work",
+        "text": "On the given outline map of India, locate and label the following: (a) A state where plantation agriculture, with an interface of agriculture and industry, is a major economic activity for crops like tea. (b) A major maize-producing state where hybrid seeds and modern inputs are used commercially. (c) A major wheat-producing region which benefited from the Green Revolution, dependent on western temperate cyclones for winter precipitation.",
+        "marks": 2.2,
+        "map_note": "[Attach outline map of India — examiner to supply]",
+        "competency_type": "application"
       },
       {
         "qnum": 2,
-        "type": "MCQ",
-        "text": "Study the diagram below showing two scenarios. Scenario A depicts a society with high awareness campaigns on safe sexual practices, while Scenario B shows one without such programs. Which conclusion can be best drawn regarding Scenario A?",
-        "image_prompt": "A split diagram. Left side (Scenario A) shows a group of diverse young adults looking at informative posters about STIs and contraception, with a low, flat line graph labeled 'STI Incidence'. Right side (Scenario B) shows a similar group in a dim setting, looking confused, with a steeply rising line graph labeled 'STI Incidence'.",
-        "options": {
-          "a": "It leads to a higher rate of medical termination of pregnancy.",
-          "b": "It is ineffective without mandatory immunization programs.",
-          "c": "It contributes to building a socially responsible and healthy society.",
-          "d": "It increases the need for statutory bans on diagnostic techniques."
-        },
-        "answer": "c",
-        "marks": 1.0
+        "type": "mcq",
+        "text": "Consider the following statements about agricultural practices in India:\n1. In Haryana and Punjab, rice is grown as a commercial crop using high doses of modern inputs.\n2. In Odisha, rice cultivation is primarily for subsistence, relying on monsoon and natural soil fertility.\n3. The classification of a crop as commercial or subsistence is fixed and depends solely on the crop type, not the region.\n\nWhich of the following conclusions can be logically derived from the statements above?",
+        "options": [
+          "a) Only conclusions 1 and 2 are valid.",
+          "b) Only conclusion 3 is valid.",
+          "c) Both 1 and 2 challenge the fixed classification suggested in 3.",
+          "d) All three conclusions support the same definition of commercial farming."
+        ],
+        "marks": 2.2,
+        "competency_type": "application"
       },
       {
         "qnum": 3,
-        "type": "MCQ",
-        "text": "A couple is seeking guidance under the Reproductive and Child Health Care programme. Which of the following would NOT be considered a core aspect of medical care provided to them?",
-        "options": {
-          "a": "Management of infertility issues",
-          "b": "Counselling on safe sexual practices",
-          "c": "Postnatal care for the mother and child",
-          "d": "Financial planning for the child's education"
-        },
-        "answer": "d",
-        "marks": 1.0
+        "type": "short_answer",
+        "text": "A farmer in a small pocket of Northeast India practices 'slash and burn' agriculture. Explain why this farmer's method, while allowing nature to replenish soil fertility, might be viewed as unsustainable in the contemporary Indian context, considering factors beyond just soil science.",
+        "marks": 2.2,
+        "competency_type": "constructed"
       },
       {
         "qnum": 4,
-        "type": "MCQ",
-        "text": "The implementation of better techniques and new strategies in reproductive health care is primarily aimed at:",
-        "options": {
-          "a": "Reducing the cost of all medical procedures.",
-          "b": "Providing more efficient care and assistance to people.",
-          "c": "Focusing solely on adolescent health problems.",
-          "d": "Replacing all traditional methods of birth control."
-        },
-        "answer": "b",
-        "marks": 1.0
+        "type": "mcq",
+        "text": "Analyze the following scenario: In Karnataka, coffee is grown on large estates using capital-intensive inputs and migrant labour, with all produce sent to processing industries. In contrast, in a village in Odisha, a family grows rice on a small patch primarily for their own consumption.\nThis contrast best illustrates the difference between:",
+        "options": [
+          "a) Rabi and Kharif cropping patterns.",
+          "b) Intensive subsistence and Primitive subsistence farming.",
+          "c) Plantation agriculture and Primitive subsistence farming.",
+          "d) Horticulture and Commercial grain farming."
+        ],
+        "marks": 2.2,
+        "competency_type": "application"
       },
       {
         "qnum": 5,
-        "type": "MCQ",
-        "text": "Statutory ban on amniocentesis for sex-determination is a program that merits attention because it aims to:",
-        "options": {
-          "a": "Promote the use of advanced genetic screening technologies.",
-          "b": "Increase the overall rate of prenatal diagnostic procedures.",
-          "c": "Legally check the increasing menace of female foeticide.",
-          "d": "Ensure mandatory sex determination for all pregnancies."
-        },
-        "answer": "c",
-        "marks": 1.0
+        "type": "assertion_reason",
+        "text": "Assertion (A): The Zaid cropping season for crops like watermelon and cucumber is crucial for maximizing annual agricultural output on the same land.\nReason (R): The Zaid season falls in the short summer months between the harvest of Rabi crops and the sowing of Kharif crops, allowing for an additional cycle of production.\n\nChoose the correct option:",
+        "options": [
+          "a) Both A and R are true, and R is the correct explanation of A.",
+          "b) Both A and R are true, but R is NOT the correct explanation of A.",
+          "c) A is true but R is false.",
+          "d) A is false but R is true."
+        ],
+        "marks": 2.2,
+        "competency_type": "application"
       },
       {
         "qnum": 6,
-        "type": "MCQ",
-        "text": "Which of the following is a combination of infrastructural needs for the successful implementation of reproductive health action plans?",
-        "options": {
-          "a": "Professional expertise, material support, and legal frameworks only.",
-          "b": "Strong infrastructural facilities, professional expertise, and material support.",
-          "c": "Mass media campaigns and statutory bans only.",
-          "d": "Adolescent education programs and immunization drives only."
-        },
-        "answer": "b",
-        "marks": 1.0
+        "type": "short_answer",
+        "text": "Justify the statement: 'Sugarcane cultivation in Uttar Pradesh represents a complex integration within the agricultural economy.' Consider its growing conditions, processing needs, and final products in your answer.",
+        "marks": 2.2,
+        "competency_type": "constructed"
       },
       {
         "qnum": 7,
-        "type": "MCQ",
-        "text": "Educating people in the marriageable age group about available birth control options primarily addresses which aspect of the Reproductive and Child Health Care programme?",
-        "options": {
-          "a": "Treatment of sexually transmitted infections.",
-          "b": "Prevention of menstrual irregularities.",
-          "c": "Care of pregnant mothers and postnatal management.",
-          "d": "Planning and spacing of pregnancies for maternal and child health."
-        },
-        "answer": "d",
-        "marks": 1.0
+        "type": "mcq",
+        "text": "The success of the Green Revolution in Punjab and Haryana for wheat production was facilitated by specific geographical and infrastructural factors. Which of the following combinations was LEAST directly instrumental in this initial success?",
+        "options": [
+          "a) Availability of precipitation from western temperate cyclones and developed irrigation infrastructure.",
+          "b) Use of HYV seeds, chemical fertilizers, and pesticides on large landholdings.",
+          "c) A well-developed network of transport connecting farms to markets.",
+          "d) The traditional practice of shifting cultivation to maintain soil fertility."
+        ],
+        "marks": 2.2,
+        "competency_type": "application"
       },
       {
         "qnum": 8,
-        "type": "MCQ",
-        "text": "Massive child immunization programs are highlighted as a merit because they:",
-        "options": {
-          "a": "Directly reduce the incidence of sexually transmitted diseases.",
-          "b": "Are a key component of building a reproductively healthy society.",
-          "c": "Replace the need for antenatal care for the mother.",
-          "d": "Focus solely on the physical health of adolescents."
-        },
-        "answer": "b",
-        "marks": 1.0
+        "type": "case_based",
+        "text": "Read the following passage and answer the questions that follow:\n\n\"Rinjha's family cultivates a patch of land using tools like a hoe and digging sticks. They depend entirely on the monsoon and the natural fertility of the soil. Once the fertility declines, they will move to a fresh patch. The bamboo canal they use for irrigation is a local, traditional system.\"\n\n(i) Identify and name the specific type of farming described in the passage.\n(ii) Contrast one key technological feature of this farming with that of the plantation agriculture practiced in Assam's tea gardens.\n(iii) Evaluate one major challenge this farming system would face if the family was pressured to settle permanently on their current patch of land.",
+        "marks": 2.2,
+        "competency_type": "application"
       },
       {
         "qnum": 9,
-        "type": "MCQ",
-        "text": "A 'reproductively healthy society' as described in the text encompasses well-being in:",
-        "options": {
-          "a": "Only the physical and emotional aspects of reproduction.",
-          "b": "Physical, emotional, behavioural, and social aspects of reproduction.",
-          "c": "The economic and educational status of individuals.",
-          "d": "The legal and political frameworks governing reproduction."
-        },
-        "answer": "b",
-        "marks": 1.0
-      },
-      {
-        "qnum": 10,
-        "type": "MCQ",
-        "text": "Medical assistance and care for problems like contraception and infertility fall under which broader category as per the text?",
-        "options": {
-          "a": "Adolescence awareness programs.",
-          "b": "Reproduction-related problems requiring professional support.",
-          "c": "Statutory bans for social correction.",
-          "d": "Exclusive post-natal care initiatives."
-        },
-        "answer": "b",
-        "marks": 1.0
+        "type": "mcq",
+        "text": "If a government policy aims to shift agricultural practice from the type seen in Odisha's subsistence rice fields to the type seen in Haryana's commercial rice fields, what would be the most fundamental change in the underlying economic objective?",
+        "options": [
+          "a) Changing from a Kharif crop to a Rabi crop cycle.",
+          "b) Shifting the geographical location from a humid region to a drier region.",
+          "c) Moving from production primarily for family consumption to production for the market.",
+          "d) Replacing food grains with cash crops like tea or coffee."
+        ],
+        "marks": 2.2,
+        "competency_type": "application"
       }
     ],
-    "title": "",
-    "marks": 10
+    "title": "History",
+    "marks": 20,
+    "_competency_report": {
+      "total_marks": 79.60000000000002,
+      "application_pct": 66.1,
+      "recall_pct": 0.0,
+      "constructed_pct": 33.9,
+      "untagged_pct": 0.0,
+      "compliant": true,
+      "violations": []
+    }
+  },
+  "D": {
+    "section_id": "D",
+    "section_name": "D",
+    "questions": [
+      {
+        "qnum": 29,
+        "type": "SA",
+        "text": "A farmer in Odisha uses HYV seeds and fertilizers to grow rice primarily for family consumption, while a farmer in Punjab does the same but sells most of the produce. Justify why their farming practices would still be classified under two distinct types of farming.",
+        "marks": 2.0,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 30,
+        "type": "MCQ",
+        "text": "Consider two regions: Region A practices subsistence farming with high monsoon dependence, and Region B practices plantation farming. If both face a breakdown in transport connectivity, which region's core agricultural characteristic is more fundamentally compromised?",
+        "marks": 2.0,
+        "competency_type": "application"
+      },
+      {
+        "qnum": 31,
+        "type": "SA",
+        "text": "A consumer in the unorganized sector faces a product defect but lacks a cash memo. Evaluate the relative effectiveness of the Consumer Protection Act for this person compared to a consumer in the organized sector with proper bills, explaining the reasoning.",
+        "marks": 2.0,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 32,
+        "type": "MCQ",
+        "text": "If a country's National Income increases but its population grows at a faster rate, what is the most accurate prediction about the change in its development status, considering per capita income and other non-income criteria?",
+        "marks": 2.0,
+        "competency_type": "application"
+      },
+      {
+        "qnum": 33,
+        "type": "SA",
+        "text": "Critically analyze why a purely geographical condition like high humidity, essential for rice cultivation, becomes an unreliable predictor for locating rice farms when combined with the economic factor of 'degree of commercialisation'.",
+        "marks": 2.0,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 34,
+        "type": "MCQ",
+        "text": "A Self-Help Group (SHG) functions effectively in a village, reducing dependence on informal moneylenders. This success is primarily attributed to the SHG's role in: (a) providing large-scale industrial credit, (b) substituting for the formal banking system entirely, (c) pooling savings and creating a local credit cycle, or (d) being regulated directly by the Reserve Bank of India.",
+        "marks": 2.0,
+        "competency_type": "application"
+      },
+      {
+        "qnum": 35,
+        "type": "SA",
+        "text": "Predict and justify the likely impact on India's 'tertiary sector' if a major policy shift leads to a drastic increase in agricultural productivity and a simultaneous rise in small-scale manufacturing units.",
+        "marks": 2.0,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 36,
+        "type": "MCQ",
+        "text": "Globalisation often leads to greater competition. For a traditional Indian manufacturing industry, this could result in: (a) assured higher profits due to a larger market, (b) inevitable closure unless it improves efficiency, (c) guaranteed government protection and subsidies, or (d) an automatic increase in employment for unskilled labour.",
+        "marks": 2.0,
+        "competency_type": "application"
+      },
+      {
+        "qnum": 37,
+        "type": "SA",
+        "text": "A region with rich mineral deposits decides to prioritize wildlife conservation and declares the area a protected forest. Synthesize the potential conflicts and a possible sustainable approach for the 'lifelines of the national economy' dependent on these resources.",
+        "marks": 2.0,
+        "competency_type": "constructed"
+      },
+      {
+        "qnum": 38,
+        "type": "MCQ",
+        "text": "In the context of water resource management, building large dams and promoting rainwater harvesting are both solutions to water scarcity. The key distinction in their primary purpose is that large dams mainly address: (a) local, decentralized water needs, (b) inter-state water disputes, (c) large-scale storage and irrigation, or (d) recharge of groundwater in urban areas.",
+        "marks": 2.0,
+        "competency_type": "application"
+      }
+    ],
+    "title": "Economics",
+    "marks": 20,
+    "_competency_report": {
+      "total_marks": 79.60000000000002,
+      "application_pct": 66.1,
+      "recall_pct": 0.0,
+      "constructed_pct": 33.9,
+      "untagged_pct": 0.0,
+      "compliant": true,
+      "violations": []
+    }
   }
 }

@@ -105,8 +105,9 @@ def get_embedding(text: str, provider: str = 'local') -> list:
 
 
 # ── ChromaDB helpers ──────────────────────────────────────────────────────────
-def get_chroma_client(class_name, subject):
-    db_dir = os.path.join("vector_store", f"{normalize_label(class_name)}_{normalize_label(subject)}")
+def get_chroma_client(class_name, subject, school_id=None):
+    namespace = "shared" if school_id is None else f"school_{school_id}"
+    db_dir = os.path.join("vector_store", namespace, f"{normalize_label(class_name)}_{normalize_label(subject)}")
     os.makedirs(db_dir, exist_ok=True)
     return chromadb.PersistentClient(path=db_dir, settings=chromadb.Settings(anonymized_telemetry=False))
 
@@ -119,9 +120,9 @@ def _reset_collection(chroma_client, name):
     return chroma_client.create_collection(name=name, metadata={"hnsw:space": "cosine"})
 
 
-def get_collection(class_name, subject, provider='local', reset_if_corrupted=False):
+def get_collection(class_name, subject, provider='local', reset_if_corrupted=False, school_id=None):
     name = COLLECTION_NAMES.get(provider, 'default')
-    chroma_client = get_chroma_client(class_name, subject)
+    chroma_client = get_chroma_client(class_name, subject, school_id=school_id)
     try:
         col = chroma_client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
     except Exception as e:
@@ -137,8 +138,31 @@ def get_collection(class_name, subject, provider='local', reset_if_corrupted=Fal
     return col
 
 
+# ── Copy shared store to a school's private store ─────────────────────────────
+def copy_shared_to_school(school_id):
+    import shutil
+    shared_base = os.path.join("vector_store", "shared")
+    school_base = os.path.join("vector_store", f"school_{school_id}")
+    if not os.path.exists(shared_base):
+        print(f"[Embeddings] No shared store found — nothing to copy")
+        return 0
+    os.makedirs(school_base, exist_ok=True)
+    count = 0
+    for dir_name in os.listdir(shared_base):
+        src = os.path.join(shared_base, dir_name)
+        if not os.path.isdir(src):
+            continue
+        dst = os.path.join(school_base, dir_name)
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        count += 1
+        print(f"[Embeddings] Copied shared/{dir_name} → school_{school_id}/{dir_name}")
+    return count
+
+
 # ── Ingest ────────────────────────────────────────────────────────────────────
-def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook", provider='local'):
+def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook", provider='local', school_id=None):
     class_name = normalize_label(class_name)
     subject    = normalize_label(subject)
     unit       = normalize_label(unit)
@@ -187,7 +211,7 @@ def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="t
     print(f"[Embeddings] '{pdf_filename}' — {len(chunks)} chunks, provider={provider}")
     vectors = get_embeddings_batch([c for _, c in chunks], provider)
 
-    collection = get_collection(class_name, subject, provider)
+    collection = get_collection(class_name, subject, provider, school_id=school_id)
     ids, embeddings, docs, metas = [], [], [], []
     for (i, chunk), emb in zip(chunks, vectors):
         ids.append(f"{class_name}_{subject}_{unit}_{i}")
@@ -200,21 +224,21 @@ def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="t
         print(f"[Embeddings] Added {len(ids)} chunks from '{pdf_filename}'")
     except Exception as e:
         if "invalid literal for int" in str(e) or "base 16" in str(e):
-            collection = get_collection(class_name, subject, provider, reset_if_corrupted=True)
+            collection = get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
             collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
         else:
             raise Exception(f"DB error for '{pdf_filename}': {e}")
     return len(ids)
 
 
-def ingest_bulk(class_name, subject, chapters, material_type="textbook", provider='local'):
-    print(f"[Embeddings] Bulk ingest — class={class_name} subject={subject} files={len(chapters)} provider={provider}")
+def ingest_bulk(class_name, subject, chapters, material_type="textbook", provider='local', school_id=None):
+    print(f"[Embeddings] Bulk ingest — class={class_name} subject={subject} files={len(chapters)} provider={provider} school_id={school_id}")
     total, failed = 0, []
     for ch in chapters:
         pdf_filename = os.path.basename(ch["file_path"])
         try:
             n = ingest_pdf(class_name, subject, ch["unit"], ch["file_path"],
-                           title=ch.get("title"), material_type=material_type, provider=provider)
+                           title=ch.get("title"), material_type=material_type, provider=provider, school_id=school_id)
             total += n
             print(f"[Embeddings] OK: {pdf_filename} ({n} chunks)")
         except Exception as e:
@@ -226,24 +250,40 @@ def ingest_bulk(class_name, subject, chapters, material_type="textbook", provide
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────
-def query(class_name, subject, unit, query_text, n_results=5, provider='local'):
+def query(class_name, subject, unit, query_text, n_results=5, provider='local', school_id=None):
     class_name = normalize_label(class_name)
     subject    = normalize_label(subject)
     unit       = normalize_label(unit)
     empty = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-    try:
-        collection = get_collection(class_name, subject, provider)
-        query_emb  = get_embedding(query_text, provider)
-        return collection.query(
-            query_embeddings=[query_emb],
-            n_results=n_results,
+
+    def _do_query(coll, nr):
+        return coll.query(
+            query_embeddings=[get_embedding(query_text, provider)],
+            n_results=nr,
             where={"unit": unit} if unit else {},
             include=["embeddings", "documents", "metadatas", "distances"]
         )
+
+    try:
+        collection = get_collection(class_name, subject, provider, school_id=school_id)
+
+        # If the school-specific store is empty, fall back to the shared store automatically.
+        effective_school_id = school_id
+        if school_id and collection.count() == 0:
+            print(f"[Embeddings] school_{school_id}/{class_name}_{subject} is empty — falling back to shared store")
+            collection = get_collection(class_name, subject, provider, school_id=None)
+            effective_school_id = None
+
+        total = collection.count()
+        safe_n = min(n_results, total) if total > 0 else 0
+        if safe_n == 0:
+            return empty
+
+        return _do_query(collection, safe_n)
     except Exception as e:
         if "invalid literal for int" in str(e) or "base 16" in str(e):
             try:
-                get_collection(class_name, subject, provider, reset_if_corrupted=True)
+                get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
             except Exception:
                 pass
             return empty
@@ -251,7 +291,7 @@ def query(class_name, subject, unit, query_text, n_results=5, provider='local'):
 
 
 # ── Delete embeddings ─────────────────────────────────────────────────────────
-def delete_unit_embeddings(class_name, subject, unit):
+def delete_unit_embeddings(class_name, subject, unit, school_id=None):
     """Remove all embedding chunks for a unit from every provider's collection."""
     class_name = normalize_label(class_name)
     subject    = normalize_label(subject)
@@ -260,19 +300,20 @@ def delete_unit_embeddings(class_name, subject, unit):
         return
     for provider in COLLECTION_NAMES:
         try:
-            col = get_collection(class_name, subject, provider)
+            col = get_collection(class_name, subject, provider, school_id=school_id)
             ids = col.get(where={"unit": unit}, include=[])["ids"]
             if ids:
                 col.delete(ids=ids)
-                print(f"[Embeddings] Deleted {len(ids)} chunks for unit='{unit}' ({provider})")
+                print(f"[Embeddings] Deleted {len(ids)} chunks for unit='{unit}' ({provider}) school_id={school_id}")
         except Exception as e:
             print(f"[Embeddings] Could not delete embeddings for unit='{unit}' ({provider}): {e}")
 
 
-def delete_subject_embeddings(class_name, subject):
+def delete_subject_embeddings(class_name, subject, school_id=None):
     """Drop the entire vector store directory for a class+subject."""
     import shutil
-    db_dir = os.path.join("vector_store", f"{normalize_label(class_name)}_{normalize_label(subject)}")
+    namespace = "shared" if school_id is None else f"school_{school_id}"
+    db_dir = os.path.join("vector_store", namespace, f"{normalize_label(class_name)}_{normalize_label(subject)}")
     if os.path.exists(db_dir):
         try:
             shutil.rmtree(db_dir)
@@ -282,15 +323,15 @@ def delete_subject_embeddings(class_name, subject):
 
 
 # ── List units ────────────────────────────────────────────────────────────────
-def list_units(class_name, subject, provider='local'):
+def list_units(class_name, subject, provider='local', school_id=None):
     try:
-        col = get_collection(class_name, subject, provider)
+        col = get_collection(class_name, subject, provider, school_id=school_id)
         results = col.get(include=["metadatas"])
         return sorted(set(m["unit"] for m in results["metadatas"]))
     except Exception as e:
         if "invalid literal for int" in str(e) or "base 16" in str(e):
             try:
-                get_collection(class_name, subject, provider, reset_if_corrupted=True)
+                get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
             except Exception:
                 pass
             return []

@@ -17,6 +17,7 @@ import {
   School,
   BarChart3,
   ShieldCheck,
+  HelpCircle,
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -53,6 +54,7 @@ export default function Sidebar() {
   const superAdminItems = [
     { href: '/superadmin', icon: LayoutDashboard, label: 'Dashboard' },
     { href: '/superadmin/schools', icon: School, label: 'Schools' },
+    { href: '/superadmin/cbse-patterns', icon: ClipboardList, label: 'CBSE Patterns' },
   ];
 
   // Regular user navigation
@@ -67,6 +69,7 @@ export default function Sidebar() {
     { href: '/materials/upload', icon: UploadCloud, label: 'Upload Material' },
     { href: '/materials', icon: BookOpen, label: 'Materials' },
     { href: '/users', icon: Users, label: 'Users' },
+    { href: '/team-usage', icon: BarChart3, label: 'Team Usage', roles: ['school_admin'] },
   ];
 
   const handleLogout = () => {
@@ -105,10 +108,12 @@ export default function Sidebar() {
         <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
           <GraduationCap className="w-4 h-4 text-white" />
         </div>
-        <div className="ml-3">
-          <span className="text-[15px] font-semibold text-slate-900 tracking-tight">QPG</span>
+        <div className="ml-3 min-w-0">
+          <span className="text-[15px] font-semibold text-slate-900 tracking-tight truncate block">
+            {isSuperAdmin ? 'QPG' : (user?.school_name || 'QPG')}
+          </span>
           {isSuperAdmin && (
-            <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
               <ShieldCheck className="w-2.5 h-2.5" />
               Admin
             </span>
@@ -141,13 +146,17 @@ export default function Sidebar() {
             <div>
               <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Management</p>
               <div className="space-y-0.5">
-                {managementItems.map((item) => (
+                {managementItems.filter(item => !item.roles || item.roles.includes(role)).map((item) => (
                   <NavLink key={item.href} {...item} />
                 ))}
               </div>
             </div>
           </>
         )}
+
+        <div className="pt-2 border-t border-slate-100">
+          <NavLink href="/manual" icon={HelpCircle} label="User Manual" />
+        </div>
       </nav>
 
       {/* User footer */}
@@ -164,6 +173,9 @@ export default function Sidebar() {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-slate-900 truncate">{user.username}</p>
                 <p className="text-xs text-slate-500 truncate">{ROLE_LABELS[role] || 'Member'}</p>
+                {!isSuperAdmin && user.school_name && (
+                  <p className="text-[11px] text-slate-400 truncate">{user.school_name}</p>
+                )}
               </div>
               <ChevronUp className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${showUserMenu ? '' : 'rotate-180'}`} />
             </button>

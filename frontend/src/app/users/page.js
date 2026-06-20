@@ -25,19 +25,22 @@ export default function UsersPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
+  const [subjects, setSubjects] = useState([]);
 
   // New User Form State
   const [newUser, setNewUser] = useState({
     username: '',
     password: '',
     email: '',
-    is_staff: false
+    is_staff: false,
+    allowed_subject: ''
   });
 
   useEffect(() => {
     const stored = localStorage.getItem('user');
     if (stored) setCurrentUser(JSON.parse(stored));
     fetchData();
+    apiClient.get('/subjects/').then(r => setSubjects(r.data.subjects || [])).catch(() => {});
   }, []);
 
   const fetchData = async () => {
@@ -60,9 +63,12 @@ export default function UsersPage() {
     e.preventDefault();
     try {
       // Use standard REST API; auth_views.py handles password hashing correctly
-      await apiClient.post('/users/', newUser);
+      await apiClient.post('/users/', {
+        ...newUser,
+        allowed_subject: newUser.allowed_subject || null,
+      });
       setSuccess(`User ${newUser.username} created successfully`);
-      setNewUser({ username: '', password: '', email: '', is_staff: false });
+      setNewUser({ username: '', password: '', email: '', is_staff: false, allowed_subject: '' });
       fetchData();
     } catch (err) {
       setError(err.response?.data?.error || err.response?.data?.username?.[0] || 'Failed to create user');
@@ -176,6 +182,19 @@ export default function UsersPage() {
             )}
           </div>
 
+          <div className="mb-10">
+            <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 block mb-3">Subject Restriction</label>
+            <select
+              value={newUser.allowed_subject}
+              onChange={e => setNewUser(p => ({ ...p, allowed_subject: e.target.value }))}
+              className="w-full px-5 py-4 bg-gray-50/80 border border-gray-200 rounded-2xl focus:ring-4 focus:ring-[#1e293b]/5 focus:border-[#1e293b] outline-none transition-all duration-300 font-bold text-gray-900"
+            >
+              <option value="">All Subjects (no restriction)</option>
+              {subjects.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <p className="mt-1 text-[9px] text-gray-500 font-bold ml-1 uppercase tracking-wider italic">If set, this user can only generate papers and upload materials for this subject.</p>
+          </div>
+
           <div className="flex justify-end">
             <button type="submit" className="bg-[#1e293b] text-white px-10 py-4 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] hover:bg-slate-800 transition-all duration-300 shadow-xl shadow-slate-200 active:scale-95 hover:-translate-y-1 flex items-center gap-3 group">
               <UserPlus size={16} className="group-hover:rotate-12 transition-transform duration-300" />
@@ -221,6 +240,11 @@ export default function UsersPage() {
                         {u.role === 'superadmin' ? 'Super Admin' : u.role === 'school_admin' ? 'School Admin' : 'Teacher'}
                       </span>
                       {u.school_name && <span className="text-[9px] text-gray-400 pl-1">{u.school_name}</span>}
+                      {u.allowed_subject && (
+                        <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest bg-blue-50 text-blue-600 border border-blue-200 w-fit">
+                          {u.allowed_subject}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="px-8 py-6">

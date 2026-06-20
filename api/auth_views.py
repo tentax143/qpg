@@ -92,6 +92,8 @@ def user_management(request):
                     profile.school = request.user.profile.school
                     profile.role = 'teacher'  # school admins can only create teachers
                     profile.require_password_change = True
+                    allowed_subject = request.data.get('allowed_subject', '') or None
+                    profile.allowed_subject = allowed_subject
                     profile.save()
                 except Exception:
                     pass

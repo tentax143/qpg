@@ -47,6 +47,13 @@ def _user_role(user):
         return None
 
 
+def _allowed_subject(user):
+    try:
+        return user.profile.allowed_subject or None
+    except Exception:
+        return None
+
+
 class ExamPatternViewSet(viewsets.ModelViewSet):
     """
     ViewSet for ExamPattern model.
@@ -60,16 +67,23 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
     search_fields = ['name', 'subject', 'class_name']
 
     def get_queryset(self):
+        from django.db.models import Q
         user = self.request.user
         if not user.is_authenticated:
             return ExamPattern.objects.all().order_by('-created_at')
         role = _user_role(user)
         if role == 'superadmin' or user.is_superuser:
             return ExamPattern.objects.all().order_by('-created_at')
+        # Global patterns (One Mark Test, CBSE official) are always visible
+        global_q = Q(pattern_source__in=['one_mark_test', 'cbse_official'])
         school = _get_school(user)
         if school:
-            return ExamPattern.objects.filter(created_by__profile__school=school).order_by('-created_at')
-        return ExamPattern.objects.filter(created_by=user).order_by('-created_at')
+            return ExamPattern.objects.filter(
+                global_q | Q(created_by__profile__school=school)
+            ).order_by('-created_at')
+        return ExamPattern.objects.filter(
+            global_q | Q(created_by=user)
+        ).order_by('-created_at')
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -237,7 +251,11 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             class_name = data.get("class_name")
             subject = data.get("subject")
             pattern_id = data.get("pattern")
-            
+
+            allowed = _allowed_subject(request.user)
+            if allowed and subject and subject.lower() != allowed.lower():
+                return Response({"error": f"You can only generate papers for: {allowed}"}, status=status.HTTP_403_FORBIDDEN)
+
             # Additional Documents Handling
             additional_context_text = ""
             additional_docs = request.FILES.getlist('additional_docs')
@@ -286,12 +304,30 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
 
             model_source = request.session.get('model_choice', 'aws')
             
+            # One Mark Test: read question count (default 20)
+            num_one_mark = None
+            if selected_pattern and selected_pattern.pattern_source == 'one_mark_test':
+                try:
+                    num_one_mark = max(1, min(200, int(data.get('num_one_mark_questions', 20))))
+                except (ValueError, TypeError):
+                    num_one_mark = 20
+
+            school_name = ""
+            try:
+                school = request.user.profile.school
+                if school:
+                    school_name = school.name or ""
+            except Exception:
+                pass
+
             meta_payload = {
                 "class_name": class_name,
                 "duration": data.get("duration", "").strip(),
                 "marks": data.get("total_marks", "").strip(),
                 "test_type": (selected_pattern.name if selected_pattern else ""),
                 "extra_context": additional_context_text,
+                "num_one_mark_questions": num_one_mark,
+                "school_name": school_name,
             }
             additional_context_json = json.dumps(meta_payload)
 
@@ -412,6 +448,22 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             if '-' in class_name:
                 class_name = class_name.split('-', 1)[0]
 
+            school_name = ""
+            try:
+                school = paper.created_by.profile.school
+                if school:
+                    school_name = school.name or ""
+            except Exception:
+                pass
+
+            import json as _rerender_json
+            rerender_ctx = _rerender_json.dumps({
+                "class_name": class_name,
+                "school_name": school_name,
+                "marks": str(paper.pattern.total_marks) if paper.pattern else "",
+                "test_type": paper.pattern.name if paper.pattern else "",
+            })
+
             blueprint = pattern_sections_to_blueprint_dict(paper.pattern)
             file_path, summary, _, _, _ = _render_paper_from_data(
                 paper_data=paper.paper_data,
@@ -419,7 +471,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                 class_name=class_name,
                 subject=paper.subject,
                 chapters=paper.chapters,
-                additional_context=None,
+                additional_context=rerender_ctx,
                 pattern=paper.pattern,
             )
 
@@ -527,7 +579,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base = Material.objects.all().select_related('uploaded_by').order_by('-uploaded_at')
+        base = Material.objects.all().select_related('uploaded_by', 'school').order_by('-uploaded_at')
         if not user.is_authenticated:
             return base
         role = _user_role(user)
@@ -535,14 +587,21 @@ class MaterialViewSet(viewsets.ModelViewSet):
             return base
         school = _get_school(user)
         if school:
-            return base.filter(uploaded_by__profile__school=school)
+            return base.filter(school=school)
         return base.filter(uploaded_by=user)
 
     def perform_create(self, serializer):
-        serializer.save(uploaded_by=self.request.user)
+        school = _get_school(self.request.user)
+        serializer.save(uploaded_by=self.request.user, school=school)
 
     def perform_destroy(self, instance):
-        embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit)
+        school_id = instance.school_id
+        if instance.type == 'textbook':
+            embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=None)
+            if school_id:
+                embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=school_id)
+        else:
+            embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=school_id)
         instance.delete()
 
     def create(self, request, *args, **kwargs):
@@ -555,6 +614,11 @@ class MaterialViewSet(viewsets.ModelViewSet):
         subject = request.data.get("subject")
         material_type = request.data.get("type", "textbook")
         bulk_upload = str(request.data.get("bulk_upload")).lower() == "true"
+
+        allowed = _allowed_subject(request.user)
+        if allowed and subject and subject.lower() != allowed.lower():
+            return Response({"error": f"You can only upload materials for: {allowed}"}, status=status.HTTP_403_FORBIDDEN)
+
         embedding_provider = request.data.get("embedding_provider", "local")
         if embedding_provider not in ("local", "openrouter"):
             embedding_provider = "local"
@@ -565,6 +629,8 @@ class MaterialViewSet(viewsets.ModelViewSet):
 
         materials_to_ingest = []
         user = request.user if request.user.is_authenticated else None
+        school = _get_school(user) if user else None
+        school_id = school.id if school else None
 
         try:
             # Handle bulk upload
@@ -572,12 +638,12 @@ class MaterialViewSet(viewsets.ModelViewSet):
                 files = request.FILES.getlist("bulk_files")
                 if not files:
                     return Response({"error": "No files provided for bulk upload"}, status=status.HTTP_400_BAD_REQUEST)
-                
+
                 for file in files:
                     if not file: continue
                     filename = file.name
                     base_name = os.path.splitext(filename)[0]
-                    
+
                     material = Material.objects.create(
                         class_name=class_name,
                         subject=subject,
@@ -585,6 +651,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         title=base_name,
                         type=material_type,
                         file=file,
+                        school=school,
                         uploaded_by=user,
                     )
                     materials_to_ingest.append({
@@ -592,7 +659,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         "title": material.title,
                         "file_path": material.file.path,
                     })
-            
+
             else:
                 chapter_count = int(request.data.get("chapter_count", 0))
                 if chapter_count == 0:
@@ -613,6 +680,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         title=title,
                         type=material_type,
                         file=file,
+                        school=school,
                         uploaded_by=user,
                     )
                     materials_to_ingest.append({
@@ -623,7 +691,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
 
             # Queue embedding ingestion via Celery
             if materials_to_ingest:
-                task = ingest_material_task.apply_async(args=[class_name, subject, materials_to_ingest, material_type], kwargs={'provider': embedding_provider})
+                task = ingest_material_task.apply_async(args=[class_name, subject, materials_to_ingest, material_type], kwargs={'provider': embedding_provider, 'school_id': school_id})
                 return Response({
                     "message": f"Uploaded {len(materials_to_ingest)} material(s). Embedding ingestion queued ({embedding_provider}).",
                     "count": len(materials_to_ingest),
@@ -646,21 +714,15 @@ class MaterialViewSet(viewsets.ModelViewSet):
         if count == 0:
             return Response({'error': 'No matching materials found'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Group by subject to detect full-subject wipes
-        from collections import defaultdict
-        by_subject = defaultdict(list)
-        for m in qs.values('class_name', 'subject', 'unit'):
-            by_subject[(m['class_name'], m['subject'])].append(m['unit'])
-
-        # Check if ALL materials for a class+subject are being deleted
-        for (class_name, subject), units in by_subject.items():
-            total_in_subject = Material.objects.filter(class_name=class_name, subject=subject).count()
-            if len(units) >= total_in_subject:
-                # Wipe the entire vector store directory
-                embeddings.delete_subject_embeddings(class_name, subject)
+        # Delete embeddings per material, respecting school-scoped namespaces
+        for m in qs.select_related('school'):
+            school_id = m.school_id
+            if m.type == 'textbook':
+                embeddings.delete_unit_embeddings(m.class_name, m.subject, m.unit, school_id=None)
+                if school_id:
+                    embeddings.delete_unit_embeddings(m.class_name, m.subject, m.unit, school_id=school_id)
             else:
-                for unit in units:
-                    embeddings.delete_unit_embeddings(class_name, subject, unit)
+                embeddings.delete_unit_embeddings(m.class_name, m.subject, m.unit, school_id=school_id)
 
         qs.delete()
         return Response({'message': f'Deleted {count} material(s)'})
@@ -752,35 +814,59 @@ def cbse_subject_pattern(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedOrReadOnly])
 def get_subjects_for_class(request):
-    """API version of subjects lookup"""
+    """Return subjects available to the requesting user's school."""
     class_name = request.GET.get("class_name", "").strip()
     if not class_name:
         return Response({"subjects": []})
-    
+
     class_num = class_name.split("-")[0]
-    subjects = Material.objects.filter(
-        class_name__istartswith=class_num
-    ).values_list("subject", flat=True).distinct().order_by("subject")
-    
+    base_qs = Material.objects.filter(class_name__istartswith=class_num)
+
+    school = _get_school(request.user) if request.user.is_authenticated else None
+    if school:
+        # Own materials + shared textbooks (if school opted in)
+        from django.db.models import Q
+        school_filter = Q(school=school)
+        if school.access_shared_vector_store:
+            school_filter |= Q(type='textbook', school__isnull=True)
+        qs = base_qs.filter(school_filter)
+    else:
+        qs = base_qs
+
+    subjects = qs.values_list("subject", flat=True).distinct().order_by("subject")
+
+    allowed = _allowed_subject(request.user) if request.user.is_authenticated else None
+    if allowed:
+        subjects = [s for s in list(subjects) if s.lower() == allowed.lower()]
+        return Response({"subjects": subjects})
+
     return Response({"subjects": list(subjects)})
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedOrReadOnly])
 def get_chapters(request):
-    """API version of chapters lookup"""
+    """Return chapters available to the requesting user's school."""
     class_name = request.GET.get("class_name", "").strip()
     subject = request.GET.get("subject", "").strip()
-    
+
     if not class_name or not subject:
         return Response({"chapters": []})
 
-    # Exact logic from core.views.get_chapters
     class_num = class_name.split("-")[0]
-    chapters = Material.objects.filter(
-        class_name__istartswith=class_num,
-        subject__iexact=subject
-    ).values_list("unit", flat=True).distinct().order_by("unit")
+    base_qs = Material.objects.filter(class_name__istartswith=class_num, subject__iexact=subject)
 
+    school = _get_school(request.user) if request.user.is_authenticated else None
+    if school:
+        from django.db.models import Q
+        school_filter = Q(school=school)
+        if school.access_shared_vector_store:
+            school_filter |= Q(type='textbook', school__isnull=True)
+        qs = base_qs.filter(school_filter)
+    else:
+        qs = base_qs
+
+    chapters = qs.values_list("unit", flat=True).distinct().order_by("unit")
     return Response({"chapters": list(chapters)})
 
 @api_view(['GET'])

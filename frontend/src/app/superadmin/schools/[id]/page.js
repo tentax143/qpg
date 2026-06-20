@@ -6,7 +6,7 @@ import Link from 'next/link';
 import apiClient from '@/lib/api';
 import {
   ArrowLeft, Users, BarChart3, FileText, Settings,
-  Plus, Trash2, Edit3, Check, X, ChevronDown,
+  Plus, Trash2, Edit3, Check, X, ChevronDown, ShieldCheck, ShieldOff,
 } from 'lucide-react';
 
 const TABS = [
@@ -37,16 +37,19 @@ export default function SchoolDetailPage({ params }) {
   const [error, setError] = useState(null);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({});
+  const [resyncing, setResyncing] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
-  const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'teacher' });
+  const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'teacher', allowed_subject: '' });
   const [addUserError, setAddUserError] = useState(null);
   const [addUserLoading, setAddUserLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [subjects, setSubjects] = useState([]);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || 'null');
     if (!user || user.role !== 'superadmin') { router.replace('/dashboard'); return; }
     fetchSchool();
+    apiClient.get('/subjects/').then(r => setSubjects(r.data.subjects || [])).catch(() => {});
   }, [id]);
 
   useEffect(() => {
@@ -67,6 +70,7 @@ export default function SchoolDetailPage({ params }) {
         email: r.data.email,
         monthly_token_budget: r.data.monthly_token_budget,
         is_active: r.data.is_active,
+        access_shared_vector_store: r.data.access_shared_vector_store,
       });
     } catch (e) {
       setError(e.response?.data?.error || 'Failed to load school');
@@ -109,6 +113,19 @@ export default function SchoolDetailPage({ params }) {
     }
   }
 
+  async function handleResync() {
+    if (!window.confirm('Re-sync shared textbook data to this school? This will overwrite existing copied data.')) return;
+    setResyncing(true);
+    try {
+      await apiClient.post(`/admin/schools/${id}/resync-vectorstore/`);
+      alert('Re-sync started in background. It may take a few minutes.');
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to start re-sync');
+    } finally {
+      setResyncing(false);
+    }
+  }
+
   async function handleDeleteSchool() {
     if (!window.confirm(`Delete "${school.name}"? This cannot be undone.`)) return;
     try {
@@ -125,9 +142,12 @@ export default function SchoolDetailPage({ params }) {
     if (!newUser.username || !newUser.password) { setAddUserError('Username and password are required'); return; }
     setAddUserLoading(true);
     try {
-      const r = await apiClient.post(`/admin/schools/${id}/users/`, newUser);
+      const r = await apiClient.post(`/admin/schools/${id}/users/`, {
+        ...newUser,
+        allowed_subject: newUser.allowed_subject || null,
+      });
       setUsers(prev => [...prev, r.data]);
-      setNewUser({ username: '', email: '', password: '', role: 'teacher' });
+      setNewUser({ username: '', email: '', password: '', role: 'teacher', allowed_subject: '' });
       setShowAddUser(false);
     } catch (e) {
       const errs = e.response?.data;
@@ -144,6 +164,17 @@ export default function SchoolDetailPage({ params }) {
       setUsers(prev => prev.filter(u => u.id !== userId));
     } catch (e) {
       alert(e.response?.data?.error || 'Failed to remove user');
+    }
+  }
+
+  async function handleChangeRole(userId, username, newRole) {
+    const label = newRole === 'school_admin' ? 'promote to School Admin' : 'demote to Teacher';
+    if (!window.confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} "${username}"?`)) return;
+    try {
+      const res = await apiClient.patch(`/admin/schools/${id}/users/${userId}/`, { role: newRole });
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: res.data.role } : u));
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to update role');
     }
   }
 
@@ -267,6 +298,49 @@ export default function SchoolDetailPage({ params }) {
                 </label>
               </div>
             )}
+
+            {/* Shared vector store — always shown */}
+            <div className="border border-blue-100 bg-blue-50 rounded-lg p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {editing ? (
+                    <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editForm.access_shared_vector_store}
+                        onChange={e => setEditForm(prev => ({ ...prev, access_shared_vector_store: e.target.checked }))}
+                        className="w-4 h-4 text-blue-600 border-slate-300 rounded"
+                      />
+                      Shared textbook vector store access
+                    </label>
+                  ) : (
+                    <>
+                      <span className={`w-2 h-2 rounded-full ${school.access_shared_vector_store ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                      <span className="text-sm font-medium text-slate-700">Shared textbook vector store</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${school.access_shared_vector_store ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                        {school.access_shared_vector_store ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {!editing && school.access_shared_vector_store && (
+                  <button
+                    onClick={handleResync}
+                    disabled={resyncing}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-blue-300 text-blue-600 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors"
+                  >
+                    {resyncing ? <div className="w-3 h-3 border-2 border-blue-400/30 border-t-blue-600 rounded-full animate-spin" /> : null}
+                    {resyncing ? 'Syncing…' : 'Re-sync'}
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-slate-500">
+                {school.access_shared_vector_store
+                  ? 'This school has a copy of shared textbook embeddings and subject/chapter data. Use Re-sync to pull the latest shared textbook updates.'
+                  : 'Enable to copy shared textbook embeddings and subject metadata to this school.'
+                }
+              </p>
+            </div>
           </div>
         </div>
       )}
@@ -330,6 +404,18 @@ export default function SchoolDetailPage({ params }) {
                     <option value="school_admin">School Admin</option>
                   </select>
                 </div>
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Subject Restriction</label>
+                  <select
+                    value={newUser.allowed_subject}
+                    onChange={e => setNewUser(p => ({ ...p, allowed_subject: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    <option value="">All Subjects (no restriction)</option>
+                    {subjects.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <p className="mt-1 text-xs text-slate-400">If set, this user can only generate papers and upload materials for this subject.</p>
+                </div>
                 <div className="col-span-2 flex gap-2">
                   <button
                     type="submit"
@@ -385,13 +471,32 @@ export default function SchoolDetailPage({ params }) {
                         {new Date(u.date_joined).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => handleRemoveUser(u.id, u.username)}
-                          className="text-slate-300 hover:text-red-500 transition-colors"
-                          title="Remove user"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="inline-flex items-center gap-2">
+                          {u.role === 'teacher' ? (
+                            <button
+                              onClick={() => handleChangeRole(u.id, u.username, 'school_admin')}
+                              className="text-slate-300 hover:text-violet-600 transition-colors"
+                              title="Promote to School Admin"
+                            >
+                              <ShieldCheck className="w-4 h-4" />
+                            </button>
+                          ) : u.role === 'school_admin' ? (
+                            <button
+                              onClick={() => handleChangeRole(u.id, u.username, 'teacher')}
+                              className="text-slate-300 hover:text-amber-500 transition-colors"
+                              title="Demote to Teacher"
+                            >
+                              <ShieldOff className="w-4 h-4" />
+                            </button>
+                          ) : null}
+                          <button
+                            onClick={() => handleRemoveUser(u.id, u.username)}
+                            className="text-slate-300 hover:text-red-500 transition-colors"
+                            title="Remove user"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

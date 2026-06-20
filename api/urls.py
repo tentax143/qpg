@@ -24,7 +24,12 @@ from .admin_views import (
     school_user_remove,
     school_usage,
     school_papers,
+    school_user_usage,
+    school_resync_vectorstore,
     my_school,
+    update_cbse_patterns,
+    cbse_update_status,
+    cbse_patterns_list,
 )
 
 # Create a router and register our viewsets
@@ -63,7 +68,12 @@ urlpatterns = [
     path('admin/schools/<int:pk>/users/<int:user_id>/', school_user_remove, name='api_school_user_remove'),
     path('admin/schools/<int:pk>/usage/', school_usage, name='api_school_usage'),
     path('admin/schools/<int:pk>/papers/', school_papers, name='api_school_papers'),
+    path('admin/schools/<int:pk>/user-usage/', school_user_usage, name='api_school_user_usage'),
+    path('admin/schools/<int:pk>/resync-vectorstore/', school_resync_vectorstore, name='api_school_resync_vectorstore'),
     path('admin/my-school/', my_school, name='api_my_school'),
+    path('admin/cbse-patterns/', cbse_patterns_list, name='api_cbse_patterns_list'),
+    path('admin/cbse-patterns/update/', update_cbse_patterns, name='api_update_cbse_patterns'),
+    path('admin/cbse-patterns/status/<str:task_id>/', cbse_update_status, name='api_cbse_update_status'),
 
     path('', include(router.urls)),
 ]

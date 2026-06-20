@@ -27,13 +27,14 @@ function GeneratorContent() {
     class_name: '',
     subject: '',
     pattern: '',
-    difficulty: 'Medium',
+    difficulty: 'Easy',
     blueprint: '',
     chapters: '',
     duration: '',
     total_marks: '',
   });
 
+  const [numOneMarkQuestions, setNumOneMarkQuestions] = useState(20);
   const [additionalFiles, setAdditionalFiles] = useState([]);
   
   // Data State
@@ -43,6 +44,9 @@ function GeneratorContent() {
   const [availableChapters, setAvailableChapters] = useState([]);
   const [selectedChapters, setSelectedChapters] = useState([]);
   
+  // One Mark Test helper — derived from selected pattern
+  const isOneMarkTest = patterns.find(p => String(p.id) === String(formData.pattern))?.pattern_source === 'one_mark_test';
+
   // UI State
   const [selectedPatternDetails, setSelectedPatternDetails] = useState(null);
   const [loadingSubjects, setLoadingSubjects] = useState(false);
@@ -51,6 +55,15 @@ function GeneratorContent() {
   const [loadingPatternDetails, setLoadingPatternDetails] = useState(false);
   const [showBlueprintModal, setShowBlueprintModal] = useState(false);
   const [previewBlueprintData, setPreviewBlueprintData] = useState(null);
+  const [expandedSections, setExpandedSections] = useState(new Set());
+
+  const toggleSection = (idx) => {
+    setExpandedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
 
   useEffect(() => {
     fetchInitialData();
@@ -149,6 +162,7 @@ function GeneratorContent() {
 
   // Load pattern details when pattern changes
   useEffect(() => {
+    setExpandedSections(new Set());
     if (formData.pattern) {
       loadPatternDetails();
     } else {
@@ -236,7 +250,7 @@ function GeneratorContent() {
       class_name: '',
       subject: '',
       pattern: '',
-      difficulty: 'Medium',
+      difficulty: 'Easy',
       blueprint: '',
       chapters: '',
       duration: '',
@@ -262,7 +276,7 @@ function GeneratorContent() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (selectedChapters.length === 0) {
+    if (selectedChapters.length === 0 && !isOneMarkTest) {
       setError("Please select at least one chapter");
       return;
     }
@@ -279,6 +293,10 @@ function GeneratorContent() {
         data.append(key, formData[key]);
       }
     });
+
+    if (isOneMarkTest) {
+      data.append('num_one_mark_questions', numOneMarkQuestions);
+    }
 
     additionalFiles.forEach(file => {
       data.append('additional_docs', file);
@@ -364,7 +382,30 @@ function GeneratorContent() {
                   icon={Layers}
                   value={formData.pattern}
                   onChange={(val) => handleInputChange({ target: { name: 'pattern', value: val } })}
-                  options={patterns.map(p => ({ label: `${p.name} (${p.class_name} - ${p.subject})`, value: p.id }))}
+                  options={[
+                    ...patterns.filter(p => p.pattern_source === 'one_mark_test').map(p => ({
+                      label: `⚡ ${p.name}`,
+                      value: p.id,
+                    })),
+                    ...patterns
+                      .filter(p => p.pattern_source !== 'one_mark_test')
+                      .sort((a, b) => {
+                        const sel = formData.subject?.toLowerCase();
+                        const cls = formData.class_name;
+                        const aSubj = a.subject?.toLowerCase() === sel;
+                        const bSubj = b.subject?.toLowerCase() === sel;
+                        const aCls  = a.class_name === cls;
+                        const bCls  = b.class_name === cls;
+                        // Full match (class + subject) > subject-only > class-only > no match
+                        const aScore = (aSubj && aCls ? 3 : aSubj ? 2 : aCls ? 1 : 0);
+                        const bScore = (bSubj && bCls ? 3 : bSubj ? 2 : bCls ? 1 : 0);
+                        return bScore - aScore;
+                      })
+                      .map(p => ({
+                        label: `${p.name} (${p.class_name} - ${p.subject})`,
+                        value: p.id,
+                      })),
+                  ]}
                   placeholder="Select a pattern"
                   className="space-y-2"
                 />
@@ -384,6 +425,52 @@ function GeneratorContent() {
                   className="space-y-2"
                 />
               </div>
+
+              {/* One Mark Test: question count field */}
+              {isOneMarkTest && (
+                <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">⚡</span>
+                    <p className="text-sm font-black text-amber-800 uppercase tracking-wider">One Mark Test Configuration</p>
+                  </div>
+                  <p className="text-xs text-amber-700">
+                    Each question is a 4-option MCQ (1 mark). Correct answers are distributed randomly across options.
+                    {formData.difficulty === 'Hard' && ' Hard difficulty generates critical thinking questions.'}
+                  </p>
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-amber-800 uppercase tracking-wider">
+                      Number of Questions
+                    </label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min={5}
+                        max={100}
+                        value={numOneMarkQuestions}
+                        onChange={e => setNumOneMarkQuestions(Math.max(5, Math.min(100, parseInt(e.target.value) || 20)))}
+                        className="w-28 px-4 py-3 border border-amber-300 rounded-xl text-sm font-bold text-center focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                      />
+                      <span className="text-xs text-amber-600 font-medium">× 1 mark = {numOneMarkQuestions} marks total</span>
+                    </div>
+                    <div className="flex gap-2 pt-1">
+                      {[10, 20, 25, 30, 50].map(n => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => setNumOneMarkQuestions(n)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors ${
+                            numOneMarkQuestions === n
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+                          }`}
+                        >
+                          {n}Q
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 {/* Blueprint */}
@@ -601,14 +688,23 @@ function GeneratorContent() {
         <div className="space-y-8">
           {/* Pattern Info Card */}
           <div className={`glass-card p-0 overflow-hidden transition-all duration-500 ${selectedPatternDetails ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
-            <div className="p-6 bg-amber-500 text-white flex items-center gap-3">
+            <div className={`p-6 text-white flex items-center gap-3 transition-colors duration-300 ${
+              formData.difficulty === 'Easy' ? 'bg-green-500' :
+              formData.difficulty === 'Hard' ? 'bg-red-500' :
+              'bg-amber-500'
+            }`}>
               <AlertCircle size={22} className="animate-pulse" />
               <h3 className="text-lg font-black tracking-tight">Pattern Details</h3>
+              <span className="ml-auto text-xs font-bold uppercase tracking-widest opacity-80">{formData.difficulty}</span>
             </div>
             <div className="p-8 space-y-6">
               {loadingPatternDetails ? (
                 <div className="flex items-center justify-center py-12">
-                  <div className="w-8 h-8 border-3 border-amber-100 border-t-amber-500 rounded-full animate-spin"></div>
+                  <div className={`w-8 h-8 border-3 rounded-full animate-spin ${
+                    formData.difficulty === 'Easy' ? 'border-green-100 border-t-green-500' :
+                    formData.difficulty === 'Hard' ? 'border-red-100 border-t-red-500' :
+                    'border-amber-100 border-t-amber-500'
+                  }`}></div>
                 </div>
               ) : selectedPatternDetails && (
                 <>
@@ -628,12 +724,132 @@ function GeneratorContent() {
                        <Layers size={14} className="text-blue-500" />
                        Pattern Structure
                     </p>
-                    <div className="bg-[#0f172a] rounded-2xl p-4 overflow-hidden relative">
-                      <pre className="text-blue-400 font-mono text-[9px] leading-relaxed max-h-[150px] overflow-y-auto custom-scrollbar">
-                        <code>{JSON.stringify(selectedPatternDetails.sections, null, 2)}</code>
-                      </pre>
-                      <div className="absolute bottom-0 left-0 right-0 h-4 bg-gradient-to-t from-[#0f172a] to-transparent pointer-events-none"></div>
-                    </div>
+                    {/* Compound subject: render per-subject accordion */}
+                    {selectedPatternDetails.sections?.length > 0 && selectedPatternDetails.sections[0]?.subject ? (
+                      <div className="rounded-2xl border border-gray-100 overflow-hidden">
+                        {/* Header row */}
+                        <div className="grid grid-cols-[28px_1fr_40px_44px_56px_32px_32px_24px] bg-gray-50 border-b border-gray-200 px-3 py-2">
+                          {['§','Subject','Qs','Marks','Choice','HOTS','CBQ',''].map((h, i) => (
+                            <span key={i} className={`text-[8px] font-black text-gray-400 uppercase tracking-widest ${i >= 2 && i < 7 ? 'text-center' : ''}`}>{h}</span>
+                          ))}
+                        </div>
+
+                        {selectedPatternDetails.sections.map((sec, idx) => {
+                          const isOpen = expandedSections.has(idx);
+                          return (
+                            <div key={idx} className="border-b border-gray-50 last:border-0">
+                              {/* Clickable summary row */}
+                              <button
+                                type="button"
+                                onClick={() => toggleSection(idx)}
+                                className="w-full grid grid-cols-[28px_1fr_40px_44px_56px_32px_32px_24px] items-center px-3 py-2.5 hover:bg-blue-50/50 transition-colors text-left"
+                              >
+                                <span className="inline-flex items-center justify-center w-6 h-6 bg-blue-600 text-white rounded-lg text-[9px] font-black">{sec.name}</span>
+                                <span className="font-bold text-gray-900 text-xs truncate pr-1">{sec.subject || sec.title}</span>
+                                <span className="text-center text-xs font-bold text-gray-600">{sec.questions}</span>
+                                <span className="text-center text-xs font-black text-gray-900">{sec.marks}M</span>
+                                <span className="text-center text-[10px] font-bold">
+                                  {sec.internal_choice
+                                    ? <span className="text-emerald-700">Yes{sec.choices ? ` (${sec.choices})` : ''}</span>
+                                    : <span className="text-gray-400">No</span>}
+                                </span>
+                                <span className="text-center text-[10px] font-bold text-amber-700">{sec.hots || '—'}</span>
+                                <span className="text-center text-[10px] font-bold text-purple-700">{sec.cbq || '—'}</span>
+                                <ChevronRight size={12} className={`text-gray-400 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} />
+                              </button>
+
+                              {/* Expanded detail panel */}
+                              {isOpen && (
+                                <div className="px-4 pb-3 bg-blue-50/30 border-t border-blue-100/50">
+                                  <div className="pt-3 space-y-2.5">
+                                    {/* Blueprint info badges */}
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {sec.hots > 0 && (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-[9px] font-black uppercase tracking-wider">
+                                          ★ {sec.hots} HOTS
+                                        </span>
+                                      )}
+                                      {sec.cbq > 0 && (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-800 rounded-full text-[9px] font-black uppercase tracking-wider">
+                                          ❖ {sec.cbq} CBQ
+                                        </span>
+                                      )}
+                                      {sec.internal_choice && (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[9px] font-black uppercase tracking-wider">
+                                          ⇄ {sec.choices || ''} Internal Choice{sec.choices > 1 ? 's' : ''}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {/* Question type breakdown from question_types array */}
+                                    {sec.question_types?.length > 0 && (
+                                      <div className="rounded-xl overflow-hidden border border-gray-100">
+                                        <table className="w-full text-[9px]">
+                                          <thead>
+                                            <tr className="bg-gray-100">
+                                              <th className="text-left px-2 py-1 font-black text-gray-500 uppercase tracking-wider">Questions</th>
+                                              <th className="text-left px-2 py-1 font-black text-gray-500 uppercase tracking-wider">Type</th>
+                                              <th className="text-center px-2 py-1 font-black text-gray-500 uppercase tracking-wider">Marks</th>
+                                              <th className="text-center px-2 py-1 font-black text-gray-500 uppercase tracking-wider">Total</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {sec.question_types.map((qt, qi) => (
+                                              <tr key={qi} className="border-t border-gray-100">
+                                                <td className="px-2 py-1 font-bold text-gray-700">{qt.range || `${qt.count}Q`}</td>
+                                                <td className="px-2 py-1 text-gray-600">{qt.type}</td>
+                                                <td className="px-2 py-1 text-center font-bold text-gray-700">{qt.marks_each}M</td>
+                                                <td className="px-2 py-1 text-center font-black text-gray-900">{qt.total || qt.count * qt.marks_each}M</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    )}
+
+                                    {/* Notes text */}
+                                    {sec.notes && (
+                                      <p className="text-[9px] text-gray-500 leading-relaxed bg-white rounded-xl px-3 py-2 border border-gray-100">
+                                        {sec.notes}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        {/* Total footer */}
+                        <div className="grid grid-cols-[28px_1fr_40px_44px_56px_32px_32px_24px] items-center px-3 py-2 bg-gray-50 border-t-2 border-gray-200">
+                          <span></span>
+                          <span className="text-[9px] font-black text-gray-500 uppercase tracking-widest">Total</span>
+                          <span className="text-center text-xs font-black text-gray-900">
+                            {selectedPatternDetails.sections.reduce((s, r) => s + (r.questions || 0), 0)}
+                          </span>
+                          <span className="text-center text-xs font-black text-gray-900">
+                            {selectedPatternDetails.sections.reduce((s, r) => s + (r.marks || 0), 0)}M
+                          </span>
+                          <span colSpan={4}></span>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Traditional format: render as section rows */
+                      <div className="space-y-2">
+                        {selectedPatternDetails.sections?.map((sec, idx) => (
+                          <div key={idx} className="flex items-center justify-between px-3 py-2.5 bg-gray-50 rounded-xl border border-gray-100 text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex items-center justify-center w-6 h-6 bg-blue-600 text-white rounded-lg text-[9px] font-black">{sec.name}</span>
+                              <span className="font-bold text-gray-800 truncate max-w-[140px]">{sec.title}</span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-gray-500 font-bold">{sec.questions}Q</span>
+                              <span className="font-black text-gray-900">{sec.marks}M</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </>
               )}

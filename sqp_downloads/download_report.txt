@@ -1,0 +1,208 @@
+CBSE SQP Download Report - 2025-26
+============================================================
+
+Class 9 | Mathematics                              | NO_URL
+
+Class 9 | Science                                  | NO_URL
+
+Class 9 | Social Science                           | NO_URL
+
+Class 9 | English Language & Literature            | NO_URL
+
+Class 9 | Hindi Course A                           | NO_URL
+
+Class 9 | Hindi Course B                           | NO_URL
+
+Class 9 | Sanskrit                                 | NO_URL
+
+Class 9 | Computer Application                     | NO_URL
+
+Class 9 | Home Science                             | NO_URL
+
+Class 9 | Physical Education                       | NO_URL
+
+Class 10 | Mathematics Standard                     | SKIPPED
+  File: sqp_downloads\class_10\Mathematics Standard\SQP.pdf
+
+Class 10 | Mathematics Basic                        | SKIPPED
+  File: sqp_downloads\class_10\Mathematics Basic\SQP.pdf
+
+Class 10 | Science                                  | SKIPPED
+  File: sqp_downloads\class_10\Science\SQP.pdf
+
+Class 10 | Social Science                           | SKIPPED
+  File: sqp_downloads\class_10\Social Science\SQP.pdf
+
+Class 10 | English Language & Literature            | SKIPPED
+  File: sqp_downloads\class_10\English Language & Literature\SQP.pdf
+
+Class 10 | Hindi Course A                           | SKIPPED
+  File: sqp_downloads\class_10\Hindi Course A\SQP.pdf
+
+Class 10 | Hindi Course B                           | SKIPPED
+  File: sqp_downloads\class_10\Hindi Course B\SQP.pdf
+
+Class 10 | Sanskrit                                 | SKIPPED
+  File: sqp_downloads\class_10\Sanskrit\SQP.pdf
+
+Class 10 | Computer Science                         | SKIPPED
+  File: sqp_downloads\class_10\Computer Science\SQP.pdf
+
+Class 10 | Informatics Practices                    | NO_URL
+
+Class 10 | Home Science                             | SKIPPED
+  File: sqp_downloads\class_10\Home Science\SQP.pdf
+
+Class 10 | Physical Education                       | NO_URL
+
+Class 10 | Fine Arts                                | SKIPPED
+  File: sqp_downloads\class_10\Fine Arts\SQP.pdf
+
+Class 10 | Painting                                 | SKIPPED
+  File: sqp_downloads\class_10\Painting\SQP.pdf
+
+Class 11 | Physics                                  | NO_URL
+
+Class 11 | Chemistry                                | NO_URL
+
+Class 11 | Biology                                  | NO_URL
+
+Class 11 | Biotechnology                            | NO_URL
+
+Class 11 | Mathematics                              | NO_URL
+
+Class 11 | Accountancy                              | NO_URL
+
+Class 11 | Economics                                | NO_URL
+
+Class 11 | Business Studies                         | NO_URL
+
+Class 11 | History                                  | NO_URL
+
+Class 11 | Geography                                | NO_URL
+
+Class 11 | Political Science                        | NO_URL
+
+Class 11 | Sociology                                | NO_URL
+
+Class 11 | Psychology                               | NO_URL
+
+Class 11 | Computer Science                         | NO_URL
+
+Class 11 | Informatics Practices                    | NO_URL
+
+Class 11 | Physical Education                       | NO_URL
+
+Class 11 | English Core                             | NO_URL
+
+Class 11 | Hindi Core                               | NO_URL
+
+Class 11 | Hindi Elective                           | NO_URL
+
+Class 11 | Sanskrit                                 | NO_URL
+
+Class 11 | Home Science                             | NO_URL
+
+Class 11 | Legal Studies                            | NO_URL
+
+Class 11 | Entrepreneurship                         | NO_URL
+
+Class 11 | Applied Mathematics                      | NO_URL
+
+Class 11 | Fine Arts                                | NO_URL
+
+Class 11 | Painting                                 | NO_URL
+
+Class 11 | Dance                                    | NO_URL
+
+Class 11 | Music Hindustani                         | NO_URL
+
+Class 11 | Music Carnatic                           | NO_URL
+
+Class 12 | Physics                                  | SKIPPED
+  File: sqp_downloads\class_12\Physics\SQP.pdf
+
+Class 12 | Chemistry                                | SKIPPED
+  File: sqp_downloads\class_12\Chemistry\SQP.pdf
+
+Class 12 | Biology                                  | SKIPPED
+  File: sqp_downloads\class_12\Biology\SQP.pdf
+
+Class 12 | Biotechnology                            | SKIPPED
+  File: sqp_downloads\class_12\Biotechnology\SQP.pdf
+
+Class 12 | Mathematics                              | SKIPPED
+  File: sqp_downloads\class_12\Mathematics\SQP.pdf
+
+Class 12 | Accountancy                              | SKIPPED
+  File: sqp_downloads\class_12\Accountancy\SQP.pdf
+
+Class 12 | Economics                                | SKIPPED
+  File: sqp_downloads\class_12\Economics\SQP.pdf
+
+Class 12 | Business Studies                         | SKIPPED
+  File: sqp_downloads\class_12\Business Studies\SQP.pdf
+
+Class 12 | History                                  | SKIPPED
+  File: sqp_downloads\class_12\History\SQP.pdf
+
+Class 12 | Geography                                | SKIPPED
+  File: sqp_downloads\class_12\Geography\SQP.pdf
+
+Class 12 | Political Science                        | SKIPPED
+  File: sqp_downloads\class_12\Political Science\SQP.pdf
+
+Class 12 | Sociology                                | SKIPPED
+  File: sqp_downloads\class_12\Sociology\SQP.pdf
+
+Class 12 | Psychology                               | SKIPPED
+  File: sqp_downloads\class_12\Psychology\SQP.pdf
+
+Class 12 | Computer Science                         | SKIPPED
+  File: sqp_downloads\class_12\Computer Science\SQP.pdf
+
+Class 12 | Informatics Practices                    | SKIPPED
+  File: sqp_downloads\class_12\Informatics Practices\SQP.pdf
+
+Class 12 | Physical Education                       | SKIPPED
+  File: sqp_downloads\class_12\Physical Education\SQP.pdf
+
+Class 12 | English Core                             | SKIPPED
+  File: sqp_downloads\class_12\English Core\SQP.pdf
+
+Class 12 | Hindi Core                               | SKIPPED
+  File: sqp_downloads\class_12\Hindi Core\SQP.pdf
+
+Class 12 | Hindi Elective                           | SKIPPED
+  File: sqp_downloads\class_12\Hindi Elective\SQP.pdf
+
+Class 12 | Sanskrit                                 | SKIPPED
+  File: sqp_downloads\class_12\Sanskrit\SQP.pdf
+
+Class 12 | Home Science                             | SKIPPED
+  File: sqp_downloads\class_12\Home Science\SQP.pdf
+
+Class 12 | Legal Studies                            | SKIPPED
+  File: sqp_downloads\class_12\Legal Studies\SQP.pdf
+
+Class 12 | Entrepreneurship                         | SKIPPED
+  File: sqp_downloads\class_12\Entrepreneurship\SQP.pdf
+
+Class 12 | Applied Mathematics                      | SKIPPED
+  File: sqp_downloads\class_12\Applied Mathematics\SQP.pdf
+
+Class 12 | Fine Arts                                | SKIPPED
+  File: sqp_downloads\class_12\Fine Arts\SQP.pdf
+
+Class 12 | Painting                                 | SKIPPED
+  File: sqp_downloads\class_12\Painting\SQP.pdf
+
+Class 12 | Dance                                    | SKIPPED
+  File: sqp_downloads\class_12\Dance\SQP.pdf
+
+Class 12 | Music Hindustani                         | SKIPPED
+  File: sqp_downloads\class_12\Music Hindustani\SQP.pdf
+
+Class 12 | Music Carnatic                           | SKIPPED
+  File: sqp_downloads\class_12\Music Carnatic\SQP.pdf
+

@@ -557,43 +557,167 @@ PATTERNS["Mathematics Basic"] = {
 }
 
 # --- SCIENCE (Class 9-10) ---
+# Structure: per-subject sections (Biology § A, Chemistry § B, Physics § C)
+# Each section total verified: 26 + 26 + 28 = 80 marks.
 PATTERNS["Science"] = {
     "code": "086", "classes": ["9", "10"],
     "theory_marks": 80, "internal_assessment": 20, "total": 100,
     "duration_minutes": 180,
+    "compound_subject": True,
+    "component_subjects": ["Biology", "Chemistry", "Physics"],
     "sections": [
-        {"name": "A", "type": "MCQ (Q1-16) + Assertion-Reason (Q17-20)", "count": 20, "marks_each": 1, "total": 20, "internal_choice": False},
-        {"name": "B", "type": "Very Short Answer (VSA)", "count": 6, "marks_each": 2, "total": 12,
-         "internal_choice": True, "choices": "2 internal choices"},
-        {"name": "C", "type": "Short Answer (SA)", "count": 7, "marks_each": 3, "total": 21,
-         "internal_choice": True, "choices": "3 internal choices"},
-        {"name": "D", "type": "Long Answer (LA)", "count": 3, "marks_each": 5, "total": 15,
-         "internal_choice": True, "choices": "Internal choices in all 3"},
-        {"name": "E", "type": "Case-Based / Data-Based Questions", "count": 3, "marks_each": 4, "total": 12,
-         "internal_choice": True, "notes": "Q37-39; each has 4 sub-questions (1+1+1+1 or 2+2)"},
+        {
+            # SQP 2025-26: Q1-16 = 30m (7MCQ+2AR+3VSA+2SA+1CBQ+1LA)
+            "name": "A", "subject": "Biology",
+            "count": 16, "total": 30,
+            "internal_choice": True, "choices": 2,
+            "hots": 2, "cbq": 1,
+            "notes": (
+                "Q1-7: MCQ (1m each). Q8-9: Assertion-Reason (1m each). "
+                "Q10-12: VSA 2m each (Q11 has internal choice A or B). "
+                "Q13-14: SA 3m each. "
+                "Q15: Scenario/CBQ 4m (attempt sub-part A or B + C + D). "
+                "Q16: LA 5m (internal choice A or B)."
+            ),
+            "question_types": [
+                {"range": "Q1-7",   "type": "MCQ",                 "count": 7, "marks_each": 1, "total": 7},
+                {"range": "Q8-9",   "type": "Assertion-Reason",     "count": 2, "marks_each": 1, "total": 2},
+                {"range": "Q10-12", "type": "VSA",                  "count": 3, "marks_each": 2, "total": 6,
+                 "internal_choice": True, "choice_at": "Q11"},
+                {"range": "Q13-14", "type": "Short Answer (SA)",    "count": 2, "marks_each": 3, "total": 6},
+                {"range": "Q15",    "type": "Source-Based/CBQ",     "count": 1, "marks_each": 4, "total": 4,
+                 "sub_questions": [{"marks": 2}, {"marks": 1}, {"marks": 1}],
+                 "notes": "Sub-part A-or-B (2m) + C (1m) + D (1m); attempt A or B"},
+                {"range": "Q16",    "type": "Long Answer (LA)",     "count": 1, "marks_each": 5, "total": 5,
+                 "internal_choice": True},
+            ],
+        },
+        {
+            # SQP 2025-26: Q17-29 = 25m (7MCQ+1AR+1VSA+2SA+1CBQ+1LA)
+            "name": "B", "subject": "Chemistry",
+            "count": 13, "total": 25,
+            "internal_choice": True, "choices": 2,
+            "hots": 2, "cbq": 1,
+            "notes": (
+                "Q17-23: MCQ (1m each). Q24: Assertion-Reason (1m). "
+                "Q25: VSA 2m. "
+                "Q26: SA 3m (internal choice A or B). Q27: SA 3m. "
+                "Q28: Scenario/CBQ 4m (sub-part B has OR). "
+                "Q29: LA 5m (internal choice A or B)."
+            ),
+            "question_types": [
+                {"range": "Q17-23", "type": "MCQ",                 "count": 7, "marks_each": 1, "total": 7},
+                {"range": "Q24",    "type": "Assertion-Reason",     "count": 1, "marks_each": 1, "total": 1},
+                {"range": "Q25",    "type": "VSA",                  "count": 1, "marks_each": 2, "total": 2},
+                {"range": "Q26-27", "type": "Short Answer (SA)",    "count": 2, "marks_each": 3, "total": 6,
+                 "internal_choice": True, "choice_at": "Q26"},
+                {"range": "Q28",    "type": "Source-Based/CBQ",     "count": 1, "marks_each": 4, "total": 4,
+                 "sub_questions": [{"marks": 1}, {"marks": 1}, {"marks": 2}],
+                 "notes": "Parts A + B-or-OR + C; sub-part B has internal OR"},
+                {"range": "Q29",    "type": "Long Answer (LA)",     "count": 1, "marks_each": 5, "total": 5,
+                 "internal_choice": True},
+            ],
+        },
+        {
+            # SQP 2025-26: Q30-39 = 25m (2MCQ+1AR+2VSA+3SA+1CBQ+1LA)
+            "name": "C", "subject": "Physics",
+            "count": 10, "total": 25,
+            "internal_choice": True, "choices": 2,
+            "hots": 2, "cbq": 1,
+            "notes": (
+                "Q30-31: MCQ (1m each). Q32: Assertion-Reason (1m). "
+                "Q33: VSA 2m. Q34: VSA 2m (internal choice A or B). "
+                "Q35-37: SA 3m each. "
+                "Q38: Scenario/CBQ 4m (attempt sub-part C or D). "
+                "Q39: LA 5m (internal choice A or B)."
+            ),
+            "question_types": [
+                {"range": "Q30-31", "type": "MCQ",                 "count": 2, "marks_each": 1, "total": 2},
+                {"range": "Q32",    "type": "Assertion-Reason",     "count": 1, "marks_each": 1, "total": 1},
+                {"range": "Q33-34", "type": "VSA",                  "count": 2, "marks_each": 2, "total": 4,
+                 "internal_choice": True, "choice_at": "Q34"},
+                {"range": "Q35-37", "type": "Short Answer (SA)",    "count": 3, "marks_each": 3, "total": 9},
+                {"range": "Q38",    "type": "Source-Based/CBQ",     "count": 1, "marks_each": 4, "total": 4,
+                 "sub_questions": [{"marks": 1}, {"marks": 1}, {"marks": 2}],
+                 "notes": "Parts A + B + attempt C or D; sub-parts C and D have internal OR"},
+                {"range": "Q39",    "type": "Long Answer (LA)",     "count": 1, "marks_each": 5, "total": 5,
+                 "internal_choice": True},
+            ],
+        },
     ],
     "total_questions": 39,
-    "notes": "Covers Biology, Chemistry, Physics integrated. 2025-26 onwards split into explicit subject sections.",
+    "notes": "Biology § A (30m) + Chemistry § B (25m) + Physics § C (25m) = 80m. Verified against CBSE SQP 2025-26.",
 }
 
 # --- SOCIAL SCIENCE (Class 9-10) ---
+# Structure: per-subject sections (History § A, Geography § B, Political Science § C, Economics § D)
 PATTERNS["Social Science"] = {
     "code": "087", "classes": ["9", "10"],
     "theory_marks": 80, "internal_assessment": 20, "total": 100,
     "duration_minutes": 180,
+    "compound_subject": True,
+    "component_subjects": ["History", "Geography", "Political Science", "Economics"],
     "sections": [
-        {"name": "A", "type": "MCQ incl. Assertion-Reason", "count": 20, "marks_each": 1, "total": 20, "internal_choice": False},
-        {"name": "B", "type": "Short Answer (SA, 60-80 words)", "count": 5, "marks_each": 3, "total": 15,
-         "internal_choice": True, "choices": "2 internal choices"},
-        {"name": "C", "type": "Long Answer (LA, 100-120 words)", "count": 3, "marks_each": 5, "total": 15,
-         "internal_choice": True, "choices": "2 internal choices"},
-        {"name": "D", "type": "Source-Based / Case-Based Questions", "count": 3, "marks_each": 4, "total": 12,
-         "internal_choice": False, "notes": "Passage + image/cartoon + data-based"},
-        {"name": "E", "type": "Map Work", "count": 2, "marks_each": 5, "total": 10,
-         "internal_choice": False,
-         "notes": "Q33 locate/label on India map (5m), Q34 identify marked features (5m). Only one attempted (attempt any 1 of 2 map questions = 5+5 but one map is History, one Geography)"},
+        {
+            "name": "A", "subject": "History",
+            "count": 9, "total": 20,
+            "internal_choice": True, "choices": 3,
+            "hots": 2, "cbq": 1,
+            "notes": "Q1-4 MCQ (1M each). Q5 VSA 2M (OR). Q6 SA 3M (OR). Q7 LA 5M (OR). Q8 Source-Based CBQ 4M (3 sub-Qs). Q9 Map Work 2M.",
+            "question_types": [
+                {"range": "Q1-4", "type": "MCQ / Objective", "count": 4, "marks_each": 1, "total": 4},
+                {"range": "Q5", "type": "VSA — max 40 words", "count": 1, "marks_each": 2, "total": 2},
+                {"range": "Q6", "type": "Short Answer — max 60 words", "count": 1, "marks_each": 3, "total": 3},
+                {"range": "Q7", "type": "Long Answer — max 120 words", "count": 1, "marks_each": 5, "total": 5},
+                {"range": "Q8", "type": "Source-Based / CBQ (3 sub-questions)", "count": 1, "marks_each": 4, "total": 4,
+                 "sub_questions": [{"marks": 1}, {"marks": 1}, {"marks": 2}]},
+                {"range": "Q9", "type": "Map Work", "count": 1, "marks_each": 2, "total": 2},
+            ],
+        },
+        {
+            "name": "B", "subject": "Geography",
+            "count": 10, "total": 20,
+            "internal_choice": True, "choices": 2,
+            "hots": 2, "cbq": 1,
+            "notes": "Q10-15 MCQ (1M each). Q16 VSA 2M. Q17 LA 5M (OR). Q18 Source-Based CBQ 4M (3 sub-Qs). Q19 Map Work 3M (Part I has OR).",
+            "question_types": [
+                {"range": "Q10-15", "type": "MCQ / Objective", "count": 6, "marks_each": 1, "total": 6},
+                {"range": "Q16", "type": "VSA — max 40 words", "count": 1, "marks_each": 2, "total": 2},
+                {"range": "Q17", "type": "Long Answer — max 120 words", "count": 1, "marks_each": 5, "total": 5},
+                {"range": "Q18", "type": "Source-Based / CBQ (3 sub-questions)", "count": 1, "marks_each": 4, "total": 4,
+                 "sub_questions": [{"marks": 1}, {"marks": 2}, {"marks": 1}]},
+                {"range": "Q19", "type": "Map Work (Part I OR + Part II any 2 of 3)", "count": 1, "marks_each": 3, "total": 3},
+            ],
+        },
+        {
+            "name": "C", "subject": "Political Science",
+            "count": 9, "total": 20,
+            "internal_choice": True, "choices": 1,
+            "hots": 2, "cbq": 1,
+            "notes": "Q20-23 MCQ incl. Assertion-Reason (1M each). Q24-25 VSA 2M each. Q26 SA 3M. Q27 LA 5M (OR). Q28 CBQ 4M (3 sub-Qs).",
+            "question_types": [
+                {"range": "Q20-23", "type": "MCQ / Assertion-Reason", "count": 4, "marks_each": 1, "total": 4},
+                {"range": "Q24-25", "type": "VSA — max 40 words", "count": 2, "marks_each": 2, "total": 4},
+                {"range": "Q26", "type": "Short Answer — max 60 words", "count": 1, "marks_each": 3, "total": 3},
+                {"range": "Q27", "type": "Long Answer — max 120 words", "count": 1, "marks_each": 5, "total": 5},
+                {"range": "Q28", "type": "Case-Based / CBQ (3 sub-questions)", "count": 1, "marks_each": 4, "total": 4,
+                 "sub_questions": [{"marks": 1}, {"marks": 1}, {"marks": 2}]},
+            ],
+        },
+        {
+            "name": "D", "subject": "Economics",
+            "count": 10, "total": 20,
+            "internal_choice": True, "choices": 1,
+            "hots": 2, "cbq": 0,
+            "notes": "Q29-34 MCQ (1M each). Q35-37 SA 3M each. Q38 LA 5M (OR). No CBQ in Economics.",
+            "question_types": [
+                {"range": "Q29-34", "type": "MCQ / Objective", "count": 6, "marks_each": 1, "total": 6},
+                {"range": "Q35-37", "type": "Short Answer — max 60 words", "count": 3, "marks_each": 3, "total": 9},
+                {"range": "Q38", "type": "Long Answer — max 120 words", "count": 1, "marks_each": 5, "total": 5},
+            ],
+        },
     ],
-    "total_questions": 33,
+    "total_questions": 38,
     "curriculum": "History + Geography + Political Science (Civics) + Economics",
 }
 
@@ -675,6 +799,537 @@ PATTERNS["Hindi Course B"] = {
         {"name": "खंड-घ — Lekhan", "total": 16},
     ],
     "total_questions": 14,
+}
+
+# ---------------------------------------------------------------------------
+# SUBJECT PAPER PATTERNS — CLASSES 6, 7, 8 (Middle School)
+# Annual / Final Exam: 80 marks theory + 20 marks IA = 100
+# Source: CBSE Assessment Policy 2024-25 (Acad-30/2024), school-conducted.
+# ---------------------------------------------------------------------------
+
+PATTERNS_MIDDLE_SCHOOL = {}
+
+# --- MATHEMATICS (Classes 6-8) ---
+PATTERNS_MIDDLE_SCHOOL["Mathematics"] = {
+    "classes": ["6", "7", "8"],
+    "theory_marks": 80, "internal_assessment": 20, "total": 100,
+    "duration_minutes": 180,
+    "sections": [
+        {"name": "A", "type": "Objective Type (MCQ / True-False / Fill in the Blanks)",
+         "count": 20, "marks_each": 1, "total": 20, "internal_choice": False,
+         "notes": "8 MCQ + 6 True/False + 6 Fill in the blanks"},
+        {"name": "B", "type": "Very Short Answer (VSA)", "count": 6, "marks_each": 2, "total": 12,
+         "internal_choice": True, "notes": "1 internal choice; show working"},
+        {"name": "C", "type": "Short Answer (SA)", "count": 6, "marks_each": 3, "total": 18,
+         "internal_choice": True, "notes": "1 internal choice; step-wise marks"},
+        {"name": "D", "type": "Long Answer (LA)", "count": 6, "marks_each": 5, "total": 30,
+         "internal_choice": True, "notes": "2 internal choices"},
+    ],
+    "total_questions": 38,
+}
+
+# --- SCIENCE (Classes 6-8) ---
+PATTERNS_MIDDLE_SCHOOL["Science"] = {
+    "classes": ["6", "7", "8"],
+    "theory_marks": 80, "internal_assessment": 20, "total": 100,
+    "duration_minutes": 180,
+    "sections": [
+        {"name": "A", "type": "Objective Type (MCQ / Match the Column / True-False)",
+         "count": 20, "marks_each": 1, "total": 20, "internal_choice": False,
+         "notes": "8 MCQ + 6 Match the Column + 6 True/False"},
+        {"name": "B", "type": "Very Short Answer (VSA)", "count": 6, "marks_each": 2, "total": 12,
+         "internal_choice": True, "notes": "Definition / one-liner with diagram where needed"},
+        {"name": "C", "type": "Short Answer (SA)", "count": 6, "marks_each": 3, "total": 18,
+         "internal_choice": True, "notes": "1 internal choice; labelled diagrams expected"},
+        {"name": "D", "type": "Long Answer / Diagram-Based", "count": 6, "marks_each": 5, "total": 30,
+         "internal_choice": True, "notes": "2 internal choices; includes experiment / diagram questions"},
+    ],
+    "total_questions": 38,
+}
+
+# --- SOCIAL SCIENCE (Classes 6-8) ---
+PATTERNS_MIDDLE_SCHOOL["Social Science"] = {
+    "classes": ["6", "7", "8"],
+    "theory_marks": 80, "internal_assessment": 20, "total": 100,
+    "duration_minutes": 180,
+    "sections": [
+        {"name": "A", "type": "Objective Type (MCQ / True-False / Match / Fill in the Blanks)",
+         "count": 20, "marks_each": 1, "total": 20, "internal_choice": False,
+         "notes": "Covers History, Geography, Civics (Political Science)"},
+        {"name": "B", "type": "Very Short Answer (VSA)", "count": 6, "marks_each": 2, "total": 12,
+         "internal_choice": False, "notes": "One-liners / definitions"},
+        {"name": "C", "type": "Short Answer (SA)", "count": 6, "marks_each": 3, "total": 18,
+         "internal_choice": True, "notes": "1 internal choice; reason-based / explain questions"},
+        {"name": "D", "type": "Long Answer / Map Work", "count": 6, "marks_each": 5, "total": 30,
+         "internal_choice": True, "notes": "Includes compulsory map work (locate & label)"},
+    ],
+    "total_questions": 38,
+    "curriculum": "History + Geography + Civics (Political Science)",
+}
+
+# --- ENGLISH LANGUAGE & LITERATURE (Classes 6-8) ---
+PATTERNS_MIDDLE_SCHOOL["English Language & Literature"] = {
+    "classes": ["6", "7", "8"],
+    "theory_marks": 80, "internal_assessment": 20, "total": 100,
+    "duration_minutes": 180,
+    "sections": [
+        {"name": "A — Reading", "total": 20,
+         "sub": [
+             {"q": "Q1", "type": "Unseen prose passage (factual, 300-350 words)", "marks": 10,
+              "types": "5 MCQ (1M each) + 5 VSA (1M each)"},
+             {"q": "Q2", "type": "Unseen poem or short passage", "marks": 10,
+              "types": "5 MCQ (1M each) + 5 VSA (1M each)"},
+         ]},
+        {"name": "B — Grammar", "total": 20,
+         "sub": [
+             {"q": "Q3-Q7", "type": "Tenses, Articles, Prepositions, Voice, Narration, Sentence transformation",
+              "marks": 20, "types": "Fill in the blanks / MCQ / Rewrite (1-2M each)"},
+         ]},
+        {"name": "C — Writing", "total": 20,
+         "sub": [
+             {"q": "Q8", "type": "Formal / Informal Letter or Notice", "marks": 10, "choice": "1 of 2"},
+             {"q": "Q9", "type": "Paragraph / Short composition (80-100 words)", "marks": 10, "choice": "1 of 2"},
+         ]},
+        {"name": "D — Literature (Textbook + Supplementary)", "total": 20,
+         "sub": [
+             {"q": "Q10", "type": "Prose extract — comprehension sub-questions", "marks": 5, "choice": "1 of 2 extracts"},
+             {"q": "Q11", "type": "Poetry extract — comprehension sub-questions", "marks": 5, "choice": "1 of 2 extracts"},
+             {"q": "Q12-Q13", "type": "Short answer questions (Textbook prose/poem)", "marks": 6,
+              "types": "2M each, attempt 3 of 4"},
+             {"q": "Q14", "type": "Long answer (value-based / character-based, 80-100 words)", "marks": 4,
+              "choice": "1 of 2"},
+         ]},
+    ],
+    "total_questions": 14,
+}
+
+# --- HINDI COURSE A (Classes 6-8) ---
+PATTERNS_MIDDLE_SCHOOL["Hindi Course A"] = {
+    "classes": ["6", "7", "8"],
+    "theory_marks": 80, "internal_assessment": 20, "total": 100,
+    "duration_minutes": 180,
+    "sections": [
+        {"name": "खंड-क — अपठित बोध (Unseen)", "total": 15,
+         "sub": [
+             {"q": "Q1", "type": "अपठित गद्यांश (Unseen Prose ~300 शब्द)", "marks": 10,
+              "types": "5 MCQ + 5 VSA (1M each)"},
+             {"q": "Q2", "type": "अपठित पद्यांश (Unseen Poem)", "marks": 5,
+              "types": "MCQ / VSA"},
+         ]},
+        {"name": "खंड-ख — व्याकरण (Grammar)", "total": 15,
+         "sub": [
+             {"type": "संज्ञा, सर्वनाम, विशेषण, क्रिया, काल, वाक्य-भेद, मुहावरे, विराम-चिह्न",
+              "marks": 15, "format": "MCQ + रिक्त स्थान + मिलान (1-2M each)"},
+         ]},
+        {"name": "खंड-ग — साहित्य (Literature — Vasant / Durva)", "total": 30,
+         "sub": [
+             {"q": "गद्यांश / पद्यांश", "type": "पाठ्यपुस्तक से प्रसंग — बोध प्रश्न", "marks": 10,
+              "types": "MCQ + लघु उत्तर"},
+             {"q": "लघु उत्तरीय", "type": "प्रश्न (Short Answer, 2M each)", "marks": 10,
+              "types": "4-5 questions, 2M each"},
+             {"q": "दीर्घ उत्तरीय", "type": "प्रश्न (Long Answer, 5M)", "marks": 10,
+              "choice": "1 of 2"},
+         ]},
+        {"name": "खंड-घ — लेखन (Writing)", "total": 20,
+         "sub": [
+             {"q": "Q — पत्र लेखन", "type": "औपचारिक / अनौपचारिक पत्र", "marks": 10, "choice": "1 of 2"},
+             {"q": "Q — अनुच्छेद / निबंध", "type": "80-100 शब्द", "marks": 10, "choice": "1 of 2"},
+         ]},
+    ],
+    "total_questions": 16,
+    "notes": "Textbooks: Vasant (main) + Durva (supplementary) as per class.",
+}
+
+# --- SANSKRIT (Classes 6-8) ---
+PATTERNS_MIDDLE_SCHOOL["Sanskrit"] = {
+    "classes": ["6", "7", "8"],
+    "theory_marks": 80, "internal_assessment": 20, "total": 100,
+    "duration_minutes": 180,
+    "sections": [
+        {"name": "A", "type": "Objective Type (MCQ / Match / Fill in the Blanks)", "count": 20, "marks_each": 1, "total": 20,
+         "internal_choice": False, "notes": "Grammar, vocabulary, sandhi/samaas recognition"},
+        {"name": "B", "type": "अपठित गद्यांश (Unseen Passage)", "count": 5, "marks_each": 2, "total": 10,
+         "internal_choice": False, "notes": "Translation or comprehension sub-questions"},
+        {"name": "C", "type": "व्याकरण (Grammar Application)", "count": 6, "marks_each": 3, "total": 18,
+         "internal_choice": True, "notes": "Roop (Shabd/Dhatu), Sandhi, Karak, Shloka meaning; 1 internal choice"},
+        {"name": "D", "type": "पाठ्यपुस्तक — प्रश्न (Textbook Questions)", "count": 4, "marks_each": 4, "total": 16,
+         "internal_choice": True, "notes": "Extract comprehension + Short/Long answer; 1 internal choice"},
+        {"name": "E", "type": "निबंध / पत्र / अनुवाद (Writing / Translation)", "count": 2, "marks_each": 8, "total": 16,
+         "internal_choice": True, "notes": "Essay in Sanskrit or formal letter; 1 internal choice"},
+    ],
+    "total_questions": 37,
+    "notes": "Textbook: Ruchira (NCERT). Emphasis on Dhatu-roop and Shabd-roop.",
+}
+
+# ---------------------------------------------------------------------------
+# ENGLISH NCERT LESSON LISTS — by class, AY 2025-26
+# Used by generator.py instead of hardcoded lesson names.
+# Update here when NCERT revises the readers; no code change needed.
+# ---------------------------------------------------------------------------
+
+ENGLISH_LESSONS = {
+    # Class 11 — Hornbill (prose + poetry) + Snapshots (supplementary)
+    "11": {
+        "hornbill_prose": [
+            "The Portrait of a Lady",
+            "We're Not Afraid to Die... if We Can All Be Together",
+            "Discovering Tut: The Saga Continues",
+            "Landscape of the Soul",
+            "The Ailing Planet: The Green Movement's Role",
+            "The Browning Version",
+            "The Adventure",
+            "Silk Road",
+        ],
+        "hornbill_poetry": [
+            "A Photograph",
+            "The Laburnum Top",
+            "The Voice of the Rain",
+            "Childhood",
+            "Father to Son",
+        ],
+        "snapshots": [
+            "The Summer of the Beautiful White Horse",
+            "The Address",
+            "Ranga's Marriage",
+            "Albert Einstein at School",
+            "Mother's Day",
+            "The Ghat of the Only World",
+            "Birth",
+            "The Tale of Melon City",
+        ],
+    },
+    # Class 12 — Flamingo (prose + poetry) + Vistas (supplementary)
+    "12": {
+        "flamingo_prose": [
+            "The Last Lesson",
+            "Lost Spring",
+            "Deep Water",
+            "The Rattrap",
+            "Indigo",
+            "Poets and Pancakes",
+            "The Interview",
+            "Going Places",
+        ],
+        "flamingo_poetry": [
+            "My Mother at Sixty-six",
+            "Keeping Quiet",
+            "A Thing of Beauty",
+            "A Roadside Stand",
+            "Aunt Jennifer's Tigers",
+        ],
+        "vistas": [
+            "The Third Level",
+            "The Tiger King",
+            "Journey to the End of the Earth",
+            "The Enemy",
+            "Should Wizard Hit Mommy",
+            "On the Face of It",
+            "Evans Tries an O-level",
+            "Memories of Childhood",
+        ],
+    },
+    # Class 9 — Beehive (prose + poetry) + Moments (supplementary)
+    "9": {
+        "beehive_prose": [
+            "The Fun They Had",
+            "The Sound of Music",
+            "The Little Girl",
+            "A Truly Beautiful Mind",
+            "The Snake and the Mirror",
+            "My Childhood",
+            "Packing",
+            "Reach for the Top",
+            "The Bond of Love",
+            "Kathmandu",
+            "If I Were You",
+        ],
+        "beehive_poetry": [
+            "The Road Not Taken",
+            "Wind",
+            "Rain on the Roof",
+            "The Lake Isle of Innisfree",
+            "A Legend of the Northland",
+            "No Men Are Foreign",
+            "The Duck and the Kangaroo",
+            "On Killing a Tree",
+            "The Snake Trying",
+            "A Slumber Did My Spirit Seal",
+        ],
+        "moments": [
+            "The Lost Child",
+            "The Adventures of Toto",
+            "Iswaran the Storyteller",
+            "In the Kingdom of Fools",
+            "The Happy Prince",
+            "Weathering the Storm in Ersama",
+            "The Last Leaf",
+            "A House Is Not a Home",
+            "The Accidental Tourist",
+            "The Beggar",
+        ],
+    },
+    # Class 10 — First Flight (prose + poetry) + Footprints without Feet (supplementary)
+    "10": {
+        "first_flight_prose": [
+            "A Letter to God",
+            "Nelson Mandela: Long Walk to Freedom",
+            "Two Stories about Flying",
+            "From the Diary of Anne Frank",
+            "Glimpses of India",
+            "Mijbil the Otter",
+            "Madam Rides the Bus",
+            "The Sermon at Benares",
+            "The Proposal",
+        ],
+        "first_flight_poetry": [
+            "Dust of Snow",
+            "Fire and Ice",
+            "A Tiger in the Zoo",
+            "How to Tell Wild Animals",
+            "The Ball Poem",
+            "Amanda",
+            "Animals",
+            "The Trees",
+            "Fog",
+            "The Tale of Custard the Dragon",
+            "For Anne Gregory",
+        ],
+        "footprints": [
+            "A Triumph of Surgery",
+            "The Thief's Story",
+            "The Midnight Visitor",
+            "A Question of Trust",
+            "Footprints without Feet",
+            "The Making of a Scientist",
+            "The Necklace",
+            "The Hack Driver",
+            "Bholi",
+            "The Book That Saved the Earth",
+        ],
+    },
+}
+
+# Flat list of all lessons for a given class (used by generate_english_paper fallback)
+def get_english_lessons(class_name: str) -> list:
+    lessons = ENGLISH_LESSONS.get(str(class_name), {})
+    flat = []
+    for section_lessons in lessons.values():
+        flat.extend(section_lessons)
+    return flat
+
+
+# ---------------------------------------------------------------------------
+# UNIT-WISE MARKS WEIGHTS — for RAG context proportional allocation
+# Source: CBSE SQP unit-wise marks distribution (AY 2025-26)
+# Format: subject → {unit/chapter_name_fragment: marks_weight}
+# Used by section_generator.get_section_context() to allocate n_results.
+# ---------------------------------------------------------------------------
+
+UNIT_MARKS_WEIGHTS = {
+    "Physics": {
+        # Class 12 unit-wise marks (total 70M theory)
+        "Electric Charges": 16,
+        "Current Electricity": 17,
+        "Moving Charges": 18,
+        "Magnetism": 18,
+        "Electromagnetic Induction": 12,
+        "Alternating Current": 12,
+        "Electromagnetic Waves": 4,
+        "Ray Optics": 18,
+        "Wave Optics": 18,
+        "Dual Nature": 11,
+        "Atoms": 12,
+        "Nuclei": 12,
+        "Semiconductor": 10,
+    },
+    "Chemistry": {
+        # Class 12 (total 70M theory)
+        "Solutions": 7,
+        "Electrochemistry": 9,
+        "Chemical Kinetics": 7,
+        "d and f Block": 7,
+        "Coordination Compounds": 7,
+        "Haloalkanes": 6,
+        "Alcohols Phenols": 6,
+        "Aldehydes Ketones": 8,
+        "Amines": 6,
+        "Biomolecules": 4,
+        "Polymers": 3,
+        "Chemistry in Everyday Life": 3,
+        "Solid State": 4,
+        "Surface Chemistry": 3,
+    },
+    "Mathematics": {
+        # Class 12 (total 80M theory)
+        "Relations and Functions": 8,
+        "Inverse Trigonometric Functions": 8,
+        "Matrices": 10,
+        "Determinants": 10,
+        "Continuity and Differentiability": 8,
+        "Applications of Derivatives": 10,
+        "Integrals": 8,
+        "Applications of Integrals": 5,
+        "Differential Equations": 5,
+        "Vector Algebra": 6,
+        "Three Dimensional Geometry": 6,
+        "Linear Programming": 5,
+        "Probability": 8,
+    },
+    "Biology": {
+        # Class 12 (total 70M theory)
+        "Reproduction": 16,
+        "Genetics and Evolution": 18,
+        "Biology and Human Welfare": 14,
+        "Biotechnology": 12,
+        "Ecology": 10,
+    },
+    "Science": {
+        # Class 9-10 (total 80M theory; spread across Bio/Chem/Physics sections)
+        "Chemical Reactions": 10,
+        "Acids Bases Salts": 10,
+        "Metals and Non-metals": 10,
+        "Carbon Compounds": 10,
+        "Life Processes": 10,
+        "Control and Coordination": 8,
+        "Reproduction": 8,
+        "Heredity": 8,
+        "Light": 8,
+        "Electricity": 8,
+        "Magnetic Effects": 8,
+    },
+    "Economics": {
+        # Class 12 (total 80M theory)
+        "National Income": 10,
+        "Money and Banking": 6,
+        "Determination of Income": 10,
+        "Government Budget": 6,
+        "Balance of Payments": 8,
+        "Micro Economics Intro": 4,
+        "Consumer Behaviour": 6,
+        "Producer Behaviour": 6,
+        "Forms of Market": 6,
+        "Indian Economy": 18,
+    },
+    # --- Social Science sub-subjects (Class 9-10) ---
+    # Each sub-subject contributes 20 marks to the 80-mark paper.
+    "History": {
+        # Class 10 — Contemporary India / India and the Contemporary World
+        "Nationalism in Europe": 4,
+        "Nationalism in India": 5,
+        "The Making of a Global World": 4,
+        "The Age of Industrialisation": 4,
+        "Print Culture and the Modern World": 3,
+    },
+    "Geography": {
+        # Class 10 — India — Resources and Development
+        "Resources and Development": 5,
+        "Forest and Wildlife Resources": 3,
+        "Water Resources": 3,
+        "Agriculture": 4,
+        "Minerals and Energy Resources": 3,
+        "Manufacturing Industries": 4,
+        "Lifelines of National Economy": 3,
+    },
+    "Political Science": {
+        # Class 10 — Democratic Politics II
+        "Power Sharing": 4,
+        "Federalism": 4,
+        "Democracy and Diversity": 3,
+        "Gender Religion and Caste": 3,
+        "Popular Struggles and Movements": 3,
+        "Political Parties": 4,
+        "Outcomes of Democracy": 3,
+        "Challenges to Democracy": 3,
+    },
+    "Economics Class 10": {
+        # Class 10 — Understanding Economic Development
+        "Development": 5,
+        "Sectors of the Indian Economy": 5,
+        "Money and Credit": 4,
+        "Globalisation and the Indian Economy": 4,
+        "Consumer Rights": 2,
+    },
+}
+
+
+# --- SANSKRIT AADHAAR (322) — Class 11 & 12 ---
+PATTERNS["Sanskrit"] = {
+    "code": "322", "classes": ["11", "12"],
+    "theory_marks": 80, "internal_assessment": 20, "total": 100,
+    "duration_minutes": 180,
+    "sections": [
+        {"name": "A", "type": "Apathit Anuvad / Gadyansh (Unseen Translation/Comprehension)",
+         "total": 15,
+         "sub": [
+             {"q": "Q1", "type": "अपठित गद्यांश — Unseen Prose passage", "marks": 10,
+              "types": "3 MCQ (1m) + 3 अर्थबोध SA (1m) + 2 vyakaran (2m)"},
+             {"q": "Q2", "type": "अपठित पद्यांश — Unseen Poetry shloka", "marks": 5,
+              "types": "2 MCQ + 2 SA + 1 bhavarth"},
+         ]},
+        {"name": "B", "type": "Vyakaran (Grammar)", "total": 25,
+         "sub": [
+             {"q": "Q3", "type": "Sandhi / Samaas (Split or merge)", "marks": 6},
+             {"q": "Q4", "type": "Shabd-roop (Declension) — Noun / Pronoun forms", "marks": 6},
+             {"q": "Q5", "type": "Dhatu-roop (Conjugation) — verb forms", "marks": 6},
+             {"q": "Q6", "type": "Karak / Vibhakti (Case endings)", "marks": 4},
+             {"q": "Q7", "type": "Anuvad — Hindi to Sanskrit translation (5 sentences)", "marks": 3},
+         ]},
+        {"name": "C", "type": "Pathyapustak — Textbook (Shashwati / Bhaswati)", "total": 30,
+         "sub": [
+             {"q": "Q8",  "type": "Gadyansh / Padyansh extract — comprehension sub-questions", "marks": 8, "choice": "1 of 2 extracts"},
+             {"q": "Q9",  "type": "Shloka meaning (Sanskrit or Hindi)", "marks": 6, "attempt": "2 of 3"},
+             {"q": "Q10", "type": "Short answer from prose chapters (~30 words)", "marks": 8, "attempt": "4 of 5", "marks_each": 2},
+             {"q": "Q11", "type": "Long answer — character / theme / message (~80 words)", "marks": 8, "choice": "1 of 2"},
+         ]},
+        {"name": "D", "type": "Rachnatmak Lekhan (Creative Writing)", "total": 10,
+         "sub": [
+             {"q": "Q12", "type": "Patra Lekhan — Formal letter in Sanskrit (50-60 words)", "marks": 5, "choice": "1 of 2"},
+             {"q": "Q13", "type": "Nibandh Lekhan — Sanskrit essay (50-60 words)", "marks": 5, "choice": "1 of 2"},
+         ]},
+    ],
+    "total_questions": 13,
+    "textbooks": {
+        "11": "Shashwati — Part 1 (NCERT)",
+        "12": "Bhaswati — Part 2 (NCERT)",
+    },
+    "internal_assessment_breakdown": {"listening_speaking": 10, "project_portfolio": 10},
+}
+
+# --- HINDI ELECTIVE (009) — Class 11 & 12 ---
+PATTERNS["Hindi Elective"] = {
+    "code": "009", "classes": ["11", "12"],
+    "theory_marks": 80, "internal_assessment": 20, "total": 100,
+    "duration_minutes": 180,
+    "notes": "Deeper literary analysis than Hindi Core. Textbooks: Aaroh + Vitaan (11), Antara + Antaraal (12).",
+    "sections": [
+        {"name": "खंड-क — Apathit Bodh", "total": 20,
+         "sub": [
+             {"q": "Q1", "type": "Apathit Gadyansh (Prose, ~600 words)", "marks": 12,
+              "sub_questions": "4 MCQ×1 + 2 SA×2 + 2 SA×2"},
+             {"q": "Q2", "type": "Apathit Padyansh (Poetry, ~12 lines)", "marks": 8,
+              "sub_questions": "4 MCQ×1 + 2 SA×2"},
+         ]},
+        {"name": "खंड-ख — Rachnatmak Lekhan", "total": 20,
+         "sub": [
+             {"q": "Q3", "type": "Nibandh (Essay, 300-350 words)", "marks": 8, "choice": "1 of 3"},
+             {"q": "Q4", "type": "Vyavharik Lekhan — Patra / Avedan / Report", "marks": 6, "choice": "1 of 2"},
+             {"q": "Q5", "type": "Sankhipt / Saar Lekhan (Summary/Précis, ~100 words)", "marks": 6},
+         ]},
+        {"name": "खंड-ग — Sahitya (Aaroh / Antara)", "total": 40,
+         "sub": [
+             {"q": "Q6",  "type": "Kavita / Gadh extract MCQ + SA", "marks": 10, "choice": "1 of 2 extracts"},
+             {"q": "Q7",  "type": "Kavita vyakhya / bhavarth (~80 words)", "marks": 6, "attempt": "2 of 3", "marks_each": 3},
+             {"q": "Q8",  "type": "Gadh chapter short answer (~60 words)", "marks": 8, "attempt": "2 of 3", "marks_each": 4},
+             {"q": "Q9",  "type": "Vitaan / Antaraal long answer (~150 words)", "marks": 8, "attempt": "2 of 3", "marks_each": 4},
+             {"q": "Q10", "type": "Essay-type critical question (~200 words)", "marks": 8, "choice": "1 of 2"},
+         ]},
+    ],
+    "total_questions": 10,
+    "textbooks": {
+        "11": {"main": "Aaroh — Part 1", "supplementary": "Vitaan — Part 1"},
+        "12": {"main": "Antara — Part 2", "supplementary": "Antaraal — Part 2"},
+    },
+    "internal_assessment_breakdown": {"listening_shravan": 10, "speaking_vachan": 10},
 }
 
 # ---------------------------------------------------------------------------

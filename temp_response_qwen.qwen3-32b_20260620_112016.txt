@@ -1,0 +1,196 @@
+Model: qwen.qwen3-32b
+Timestamp: 20260620_112016
+Input Tokens: 4293
+Output Tokens: 4096
+==================================================
+
+```json
+{
+    "A": {
+        "marks": 20,
+        "questions_count": 9,
+        "question_types": ["MCQ", "VSA", "Short Answer", "Long Answer", "Source-Based / CBQ", "Map Work"],
+        "instructions": [],
+        "constraints": {},
+        "questions": [
+            {
+                "qnum": "Q1",
+                "text": "Examine the nuanced impact of print culture on the lives of impoverished people in nineteenth-century India. Which of the following statements presents a directly contradictory effect of print within these communities? (1) It increased access to information through cheap books sold at crossroads. (2) Public libraries expanded in urban centers, excluding rural populations. (3) It provided a platform for social reformers to critique oppressive systems. (4) It reinforced existing social hierarchies by limiting access to certain knowledge.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q2",
+                "text": "The narrative of Rinderpest's spread in Africa in the 1890s is used to illustrate a broader historical process. Which of the following best captures the underlying thesis demonstrated by this event? (1) The superiority of European veterinary science over African traditional knowledge. (2) How environmental factors, rather than colonialism, shaped African economies. (3) The role of epidemics in facilitating European conquest by reshaping local socio-economic structures. (4) The accidental nature of colonial impact, independent of imperial intent.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q3",
+                "text": "Analyze the complex relationship between technological change and labor in the context of the ‘Age of Industrialisation’. Which observation about the Spinning Jenny's introduction most accurately reflects the paradoxical nature of industrial change? (1) It immediately replaced all hand-spinning workers. (2) It was resisted by workers because it threatened their livelihoods, despite increasing overall production. (3) It was welcomed by factory owners and workers alike for its efficiency. (4) Its adoption was swift and uniform across all regions of Britain.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q4",
+                "text": "Consider the differing strands within the Non-Cooperation Movement (1921). The participation of the Awadh peasantry, led by Baba Ramchandra, versus the involvement of the urban business classes, reveals a key tension. What fundamental conflict does this highlight about the concept of 'Swaraj'? (1) A conflict between violent and non-violent methods. (2) A divergence between economic goals (like 'no rent') and political goals focused on colonial oppression. (3) A disagreement over whether to boycott foreign cloth or Indian mills. (4) A regional split between northern and southern Indian participation.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q5",
+                "text": "The cartoon on page 57 (Berlusconi Puppet Theatre) in the context of political parties criticizes a specific danger to democracy. In not more than 40 words, explain what this danger is and how the cartoonist represents it.",
+                "marks": 2
+            },
+            {
+                "qnum": "Q6",
+                "text": "The Indian indentured labour system has been described as a 'new system of slavery'. In about 60 words, analyze two specific features from the provided context that justify this description, moving beyond a simple definition of exploitation.",
+                "marks": 3
+            },
+            {
+                "qnum": "Q7",
+                "text": "\"The consolidation of power by European colonizers in the late 19th century was not merely a political or military process, but was profoundly interconnected with ecological and biological factors.\" Using examples from the chapter 'The Making of a Global World' (such as Rinderpest, or the consequences of the Corn Laws), critically evaluate this statement in about 120 words.",
+                "marks": 5
+            },
+            {
+                "qnum": "Q8",
+                "text": "Read the following extract carefully and answer the questions that follow:\n\n\"From the 1860s, a few Bengali women like Kailashbashini Debi wrote books highlighting the experiences of women – about how women were imprisoned at home, kept in ignorance, forced to do hard domestic labour and treated unjustly by the very people they served. In the 1880s, in present-day Maharashtra, Tarabai Shinde and Pandita Ramabai wrote with passionate anger about the miserable lives of upper-caste Hindu women.\"\n\n(i) Identify the common subject that linked the writings of Kailashbashini Debi, Tarabai Shinde, and Pandita Ramabai. (1 mark)\n(ii) What does the mention of 'the very people they served' suggest about the nature of the oppression described? (1 mark)\n(iii) In what way did the advent of print culture create the conditions necessary for such writings to emerge and have an impact? Explain in about 40 words. (2 marks)",
+                "marks": 4
+            },
+            {
+                "qnum": "Q9",
+                "text": "On a given outline map of India, locate and label the following historical sites relevant to the Nationalist Movement: (A) The place where Gandhiji started the Satyagraha for indigo planters in 1917. (B) The place associated with the calling off of the Non-Cooperation Movement after an incident of violence in 1922. (C) The place where the Indian National Congress session demanding 'Purna Swaraj' was held in 1929.",
+                "marks": 2
+            }
+        ]
+    },
+    "B": {
+        "marks": 20,
+        "questions_count": 10,
+        "question_types": ["MCQ", "VSA", "Long Answer", "Source-Based / CBQ", "Map Work"],
+        "instructions": [],
+        "constraints": {},
+        "questions": [
+            {
+                "qnum": "Q10",
+                "text": "A geographer studying soil profiles in India notes that 'Laterite' soils develop intense leaching. Which combination of climatic conditions and human activity would most accelerate the degradation of such a soil profile, making it unsuitable for agriculture? (1) Low rainfall and intensive grazing. (2) High temperature, heavy rainfall, and deforestation. (3) Moderate rainfall and terrace farming. (4) Arid conditions and over-irrigation.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q11",
+                "text": "Analyzing the 'Lifelines of National Economy', a planner argues that the dominance of road transport over railways in certain contexts is not just about cost. Which of the following presents a geographically deterministic reason favoring roads? (1) Roads provide door-to-door service. (2) Roads can be built more cheaply in dissected, undulating topography like the Himalayas. (3) Roads are better for transporting perishable goods. (4) Roads require less initial capital investment from the government.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q12",
+                "text": "In the context of 'Forest and Wildlife Resources', the classification of forests into Reserved, Protected, and Unclassed is a management strategy. What is the primary, often unintended, socio-ecological consequence of creating a 'Reserved Forest' where local community access is severely restricted? (1) Guaranteed increase in tiger population. (2) Potential alienation of local communities from resource management, leading to conflicts. (3) Immediate improvement in groundwater recharge. (4) Automatic prevention of all forest fires.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q13",
+                "text": "The debate on large multipurpose river projects like dams involves trade-offs. A critic argues that a project providing irrigation and electricity might still be ecologically detrimental. Which of the following is a direct downstream consequence NOT typically associated with upstream benefits? (1) Regulation of river flow. (2) Sediment trapping leading to delta erosion. (3) Creation of a reservoir for fisheries. (4) Flood control in the plains.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q14",
+                "text": "Considering 'Agriculture' and cropping patterns, a farmer in semi-arid Rajasthan chooses to grow pearl millet (bajra) instead of rice. This decision is most logically influenced by which pair of geographical factors? (1) High annual rainfall and fertile alluvial soil. (2) Sandy soils, low rainfall, and high temperature. (3) Cool climate and longer growing season. (4) Rich black soil and assured irrigation.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q15",
+                "text": "The location of the aluminium smelting industry is influenced by factors different from the iron and steel industry. A new smelting plant is most likely to be strategically located near: (1) Sources of bauxite and availability of cheap electricity. (2) Coal mines and limestone quarries. (3) Major urban markets for consumer goods. (4) Large reserves of skilled labor.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q16",
+                "text": "The map showing the distribution of rainfall in India reveals that the leeward side of the Western Ghats receives significantly less rain than the windward side. In not more than 40 words, name the specific geographical process responsible for this and state one major crop grown in the rain-shadow region thus formed.",
+                "marks": 2
+            },
+            {
+                "qnum": "Q17",
+                "text": "\"The strategy of sustainable development in resource management requires reconciling the apparently contradictory goals of economic growth and environmental conservation.\" With reference to either water resources or forest resources in India, analyze one specific initiative or practice (e.g., rooftop rainwater harvesting, joint forest management) that attempts to achieve this reconciliation. (Answer in about 120 words)",
+                "marks": 5
+            },
+            {
+                "qnum": "Q18",
+                "text": "Study the following data regarding land use in India and answer the questions:\n\n**Category of Land (Approx. % of reporting area)**: Net Sown Area (54%), Forest (22%), Land not available for cultivation (14%), Fallow lands (8%), Other uncultivated land (2%).\n\n(i) Which single category of land use, if increased, could most directly help in increasing the net sown area? (1 mark)\n(ii) A geographer argues that simply increasing the net sown area is not a sustainable solution for food security. Based on the data and your knowledge, give one reason supporting this argument. (2 marks)\n(iii) Suggest one method to improve the productivity of the existing net sown area without expanding it, referring to a technological or institutional reform. (1 mark)",
+                "marks": 4
+            },
+            {
+                "qnum": "Q19",
+                "text": "On the given political outline map of India, identify and label the following: (A) The state with the largest area under dense forest cover. (B) The leading producer state of Manganese. (C) The eastern terminal station of the East-West Corridor (National Highway). (D) The major seaport located in Tamil Nadu. (E) The nuclear power plant located in Tamil Nadu.",
+                "marks": 3
+            }
+        ]
+    },
+    "C": {
+        "marks": 20,
+        "questions_count": 9,
+        "question_types": ["MCQ / Assertion-Reason", "VSA", "Short Answer", "Long Answer", "Case-Based / CBQ"],
+        "instructions": [],
+        "constraints": {},
+        "questions": [
+            {
+                "qnum": "Q20",
+                "text": "Assertion (A): In a democracy like India, political parties are often among the least trusted institutions.\nReason (R): Despite low trust, the level of participation in party activities and the feeling of being 'close to a party' has been going up in India.\nChoose the correct option: (1) Both A and R are true and R is the correct explanation of A. (2) Both A and R are true but R is NOT the correct explanation of A. (3) A is true but R is false. (4) A is false but R is true.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q21",
+                "text": "Assertion (A): The Constitution of India clearly demarcates the powers of the Union and State governments into three lists.\nReason (R): This federal division of power is the only mechanism of power-sharing adopted by the Indian Constitution.\nChoose the correct option: (1) Both A and R are true and R is the correct explanation of A. (2) Both A and R are true but R is NOT the correct explanation of A. (3) A is true but R is false. (4) A is false but R is true.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q22",
+                "text": "Assertion (A): The practice of forming coalition governments at the Centre since the 1990s is seen as a challenge to political parties.\nReason (R): Coalitions force national parties to negotiate with state parties, thereby strengthening federalism and democracy.\nChoose the correct option: (1) Both A and R are true and R is the correct explanation of A. (2) Both A and R are true but R is NOT the correct explanation of A. (3) A is true but R is false. (4) A is false but R is true.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q23",
+                "text": "Assertion (A): Democracies have a mixed record when it comes to sharing information with citizens.\nReason (R): The Right to Information (RTI) Act in India is a law that empowers citizens to question the secrecy and abuse of power in government.\nChoose the correct option: (1) Both A and R are true and R is the correct explanation of A. (2) Both A and R are true but R is NOT the correct explanation of A. (3) A is true but R is false. (4) A is false but R is true.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q24",
+                "text": "The cartoon on page 8 (Reigning the Reins) about the US President visiting Russia after Russia gave more powers to its President makes a point about democracy. In not more than 40 words, state what this point is.",
+                "marks": 2
+            },
+            {
+                "qnum": "Q25",
+                "text": "In the context of 'Outcomes of Democracy', data shows that democracies often have high economic inequalities, sometimes more than non-democracies. In not more than 40 words, give one reason why, despite this, democracies are still preferred.",
+                "marks": 2
+            },
+            {
+                "qnum": "Q26",
+                "text": "The chapter on 'Power-sharing' describes the 'community government' in Belgium as an example of power-sharing among social groups. In about 60 words, explain how this form differs from the power-sharing between different levels of government (like Centre and State).",
+                "marks": 3
+            },
+            {
+                "qnum": "Q27",
+                "text": "\"The rise of caste-based politics and the formation of parties like the BSP (Bahujan Samaj Party) represent both an assertion of democratic rights by marginalized groups and a potential challenge to the ideal of a caste-less society.\" Critically analyze this statement in about 120 words, referencing the role of political parties in a democracy.",
+                "marks": 5
+            },
+            {
+                "qnum": "Q28",
+                "text": "Read the following case study carefully and answer the questions that follow:\n\nIn the fictional country of 'Equilibria', two major communities, the Plainspeople (65%) and the Hillfolk (35%), co-exist. After independence, the Plainspeople-led government made their language the sole official language and gave preferences in government jobs to their community, arguing this was the will of the majority. The Hillfolk felt increasingly alienated, their protests were ignored, and eventually, a violent civil war broke out, devastating the country.\n\n(i) Which concept from the chapter 'Power-sharing' is violated by the actions of the Plainspeople-led government? (1 mark)\n(ii) Identify one specific policy from the case study that mirrors the majoritarian measures adopted in Sri Lanka post-1948. (1 mark)\n(iii) Based on the lessons from Belgium and Sri Lanka, suggest two constitutional or political measures that Equilibria could have adopted initially to prevent this conflict. (2 marks)",
+                "marks": 4
+            }
+        ]
+    },
+    "D": {
+        "marks": 20,
+        "questions_count": 10,
+        "question_types": ["MCQ / Objective", "Short Answer", "Long Answer"],
+        "instructions": [],
+        "constraints": {},
+        "questions": [
+            {
+                "qnum": "Q29",
+                "text": "In the credit scenario of Swapna, the cotton farmer, her inability to repay the moneylender led to a debt trap. This outcome is most directly attributed to which specific high-risk factor inherent in agricultural credit? (1) The need for collateral. (2) The dependence of loan repayment on a single, monsoon-dependent crop's success. (3) The lack of bank branches in rural areas. (4) The high documentation requirements of formal lenders.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q30",
+                "text": "Analyzing Graph 2 on the share of formal/informal credit for urban households, a key inference about economic inequality can be drawn. Which of the following statements is a correct interpretation of the data pattern? (1) Rich households avoid credit altogether. (2) Poor households rely more on informal sources, which typically charge higher interest. (3) Formal sector credit is equally accessible to all income groups. (4) Informal lenders provide cheaper credit to the poor.",
+                "marks": 1
+            },
+            {
+                "qnum": "Q31",
+                "text": "The debate on agricultural subsidies at the WTO highlights a contradiction in the argument for 'free trade'. Developed countries are accused of hypocrisy because they: (1) Import agricultural products from developing countries. (2) Impose high tariffs on industrial goods. (3) Provide massive subsidies to their own farmers while asking developing countries to stop supporting theirs. (4) Promote organic farming in developing countries.",
+                "marks": 1

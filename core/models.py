@@ -11,6 +11,7 @@ class School(models.Model):
     email = models.EmailField(blank=True)
     monthly_token_budget = models.BigIntegerField(default=0)  # 0 = unlimited
     is_active = models.BooleanField(default=True)
+    access_shared_vector_store = models.BooleanField(default=False)
     # Cumulative usage — persists even after papers are deleted
     total_papers_generated = models.BigIntegerField(default=0)
     total_tokens_used = models.BigIntegerField(default=0)
@@ -59,6 +60,7 @@ class ExamPattern(models.Model):
         ('ai_generated', 'AI Generated'),
         ('imported', 'Imported'),
         ('cbse_official', 'CBSE Official'),
+        ('one_mark_test', 'One Mark Test'),
     ]
     pattern_source = models.CharField(max_length=20, choices=PATTERN_SOURCE_CHOICES, default='manual')
     ai_prompt = models.TextField(blank=True)  # Store original teacher input for reference
@@ -72,6 +74,9 @@ class ExamPattern(models.Model):
     ]
     status  = models.CharField(max_length=20, choices=STATUS_CHOICES, default='done')
     task_id = models.CharField(max_length=255, blank=True, null=True)
+
+    # Academic year this pattern was last verified/updated against (e.g. "2025-26")
+    sqp_year = models.CharField(max_length=10, blank=True, default='')
 
     # Timestamps
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
@@ -100,10 +105,10 @@ class ExamPattern(models.Model):
         """Calculate total questions from sections"""
         total = 0
         for section in self.sections:
-            total += section.get('questions_count', 0)
-            # Handle subsections
+            # Support both 'questions_count' (new) and 'questions' (legacy CBSE seed data)
+            total += section.get('questions_count') or section.get('questions', 0)
             for subsec in section.get('subsections', []):
-                total += subsec.get('questions_count', 0)
+                total += subsec.get('questions_count') or subsec.get('questions', 0)
         return total
 
     def save(self, *args, **kwargs):
@@ -149,6 +154,7 @@ class Material(models.Model):
     file = models.FileField(upload_to="materials/")
     type = models.CharField(max_length=50, choices=MATERIAL_TYPES)
     metadata = models.JSONField(default=dict)
+    school = models.ForeignKey('School', on_delete=models.SET_NULL, null=True, blank=True, related_name='materials')
     uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
@@ -223,6 +229,7 @@ class UserProfile(models.Model):
     require_password_change = models.BooleanField(default=True)
     school = models.ForeignKey('School', on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='teacher')
+    allowed_subject = models.CharField(max_length=100, blank=True, null=True)
 
     @property
     def is_superadmin(self):
