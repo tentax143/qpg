@@ -65,7 +65,7 @@ def user_management(request):
     is_superadmin = role == 'superadmin'
     is_school_admin = role == 'school_admin'
 
-    if not (is_superadmin or is_school_admin or request.user.is_staff or request.user.is_superuser):
+    if not (is_superadmin or is_school_admin or request.user.is_superuser):
         return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
@@ -78,7 +78,7 @@ def user_management(request):
             except Exception:
                 users = User.objects.none()
         else:
-            users = User.objects.all().select_related('profile__school').order_by('-date_joined')
+            users = User.objects.none()
         return Response(UserSerializer(users, many=True).data)
 
     elif request.method == 'POST':
@@ -113,7 +113,7 @@ def delete_user(request, pk):
     except Exception:
         role = None
 
-    if not (role in ('superadmin', 'school_admin') or request.user.is_staff or request.user.is_superuser):
+    if not (role in ('superadmin', 'school_admin') or request.user.is_superuser):
         return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
 
     user_to_delete = get_object_or_404(User, pk=pk)

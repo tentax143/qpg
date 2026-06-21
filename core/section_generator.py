@@ -27,6 +27,18 @@ GEN_MODEL = mantle_client.GEN_MODEL   # deepseek.v3.2
 MAX_PARALLEL_SECTIONS = 3
 MAX_SECTION_RETRIES = 2
 
+# 4.3 — Per-question-type generation parameters (temperature + token budget)
+TYPE_PARAMS = {
+    "mcq":          {"temp": 0.6,  "budget_per_q": 300},
+    "assertion":    {"temp": 0.6,  "budget_per_q": 320},
+    "vsa":          {"temp": 0.7,  "budget_per_q": 250},
+    "sa":           {"temp": 0.75, "budget_per_q": 400},
+    "la":           {"temp": 0.8,  "budget_per_q": 700},
+    "cbq":          {"temp": 0.72, "budget_per_q": 900},
+    "source_based": {"temp": 0.78, "budget_per_q": 1100},
+    "map_work":     {"temp": 0.5,  "budget_per_q": 300},
+}
+
 
 # ─────────────────────────────────────────────
 # Work-order dataclass
@@ -56,6 +68,7 @@ class SectionWorkOrder:
     passage_instruction: Optional[str] = None
     extract_instruction: Optional[str] = None
     subsections: list = field(default_factory=list)
+    context_by_type: dict = field(default_factory=dict)  # 3.2: {type_key: context_str}
 
 
 # ─────────────────────────────────────────────
@@ -169,6 +182,7 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             '      "text": "On the given outline map of India, locate and label the following: (a) ... (b) ...",\n'
             f'      "marks": {mpq},\n'
             '      "map_note": "[Attach outline map of India — examiner to supply]",\n'
+            '      "chapter_tag": "Chapter name or number from NCERT this question is drawn from",\n'
             '      "competency_type": "application"\n'
             '    }\n'
             '  ]\n'
@@ -189,11 +203,12 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             '      "image_based": true,\n'
             '      "text": "Observe the diagram carefully and answer the following questions:",\n'
             f'      "marks": {mpq},\n'
+            '      "chapter_tag": "Chapter name or number from NCERT",\n'
             '      "competency_type": "application",\n'
             '      "sub_questions": [\n'
-            '        {"text": "What does this diagram represent? Identify it.", "marks": 1},\n'
-            '        {"text": "What do you observe about the [key structure/process] shown?", "marks": 2},\n'
-            '        {"text": "What process or function is depicted in this diagram?", "marks": 1}\n'
+            '        {"text": "What does this diagram represent? Identify it.", "marks": 1, "answer_explanation": "Key answer points"},\n'
+            '        {"text": "What do you observe about the [key structure/process] shown?", "marks": 2, "answer_explanation": "Key answer points"},\n'
+            '        {"text": "What process or function is depicted in this diagram?", "marks": 1, "answer_explanation": "Key answer points"}\n'
             '      ]\n'
             '    }\n'
             '  ]\n'
@@ -212,11 +227,12 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             '      "type": "source_based",\n'
             '      "text": "Read the passage above and answer the following:",\n'
             f'      "marks": {mpq},\n'
+            '      "chapter_tag": "Chapter name or number from NCERT",\n'
             '      "competency_type": "application",\n'
             '      "sub_questions": [\n'
-            '        {"text": "Sub-question (a)", "marks": 1},\n'
-            '        {"text": "Sub-question (b)", "marks": 1},\n'
-            '        {"text": "Sub-question (c)", "marks": 2}\n'
+            '        {"text": "Sub-question (a)", "marks": 1, "answer_explanation": "Key answer points"},\n'
+            '        {"text": "Sub-question (b)", "marks": 1, "answer_explanation": "Key answer points"},\n'
+            '        {"text": "Sub-question (c)", "marks": 2, "answer_explanation": "Key answer points"}\n'
             '      ]\n'
             '    }\n'
             '  ]\n'
@@ -236,7 +252,9 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             f'{img_field}\n'
             '      "options": {"a": "...", "b": "...", "c": "...", "d": "..."},\n'
             '      "answer": "a",\n'
+            '      "answer_explanation": "Why the correct option is right and why others are wrong (1-2 sentences)",\n'
             f'      "marks": {mpq},\n'
+            '      "chapter_tag": "Chapter name or number from NCERT",\n'
             '      "competency_type": "recall or application"\n'
             '    }\n'
             '  ]\n'
@@ -255,6 +273,8 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             '      "type": "LA",\n'
             f'      "text": "Long answer question text"{img_field},\n'
             f'      "marks": {mpq},\n'
+            '      "answer_explanation": "Model answer key points — 4-6 bullet points covering all mark-worthy content",\n'
+            '      "chapter_tag": "Chapter name or number from NCERT",\n'
             '      "competency_type": "constructed",\n'
             f'      "or_alternative": "Alternate long answer question on a DIFFERENT concept from the same chapter — equal marks ({mpq}m)"\n'
             '    }\n'
@@ -268,7 +288,9 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             f'  "section_id": "{wo.section_id}",\n'
             f'  "section_name": "{wo.section_name}",\n'
             '  "questions": [\n'
-            f'    {{"qnum": 1, "type": "SA", "text": "Question text"{img_field}, "marks": {mpq}, "competency_type": "constructed"}}\n'
+            f'    {{"qnum": 1, "type": "SA", "text": "Question text"{img_field}, "marks": {mpq}, '
+            f'"answer_explanation": "Model answer key points (2-3 sentences)", '
+            f'"chapter_tag": "Chapter name or number from NCERT", "competency_type": "constructed"}}\n'
             '  ]\n'
             '}'
         )
@@ -457,6 +479,10 @@ def extract_section_json(raw: str) -> dict:
 # ─────────────────────────────────────────────
 
 def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
+    """
+    V1 — Full structural validation. Checks ALL questions (not just first 3).
+    Type-aware: MCQ needs options+answer, LA needs or_alternative, CBQ needs sub_questions.
+    """
     errors = []
     if not isinstance(data, dict):
         return ["Response is not a JSON object"]
@@ -464,31 +490,92 @@ def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
     if not questions:
         return ["No 'questions' array found in response"]
 
-    # MO-01: expected count is provided_count when attempt-N-of-M is active
+    # MO-01: expected count
     expected_count = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
     if len(questions) != expected_count:
         errors.append(f"Expected {expected_count} questions, got {len(questions)}")
 
-    need_options = any(_type_str(t) in ("mcq", "assertion_reason", "assertion-reason") for t in wo.question_types)
-    for i, q in enumerate(questions[:3]):
-        if not q.get("text"):
-            errors.append(f"Q{i+1} missing 'text' field")
-        if need_options and len(q.get("options", {})) < 4:
-            errors.append(f"Q{i+1} must have 4 options (MCQ/AR)")
-            break
+    valid_competency = {"recall", "application", "constructed"}
+    valid_answers = {"a", "b", "c", "d"}
+    answer_dist: dict = {}
+    section_marks_total = 0.0
 
-    # M-01: skip uniform marks check for mixed-marks sections (compound sections
-    # have MCQ at 1m and SA at 3m in the same work order). Only check when
-    # marks_per_question is the sole type in the section.
-    if not wo.mixed_marks:
-        wrong_marks = [
-            i + 1 for i, q in enumerate(questions)
-            if "marks" in q and abs(float(q["marks"]) - wo.marks_per_question) > 0.1
-        ]
-        if wrong_marks:
+    for i, q in enumerate(questions):
+        n = i + 1
+        # ── Text presence (ALL questions, not just first 3) ──────────────────────
+        if not str(q.get("text", "")).strip():
+            errors.append(f"Q{n}: missing or empty 'text' field")
+
+        # ── Marks ───────────────────────────────────────────────────────────────
+        q_marks = q.get("marks")
+        if q_marks is not None:
+            try:
+                section_marks_total += float(q_marks)
+                if not wo.mixed_marks and abs(float(q_marks) - wo.marks_per_question) > 0.1:
+                    errors.append(f"Q{n}: marks={q_marks} expected {wo.marks_per_question}")
+            except (ValueError, TypeError):
+                errors.append(f"Q{n}: marks value '{q_marks}' is not a number")
+
+        # ── Competency tag ───────────────────────────────────────────────────────
+        ct = str(q.get("competency_type", "")).strip().lower()
+        if ct and ct not in valid_competency:
+            errors.append(f"Q{n}: invalid competency_type '{ct}' (must be recall/application/constructed)")
+
+        type_lower = _type_str(q.get("type", ""))
+
+        # ── MCQ / AR: options + answer ───────────────────────────────────────────
+        if type_lower in ("mcq", "assertion-reason", "assertion_reason") or \
+           any(_type_str(t) in ("mcq", "assertion_reason", "assertion-reason") for t in wo.question_types):
+            opts = q.get("options", {})
+            if len(opts) < 4:
+                errors.append(f"Q{n}: MCQ must have 4 options, found {len(opts)}")
+            answer = str(q.get("answer", "")).lower().strip()
+            if answer:
+                if answer not in valid_answers:
+                    errors.append(f"Q{n}: answer '{answer}' not in {{a,b,c,d}}")
+                else:
+                    answer_dist[answer] = answer_dist.get(answer, 0) + 1
+
+        # ── LA: or_alternative ───────────────────────────────────────────────────
+        if type_lower in ("la", "long_answer", "long answer") or \
+           any(_type_str(t) in ("la", "long_answer", "long answer") for t in wo.question_types):
+            or_alt = q.get("or_alternative")
+            if not or_alt:
+                errors.append(f"Q{n}: LA missing 'or_alternative' field")
+            elif isinstance(or_alt, dict) and not str(or_alt.get("text", "")).strip():
+                errors.append(f"Q{n}: or_alternative has empty text")
+            elif isinstance(or_alt, str) and not or_alt.strip():
+                errors.append(f"Q{n}: or_alternative is empty")
+
+        # ── CBQ / Source-based: sub_questions + marks sum ────────────────────────
+        if type_lower in ("source_based", "image_based", "cbq", "case_based"):
+            sqs = q.get("sub_questions", [])
+            if not sqs:
+                errors.append(f"Q{n}: CBQ missing 'sub_questions'")
+            else:
+                sq_sum = sum(float(sq.get("marks", 0)) for sq in sqs)
+                expected_q_marks = float(q.get("marks", wo.marks_per_question))
+                if abs(sq_sum - expected_q_marks) > 0.1:
+                    errors.append(f"Q{n}: sub_question marks sum={sq_sum} != question marks={expected_q_marks}")
+
+    # ── Answer key distribution (MCQ only) ──────────────────────────────────────
+    if answer_dist:
+        total_mcq = sum(answer_dist.values())
+        for letter, count in answer_dist.items():
+            if total_mcq >= 4 and count / total_mcq > 0.65:
+                errors.append(
+                    f"Answer bias: '{letter}' used {count}/{total_mcq} times (>{65}%). "
+                    "Distribute answers across a/b/c/d."
+                )
+
+    # ── Section marks total ──────────────────────────────────────────────────────
+    if section_marks_total > 0 and wo.marks > 0:
+        if abs(section_marks_total - wo.marks) > 1.0:
             errors.append(
-                f"Q{wrong_marks} have wrong marks value (expected {wo.marks_per_question} each)"
+                f"Section marks total={section_marks_total:.1f} expected {wo.marks}. "
+                "Check individual question marks."
             )
+
     return errors
 
 
@@ -501,6 +588,315 @@ def _type_str(t) -> str:
     if isinstance(t, dict):
         return str(t.get("type", "")).lower()
     return str(t).lower()
+
+
+_STOP_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "of", "in", "on", "to",
+    "by", "for", "with", "which", "what", "how", "why", "and", "or", "but",
+    "not", "be", "as", "at", "from", "this", "that", "it", "its", "has",
+    "have", "had", "do", "does", "did", "will", "would", "could", "should",
+    "may", "can", "if", "then", "than", "so", "very", "more", "also",
+}
+
+
+def _concept_overlap(t1: str, t2: str) -> float:
+    """Token-overlap ratio between two question texts. Returns 0.0–1.0."""
+    def tokens(s):
+        return {w.lower() for w in re.split(r"\W+", s) if len(w) > 3 and w.lower() not in _STOP_WORDS}
+    s1, s2 = tokens(t1), tokens(t2)
+    if not s1 or not s2:
+        return 0.0
+    return len(s1 & s2) / min(len(s1), len(s2))
+
+
+def validate_uniqueness(questions: list) -> list:
+    """
+    V5 Layer 1 — detect duplicate or near-duplicate questions within a section.
+    Returns list of warning strings (does not block, caller decides action).
+    """
+    warnings = []
+    for i in range(len(questions)):
+        for j in range(i + 1, len(questions)):
+            t1 = str(questions[i].get("text", ""))
+            t2 = str(questions[j].get("text", ""))
+            score = _concept_overlap(t1, t2)
+            if score > 0.50:
+                warnings.append(
+                    f"Q{i+1} and Q{j+1} overlap {score:.0%} — likely duplicate concept"
+                )
+    return warnings
+
+
+def verify_and_fix_semantic_duplicates(
+    questions: list,
+    l1_warnings: list,
+    wo: SectionWorkOrder,
+    quality_flags: list,
+) -> tuple[list, list]:
+    """
+    V5 Layer 2 — LLM semantic duplicate confirmation + targeted replacement.
+    Only called when Layer 1 flags at least one pair.
+
+    For each flagged pair:
+      1. Ask LLM: "Do these two questions test the same knowledge?"
+      2. If confirmed: replace the lower-quality one (by quality_flags score, or the second one)
+         with a fresh question on a DIFFERENT concept from the same section context.
+    Returns (updated_questions, updated_warnings).
+    """
+    if not l1_warnings or not questions:
+        return questions, l1_warnings
+
+    # Parse (i, j) indices from L1 warning strings ("Q3 and Q7 overlap …")
+    flagged_pairs = []
+    for w in l1_warnings:
+        m = re.search(r"Q(\d+) and Q(\d+)", w)
+        if m:
+            i, j = int(m.group(1)) - 1, int(m.group(2)) - 1
+            if 0 <= i < len(questions) and 0 <= j < len(questions):
+                flagged_pairs.append((i, j))
+
+    if not flagged_pairs:
+        return questions, l1_warnings
+
+    # Build quality score lookup {q_idx: avg_score} from V2 flags (lower = worse)
+    quality_score = {f.get("qnum", 0) - 1: f.get("avg_score", 3.0) for f in (quality_flags or [])}
+
+    remaining_warnings = list(l1_warnings)
+    updated_questions = list(questions)
+
+    for i, j in flagged_pairs:
+        q_i = updated_questions[i]
+        q_j = updated_questions[j]
+
+        # LLM confirmation: are these actually the same concept?
+        confirm_prompt = (
+            f"Do these two CBSE {wo.subject} questions test the same knowledge or concept?\n\n"
+            f"Q{i+1}: {str(q_i.get('text', ''))[:250]}\n\n"
+            f"Q{j+1}: {str(q_j.get('text', ''))[:250]}\n\n"
+            "Answer with JSON only:\n"
+            '{"same_concept": true, "reason": "one sentence"}'
+        )
+        try:
+            raw, _, _ = mantle_client.converse(
+                model_id=mantle_client.VAL_MODEL,
+                prompt=confirm_prompt,
+                max_tokens=100,
+                temperature=0.1,
+            )
+            raw = raw.strip()
+            m2 = re.search(r"\{.*\}", raw, re.S)
+            result = json.loads(m2.group()) if m2 else {}
+            is_dup = result.get("same_concept", False)
+        except Exception as e:
+            print(f"[V5L2] LLM confirmation failed for Q{i+1}/Q{j+1}: {e} — skipping")
+            continue
+
+        if not is_dup:
+            print(f"[V5L2] Q{i+1} and Q{j+1}: L1 false positive — not actually duplicates")
+            remaining_warnings = [w for w in remaining_warnings
+                                  if f"Q{i+1} and Q{j+1}" not in w]
+            continue
+
+        # Confirmed duplicate — replace the lower-quality question
+        score_i = quality_score.get(i, 3.0)
+        score_j = quality_score.get(j, 3.0)
+        replace_idx = j if score_i >= score_j else i
+        keep_idx = i if replace_idx == j else j
+        keep_text = str(updated_questions[keep_idx].get("text", ""))[:150]
+
+        print(f"[V5L2] Confirmed duplicate Q{i+1} ↔ Q{j+1} — regenerating Q{replace_idx+1}")
+
+        regen_prompt = (
+            f"Generate ONE CBSE Class {wo.class_name} {wo.subject} question.\n"
+            f"Type: {updated_questions[replace_idx].get('type', 'SA')}\n"
+            f"Marks: {updated_questions[replace_idx].get('marks', wo.marks_per_question)}\n"
+            f"Difficulty: {wo.difficulty}\n"
+            f"Chapters: {', '.join(str(c) for c in wo.chapters)}\n\n"
+            "IMPORTANT: The following concept is ALREADY covered — do NOT repeat it:\n"
+            f"  ✗ {keep_text}\n\n"
+            "Context:\n"
+            f"{wo.context_text[:2500]}\n\n"
+            "Output JSON only (single question object):\n"
+            '{"qnum": ' + str(replace_idx + 1) + ', "type": "SA", "text": "...", '
+            '"marks": ' + str(int(updated_questions[replace_idx].get("marks", wo.marks_per_question))) + ', '
+            '"answer_explanation": "...", "chapter_tag": "...", "competency_type": "constructed"}'
+        )
+        try:
+            rraw, _, _ = mantle_client.converse(
+                model_id=GEN_MODEL,
+                prompt=regen_prompt,
+                max_tokens=500,
+                temperature=0.85,
+            )
+            new_q = extract_single_question_json(rraw, replace_idx, wo.marks_per_question)
+            # Preserve original qnum and marks
+            new_q["qnum"] = updated_questions[replace_idx].get("qnum", replace_idx + 1)
+            new_q["marks"] = updated_questions[replace_idx].get("marks", wo.marks_per_question)
+            updated_questions[replace_idx] = new_q
+            print(f"[V5L2] Q{replace_idx+1} replaced — chapter='{new_q.get('chapter_tag', '?')}'")
+            # Remove the now-resolved warning
+            remaining_warnings = [w for w in remaining_warnings
+                                  if f"Q{i+1} and Q{j+1}" not in w and f"Q{j+1} and Q{i+1}" not in w]
+        except Exception as e:
+            print(f"[V5L2] Regen failed for Q{replace_idx+1}: {e}")
+
+    return updated_questions, remaining_warnings
+
+
+def run_content_quality_critic(questions: list, class_name: str, subject: str, difficulty: str) -> list:
+    """
+    V2 — Content Quality Critic.
+    Sends all questions in a section to the validator LLM in one batch call.
+    Returns list of {qnum, score, issues} for questions scoring below threshold.
+    Scores: 1–5 (5 = excellent). Threshold: ≥3 required (warn below, don't block).
+
+    Evaluates:
+      - Clarity: Is the question unambiguous and well-worded?
+      - NCERT alignment: Is the content from NCERT Class {class_name} {subject}?
+      - Difficulty: Does the question match the requested difficulty ({difficulty})?
+      - Pedagogical value: Does it test understanding rather than trivial facts?
+    """
+    if not questions:
+        return []
+
+    q_lines = []
+    for i, q in enumerate(questions):
+        q_lines.append(
+            f"Q{i + 1} [{q.get('type','?')}] ({q.get('marks',1)}m): "
+            f"{str(q.get('text', ''))[:200]}"
+        )
+
+    prompt = (
+        f"You are a CBSE question paper quality auditor for Class {class_name} {subject}.\n"
+        f"Requested difficulty: {difficulty}\n\n"
+        "Rate each question on a 1–5 scale across:\n"
+        "  - clarity (1=ambiguous, 5=crystal clear)\n"
+        "  - ncert_alignment (1=off-syllabus, 5=directly from NCERT)\n"
+        "  - difficulty_match (1=wrong level, 5=perfect for requested difficulty)\n"
+        "  - pedagogical_value (1=trivial recall, 5=tests deep understanding)\n\n"
+        "Questions:\n" + "\n".join(q_lines) + "\n\n"
+        "Output JSON array only:\n"
+        '[{"q": 1, "clarity": 4, "ncert_alignment": 5, "difficulty_match": 3, '
+        '"pedagogical_value": 4, "issues": "optional note if any score < 3"}, ...]\n'
+        "Include ALL questions in the output."
+    )
+
+    try:
+        raw, _, _ = mantle_client.converse(
+            model_id=mantle_client.VAL_MODEL,
+            prompt=prompt,
+            max_tokens=2048,
+            temperature=0.1,
+        )
+        raw = raw.strip()
+        m = re.search(r"\[.*\]", raw, re.S)
+        ratings = json.loads(m.group()) if m else []
+    except Exception as e:
+        print(f"[V2-Critic] LLM call failed: {e}")
+        return []
+
+    flagged = []
+    for r in ratings:
+        scores = [
+            r.get("clarity", 5),
+            r.get("ncert_alignment", 5),
+            r.get("difficulty_match", 5),
+            r.get("pedagogical_value", 5),
+        ]
+        avg = sum(scores) / len(scores)
+        if avg < 3.0:
+            flagged.append({
+                "qnum": r.get("q"),
+                "avg_score": round(avg, 1),
+                "scores": {
+                    "clarity": r.get("clarity"),
+                    "ncert_alignment": r.get("ncert_alignment"),
+                    "difficulty_match": r.get("difficulty_match"),
+                    "pedagogical_value": r.get("pedagogical_value"),
+                },
+                "issues": r.get("issues", ""),
+            })
+            print(
+                f"[V2-Critic] ⚠️  Q{r.get('q')}: avg={avg:.1f} — {r.get('issues', '')}"
+            )
+
+    if not flagged:
+        print(f"[V2-Critic] ✅ All {len(questions)} questions passed quality check")
+
+    return flagged
+
+
+def verify_mcq_answers(questions: list, class_name: str, subject: str) -> list:
+    """
+    V4 — Blind LLM answer verification for MCQ questions.
+    Sends each MCQ to the model without context; flags mismatches.
+    Returns list of {qnum, stored, llm_answer, confidence, suspect} dicts.
+    """
+    mcq_qs = [
+        (i, q) for i, q in enumerate(questions)
+        if str(q.get("type", "")).upper() in ("MCQ", "ASSERTION-REASON", "ASSERTION_REASON")
+        and q.get("options") and q.get("answer")
+    ]
+    if not mcq_qs:
+        return []
+
+    results = []
+    # Batch up to 10 per LLM call
+    batch_size = 10
+    for batch_start in range(0, len(mcq_qs), batch_size):
+        batch = mcq_qs[batch_start:batch_start + batch_size]
+        qs_block = ""
+        for idx, (_, q) in enumerate(batch):
+            opts = q.get("options", {})
+            qs_block += (
+                f"\nQ{idx + 1}. {q.get('text', '')}\n"
+                f"(a) {opts.get('a', '')}  (b) {opts.get('b', '')}\n"
+                f"(c) {opts.get('c', '')}  (d) {opts.get('d', '')}\n"
+            )
+
+        prompt = (
+            f"Answer these CBSE Class {class_name} {subject} multiple choice questions.\n"
+            "Choose the single best answer based on your NCERT knowledge. "
+            "Do NOT explain — just pick the option letter.\n"
+            f"{qs_block}\n"
+            "Output JSON array only:\n"
+            '[{"q": 1, "answer": "a", "confidence": "high"}, ...]\n'
+            'confidence: "high" (certain), "medium" (likely), "low" (guessing)'
+        )
+        try:
+            raw, _, _ = mantle_client.converse(
+                model_id=mantle_client.VAL_MODEL,
+                prompt=prompt,
+                max_tokens=300,
+                temperature=0.1,
+            )
+            raw = raw.strip()
+            # extract JSON array
+            m = re.search(r"\[.*\]", raw, re.S)
+            llm_answers = json.loads(m.group()) if m else []
+        except Exception as e:
+            print(f"[V4-MCQ-Verify] LLM call failed: {e}")
+            llm_answers = []
+
+        for idx, (orig_idx, q) in enumerate(batch):
+            stored = str(q.get("answer", "")).lower().strip()
+            llm_entry = next((x for x in llm_answers if x.get("q") == idx + 1), {})
+            llm_ans = str(llm_entry.get("answer", "")).lower().strip()
+            confidence = llm_entry.get("confidence", "unknown")
+            suspect = bool(llm_ans and llm_ans != stored and confidence in ("high", "medium"))
+            results.append({
+                "qnum": orig_idx + 1,
+                "stored": stored,
+                "llm_answer": llm_ans,
+                "confidence": confidence,
+                "suspect": suspect,
+            })
+            if suspect:
+                print(
+                    f"[V4-MCQ-Verify] ⚠️  Q{orig_idx + 1}: stored='{stored}' "
+                    f"but LLM says '{llm_ans}' (confidence={confidence})"
+                )
+    return results
 
 
 def _is_dedicated_cbq_section(wo: SectionWorkOrder) -> bool:
@@ -545,6 +941,141 @@ def _is_dedicated_cbq_section(wo: SectionWorkOrder) -> bool:
     )
 
 
+def check_ncert_grounding(questions: list, context_text: str, class_name: str, subject: str) -> list:
+    """
+    V3 — NCERT Grounding Check (RAG + LLM).
+    Verifies that SA/LA questions are grounded in the provided NCERT context chunks.
+    Uses the section's already-retrieved context — no extra embedding calls.
+    Returns list of {qnum, text_snippet, issue} for questions that appear off-syllabus.
+    """
+    # Only check SA and LA questions (MCQ/CBQ validated elsewhere)
+    sa_la_qs = [
+        (i, q) for i, q in enumerate(questions)
+        if str(q.get("type", "")).upper() in ("SA", "LA", "SHORT_ANSWER", "LONG_ANSWER")
+        and q.get("text")
+    ]
+    if not sa_la_qs or not context_text or len(context_text) < 100:
+        return []
+
+    q_lines = "\n".join(
+        f"Q{i + 1} [{q.get('type')}]: {str(q.get('text', ''))[:200]}"
+        for i, (_, q) in enumerate(sa_la_qs)
+    )
+
+    prompt = (
+        f"You are checking if CBSE Class {class_name} {subject} questions are grounded in "
+        "the provided NCERT reference text.\n\n"
+        f"NCERT REFERENCE TEXT (excerpt):\n{context_text[:3000]}\n\n"
+        f"QUESTIONS TO CHECK:\n{q_lines}\n\n"
+        "For each question, determine if it is clearly grounded in the reference text above "
+        "(the answer should be findable in the text, or the question tests concepts present in the text).\n\n"
+        "Output JSON array only:\n"
+        '[{"q": 1, "grounded": true, "issue": ""}, ...]\n'
+        "Include ALL questions. Set grounded=false only if the question topic is absent from the reference text."
+    )
+
+    try:
+        raw, _, _ = mantle_client.converse(
+            model_id=mantle_client.VAL_MODEL,
+            prompt=prompt,
+            max_tokens=1024,
+            temperature=0.1,
+        )
+        raw = raw.strip()
+        m = re.search(r"\[.*\]", raw, re.S)
+        results = json.loads(m.group()) if m else []
+    except Exception as e:
+        print(f"[V3-Grounding] LLM call failed: {e}")
+        return []
+
+    ungrounded = []
+    for r in results:
+        if not r.get("grounded", True):
+            q_idx = r.get("q", 1) - 1
+            if 0 <= q_idx < len(sa_la_qs):
+                orig_idx, q = sa_la_qs[q_idx]
+                ungrounded.append({
+                    "qnum": orig_idx + 1,
+                    "text_snippet": str(q.get("text", ""))[:80],
+                    "issue": r.get("issue", "Topic not found in NCERT context"),
+                })
+                print(
+                    f"[V3-Grounding] ⚠️  Q{orig_idx + 1}: not grounded in context — "
+                    f"{r.get('issue', '')}"
+                )
+
+    if not ungrounded:
+        print(f"[V3-Grounding] ✅ All SA/LA questions grounded in NCERT context")
+
+    return ungrounded
+
+
+def validate_cbq_passage(section_data: dict, wo: SectionWorkOrder) -> list:
+    """
+    V6 — CBQ/Source-based passage validation.
+    Checks:
+      1. Passage is factually accurate and NCERT-aligned (not fabricated).
+      2. Every sub-question is answerable SOLELY from the passage text.
+      3. No sub-question answer requires outside knowledge.
+    Returns list of issues (strings). Empty list = pass.
+    """
+    passage = section_data.get("passage", "")
+    if not passage or len(passage) < 50:
+        return []  # No passage or image-based CBQ — skip
+
+    sub_qs = []
+    for q in section_data.get("questions", []):
+        for sq in q.get("sub_questions", []):
+            sub_qs.append(sq.get("text", ""))
+
+    if not sub_qs:
+        return []
+
+    sq_block = "\n".join(f"{i + 1}. {sq}" for i, sq in enumerate(sub_qs))
+
+    prompt = (
+        f"You are validating a CBSE Class {wo.class_name} {wo.subject} source-based question.\n\n"
+        f"PASSAGE:\n{passage[:1500]}\n\n"
+        f"SUB-QUESTIONS:\n{sq_block}\n\n"
+        "Check ALL of the following and report any problems:\n"
+        "1. Is the passage factually accurate and consistent with NCERT Class "
+        f"{wo.class_name} {wo.subject}?\n"
+        "2. Is every sub-question answerable using ONLY information in the passage "
+        "(not requiring outside knowledge)?\n"
+        "3. Are there any sub-questions whose answers cannot be found in the passage?\n\n"
+        "Output JSON only:\n"
+        '{"passage_accurate": true, "all_answerable": true, "issues": []}\n'
+        "If issues exist, list them in the issues array as short strings."
+    )
+
+    try:
+        raw, _, _ = mantle_client.converse(
+            model_id=mantle_client.VAL_MODEL,
+            prompt=prompt,
+            max_tokens=512,
+            temperature=0.1,
+        )
+        raw = raw.strip()
+        m = re.search(r"\{.*\}", raw, re.S)
+        result = json.loads(m.group()) if m else {}
+    except Exception as e:
+        print(f"[V6-CBQ] LLM call failed: {e}")
+        return []
+
+    issues = result.get("issues", [])
+    if not result.get("passage_accurate", True):
+        issues.insert(0, "Passage may contain factual inaccuracies or is not NCERT-aligned")
+    if not result.get("all_answerable", True):
+        issues.insert(0, "One or more sub-questions require outside knowledge not in passage")
+
+    if issues:
+        print(f"[V6-CBQ] ⚠️  Passage issues in '{wo.section_name}': {issues}")
+    else:
+        print(f"[V6-CBQ] ✅ Passage validated for '{wo.section_name}'")
+
+    return issues
+
+
 def _post_process_cbq_images(section_data: dict, wo: SectionWorkOrder) -> None:
     """
     After questions are validated, find/generate an image for each image_based question
@@ -578,6 +1109,192 @@ def _post_process_cbq_images(section_data: dict, wo: SectionWorkOrder) -> None:
             print(f"[Section-Gen] Image generation failed for Q{i + 1}: {exc}")
 
 
+def _get_type_params(qtype_str: str) -> dict:
+    """Return TYPE_PARAMS entry for a question type string, with safe fallback."""
+    ql = qtype_str.lower().strip()
+    for key in TYPE_PARAMS:
+        if key in ql:
+            return TYPE_PARAMS[key]
+    return {"temp": 0.75, "budget_per_q": 500}
+
+
+def build_single_question_prompt(wo: SectionWorkOrder, qtype_str: str, q_index: int, avoid_chapters: list) -> str:
+    """
+    4.3 — Build a focused prompt to generate exactly ONE LA or CBQ question.
+    avoid_chapters: chapters already used in prior questions of this section.
+    """
+    context = (
+        wo.context_by_type.get(qtype_str.lower(), "")
+        or wo.context_by_type.get("la", "")
+        or wo.context_text
+    )
+    avoid_block = (
+        f"\nAVOID chapters already used: {', '.join(str(c) for c in avoid_chapters)}. "
+        "Draw this question from a DIFFERENT chapter or concept.\n"
+        if avoid_chapters else ""
+    )
+    is_la = qtype_str.lower() in ("la", "long_answer", "long answer")
+    is_cbq = qtype_str.lower() in ("cbq", "source_based", "case_based", "source based", "case based")
+    mpq = wo.marks_per_question
+
+    if is_la:
+        schema = (
+            '{\n'
+            f'  "qnum": {q_index + 1},\n'
+            '  "type": "LA",\n'
+            '  "text": "Long answer question text",\n'
+            f'  "marks": {mpq},\n'
+            '  "answer_explanation": "Model answer key points — 4-6 bullet points",\n'
+            '  "chapter_tag": "NCERT chapter name",\n'
+            '  "competency_type": "constructed",\n'
+            f'  "or_alternative": "Alternate LA question on a DIFFERENT concept — same marks ({mpq}m)"\n'
+            '}'
+        )
+    elif is_cbq:
+        sq_marks = max(1, mpq // 3)
+        schema = (
+            '{\n'
+            f'  "qnum": {q_index + 1},\n'
+            '  "type": "source_based",\n'
+            '  "passage": "PASSAGE TEXT (200-300 words, NCERT-aligned)",\n'
+            '  "text": "Read the passage above and answer the following:",\n'
+            f'  "marks": {mpq},\n'
+            '  "chapter_tag": "NCERT chapter name",\n'
+            '  "competency_type": "application",\n'
+            '  "sub_questions": [\n'
+            f'    {{"text": "Sub-question (a)", "marks": {sq_marks}, "answer_explanation": "Key answer points"}},\n'
+            f'    {{"text": "Sub-question (b)", "marks": {sq_marks}, "answer_explanation": "Key answer points"}},\n'
+            f'    {{"text": "Sub-question (c)", "marks": {mpq - 2 * sq_marks}, "answer_explanation": "Key answer points"}}\n'
+            '  ]\n'
+            '}'
+        )
+    else:
+        schema = (
+            '{\n'
+            f'  "qnum": {q_index + 1},\n'
+            f'  "type": "{qtype_str}",\n'
+            '  "text": "Question text",\n'
+            f'  "marks": {mpq},\n'
+            '  "answer_explanation": "Model answer",\n'
+            '  "chapter_tag": "NCERT chapter name",\n'
+            '  "competency_type": "constructed"\n'
+            '}'
+        )
+
+    return (
+        f"Generate exactly ONE CBSE Class {wo.class_name} {wo.subject} {qtype_str} question.\n"
+        f"Chapters: {', '.join(str(c) for c in wo.chapters)}\n"
+        f"Difficulty: {wo.difficulty}\n"
+        f"Marks: {mpq}\n"
+        f"{avoid_block}\n"
+        "REFERENCE MATERIAL:\n"
+        f"{context[:4000]}\n\n"
+        "RULES:\n"
+        "- Draw content ONLY from the reference material above\n"
+        "- Do not repeat concepts from the avoid list\n"
+        "- Write at CBSE board exam quality\n\n"
+        "OUTPUT — return ONLY this JSON (no markdown fences):\n"
+        f"{schema}"
+    )
+
+
+def extract_single_question_json(raw: str, q_index: int, mpq: float) -> dict:
+    """Extract a single question object from LLM response for 4.3 per-question generation."""
+    raw = raw.strip()
+    # Try direct JSON parse
+    m = re.search(r"\{.*\}", raw, re.S)
+    if m:
+        try:
+            obj = json.loads(m.group())
+            # Ensure required fields
+            obj.setdefault("qnum", q_index + 1)
+            obj.setdefault("marks", mpq)
+            return obj
+        except json.JSONDecodeError:
+            pass
+    return {
+        "qnum": q_index + 1,
+        "type": "SA",
+        "text": f"[Generation failed for question {q_index + 1}]",
+        "marks": mpq,
+        "competency_type": "constructed",
+        "_generation_error": True,
+    }
+
+
+def generate_la_cbq_individually(wo: SectionWorkOrder) -> tuple[dict, int, int]:
+    """
+    4.3 — Generate LA and CBQ questions one at a time with chapter diversity tracking.
+    Returns (section_data, total_in_tok, total_out_tok).
+
+    Strategy:
+      - Detect which question type applies (LA or CBQ/source_based)
+      - Generate each question sequentially, tracking chapter_tag from previous
+      - Pass used chapters as avoid_chapters to next call
+    """
+    # Determine the dominant question type for this section
+    la_types = {"la", "long_answer", "long answer"}
+    cbq_types = {"cbq", "source_based", "source based", "case_based", "case based"}
+
+    dominant_type = "LA"  # default
+    for qt in wo.question_types:
+        ql = _type_str(qt).lower()
+        if ql in cbq_types:
+            dominant_type = "source_based"
+            break
+        elif ql in la_types:
+            dominant_type = "LA"
+
+    params = _get_type_params(dominant_type)
+    questions = []
+    total_in_tok = 0
+    total_out_tok = 0
+    used_chapters: set = set()
+
+    print(f"[4.3-Individual] '{wo.section_name}': generating {wo.questions_count}× {dominant_type} individually")
+
+    for q_index in range(wo.questions_count):
+        prompt = build_single_question_prompt(
+            wo, dominant_type, q_index, list(used_chapters)
+        )
+        try:
+            raw, in_tok, out_tok = mantle_client.converse(
+                model_id=GEN_MODEL,
+                prompt=prompt,
+                max_tokens=params["budget_per_q"],
+                temperature=params["temp"],
+            )
+            total_in_tok += in_tok
+            total_out_tok += out_tok
+            q_obj = extract_single_question_json(raw, q_index, wo.marks_per_question)
+            questions.append(q_obj)
+            # Track chapter used so next question avoids it
+            chapter_used = q_obj.get("chapter_tag", "")
+            if chapter_used:
+                used_chapters.add(chapter_used)
+            print(f"[4.3-Individual] Q{q_index + 1}/{wo.questions_count} done — chapter='{chapter_used}'")
+        except Exception as e:
+            print(f"[4.3-Individual] Q{q_index + 1} failed: {e}")
+            questions.append({
+                "qnum": q_index + 1,
+                "type": dominant_type,
+                "text": f"[Individual generation failed: {e}]",
+                "marks": wo.marks_per_question,
+                "competency_type": "constructed",
+                "_generation_error": True,
+            })
+
+    section_data = {
+        "section_id": wo.section_id,
+        "section_name": wo.section_name,
+        "title": wo.title,
+        "marks": wo.marks,
+        "questions": questions,
+        "_individual_generation": True,
+    }
+    return section_data, total_in_tok, total_out_tok
+
+
 def generate_section(wo: SectionWorkOrder):
     """
     Generate questions for one section. Retries up to MAX_SECTION_RETRIES times on validation
@@ -591,6 +1308,56 @@ def generate_section(wo: SectionWorkOrder):
     Returns ({section_name: section_data}, total_input_tokens, total_output_tokens).
     """
     is_cbq = _is_dedicated_cbq_section(wo)
+
+    # 4.3 — For pure LA or source-based CBQ sections: generate questions individually
+    _la_types = {"la", "long_answer", "long answer"}
+    _cbq_types = {"cbq", "source_based", "source based", "case_based", "case based"}
+    _is_la_only = (
+        wo.question_types
+        and all(_type_str(t).lower() in _la_types for t in wo.question_types)
+        and wo.marks_per_question >= 4
+        and not is_cbq  # dedicated CBQ uses image-first path
+    )
+    _is_source_cbq = (
+        wo.question_types
+        and all(_type_str(t).lower() in _cbq_types for t in wo.question_types)
+        and not is_cbq  # dedicated image-based CBQ uses its own path
+    )
+    if _is_la_only or _is_source_cbq:
+        try:
+            section_data, in_tok, out_tok = generate_la_cbq_individually(wo)
+            # Run the full validation chain on individually generated questions too
+            errors = validate_section_output(section_data, wo)
+            if errors:
+                print(f"[4.3-Individual] '{wo.section_name}' validation errors (will proceed): {errors}")
+            dup_warnings = validate_uniqueness(section_data.get("questions", []))
+            grounding_issues = check_ncert_grounding(
+                section_data.get("questions", []), wo.context_text, str(wo.class_name), wo.subject
+            )
+            if grounding_issues:
+                section_data["_grounding_issues"] = grounding_issues
+            if _is_source_cbq and section_data.get("passage"):
+                cbq_issues = validate_cbq_passage(section_data, wo)
+                if cbq_issues:
+                    section_data["_cbq_passage_issues"] = cbq_issues
+            quality_flags = run_content_quality_critic(
+                section_data.get("questions", []), str(wo.class_name), wo.subject, wo.difficulty
+            )
+            if quality_flags:
+                section_data["_quality_flags"] = quality_flags
+            # V5 Layer 2 — only on flag (individual LA/CBQ path)
+            if dup_warnings:
+                fixed_qs, remaining_dups = verify_and_fix_semantic_duplicates(
+                    section_data.get("questions", []), dup_warnings, wo, quality_flags
+                )
+                section_data["questions"] = fixed_qs
+                if remaining_dups:
+                    section_data["_uniqueness_warnings"] = remaining_dups
+            print(f"[4.3-Individual] '{wo.section_name}' ✓ ({len(section_data.get('questions', []))} questions)")
+            return {wo.section_name: section_data}, in_tok, out_tok
+        except Exception as e:
+            print(f"[4.3-Individual] Failed for '{wo.section_name}': {e} — falling back to batch generation")
+            # Fall through to normal batch generation below
 
     prior_error = ""
     total_in_tok = 0
@@ -621,6 +1388,60 @@ def generate_section(wo: SectionWorkOrder):
         if not errors:
             section_data["title"] = wo.title
             section_data["marks"] = wo.marks
+            # V5 Layer 1 — uniqueness check (warn, don't block)
+            dup_warnings = validate_uniqueness(section_data.get("questions", []))
+            if dup_warnings:
+                for w in dup_warnings:
+                    print(f"[Section-Gen] ⚠️  Uniqueness L1: {w}")
+            # V3 — NCERT grounding check (RAG+LLM, SA/LA only, warn + store)
+            grounding_issues = check_ncert_grounding(
+                section_data.get("questions", []),
+                wo.context_text,
+                str(wo.class_name),
+                wo.subject,
+            )
+            if grounding_issues:
+                section_data["_grounding_issues"] = grounding_issues
+            # V6 — CBQ passage validation (LLM, only for passage/source-based sections)
+            if is_cbq and section_data.get("passage"):
+                cbq_issues = validate_cbq_passage(section_data, wo)
+                if cbq_issues:
+                    section_data["_cbq_passage_issues"] = cbq_issues
+            # V2 — Content quality critic (LLM, batched per section, warn + store, don't block)
+            quality_flags = run_content_quality_critic(
+                section_data.get("questions", []),
+                str(wo.class_name),
+                wo.subject,
+                wo.difficulty,
+            )
+            if quality_flags:
+                section_data["_quality_flags"] = quality_flags
+            # V5 Layer 2 — Semantic uniqueness (LLM, only if L1 flagged pairs)
+            if dup_warnings:
+                fixed_qs, remaining_dups = verify_and_fix_semantic_duplicates(
+                    section_data.get("questions", []),
+                    dup_warnings,
+                    wo,
+                    section_data.get("_quality_flags", []),
+                )
+                section_data["questions"] = fixed_qs
+                if remaining_dups:
+                    section_data["_uniqueness_warnings"] = remaining_dups
+                    print(f"[V5L2] {len(remaining_dups)} warning(s) remain after fix in '{wo.section_name}'")
+                else:
+                    print(f"[V5L2] ✅ All duplicates resolved in '{wo.section_name}'")
+            # V4 — MCQ answer verification (blind LLM test, warn + store, don't block)
+            mcq_verify_results = verify_mcq_answers(
+                section_data.get("questions", []),
+                str(wo.class_name),
+                wo.subject,
+            )
+            suspect_mcqs = [r for r in mcq_verify_results if r.get("suspect")]
+            if suspect_mcqs:
+                section_data["_mcq_answer_warnings"] = suspect_mcqs
+                print(
+                    f"[Section-Gen] ⚠️  V4 MCQ: {len(suspect_mcqs)} suspect answer(s) in '{wo.section_name}'"
+                )
             print(f"[Section-Gen] '{wo.section_name}' ✓ ({len(section_data.get('questions', []))} questions)")
             # Post-process: generate image and Kimi-verify sub-questions
             if is_cbq:
@@ -646,6 +1467,58 @@ def generate_section(wo: SectionWorkOrder):
 # ─────────────────────────────────────────────
 # RAG context per section
 # ─────────────────────────────────────────────
+
+# 3.2 — Per-question-type context routing profiles
+TYPE_CONTEXT_PROFILES = {
+    "mcq":          {"extra_hints": ["facts definitions key terms", "important dates events"],       "max_chars": 4000},
+    "assertion":    {"extra_hints": ["principles laws statements cause effect"],                     "max_chars": 3000},
+    "vsa":          {"extra_hints": ["definitions key terms one-liners"],                            "max_chars": 3000},
+    "sa":           {"extra_hints": ["explanations processes mechanisms how why"],                   "max_chars": 5000},
+    "la":           {"extra_hints": ["detailed explanations significance importance analysis"],       "max_chars": 8000},
+    "cbq":          {"extra_hints": ["diagrams experiments observations case studies"],              "max_chars": 6000},
+    "source_based": {"extra_hints": ["passages narratives extracts primary sources"],                "max_chars": 10000},
+    "map_work":     {"extra_hints": ["geographic locations places regions states rivers"],           "max_chars": 4000},
+}
+
+
+def _validate_context_quality(context: str, section_name: str, questions_count: int, subject: str, class_name: str, question_types: list) -> bool:
+    """
+    3.3 — Quick LLM check: is context sufficient to generate the required questions?
+    Returns True if sufficient, False if retry with broader query is needed.
+    """
+    if len(context) < 500:
+        print(f"[Context-QC] '{section_name}': context too short ({len(context)} chars) — will retry")
+        return False
+
+    types_str = ", ".join(_type_str(t) for t in question_types) if question_types else "Mixed"
+    prompt = (
+        f"Context quality check.\n"
+        f"Subject: {subject} Class {class_name}\n"
+        f"Need to generate: {questions_count} questions of types: {types_str}\n\n"
+        f"Context available ({len(context)} chars):\n---\n{context[:3000]}\n---\n\n"
+        "Is there enough specific, factual content here to write good CBSE-level questions?\n"
+        "Output JSON only:\n"
+        '{"sufficient": true, "reason": "one sentence"}'
+    )
+    try:
+        raw, _, _ = mantle_client.converse(
+            model_id=mantle_client.VAL_MODEL,
+            prompt=prompt,
+            max_tokens=100,
+            temperature=0.1,
+        )
+        raw = raw.strip()
+        m = re.search(r"\{.*\}", raw, re.S)
+        result = json.loads(m.group()) if m else {}
+        sufficient = result.get("sufficient", True)
+        reason = result.get("reason", "")
+        if not sufficient:
+            print(f"[Context-QC] '{section_name}': INSUFFICIENT — {reason}")
+        return sufficient
+    except Exception as e:
+        print(f"[Context-QC] LLM check failed for '{section_name}': {e} — assuming sufficient")
+        return True
+
 
 def _query_hints_for_types(question_types: list, subject: str) -> list:
     hints = [f"{subject} important concepts definitions"]
@@ -733,21 +1606,54 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
     C-01: reads per-section 'section_subject' from blueprint to route RAG queries
     to the correct sub-subject for compound papers (Science → Biology/Chemistry/Physics;
     Social Science → History/Geography/PolSci/Economics).
+
+    3.2: Also builds per-type context slices stored in _context_by_type_{sec_name}.
+    3.3: Runs context quality pre-check with retry on failure.
     """
     context_map: dict = {}
+    context_by_type_map: dict = {}  # {sec_name: {type_key: ctx_str}}
+
     for sec_name, sec_data in blueprint.items():
         sec_types = sec_data.get("question_types") or question_types_all
-        # C-01: use sub-subject for compound papers; fall back to paper-level subject
         effective_subject = sec_data.get("section_subject") or subject
+        q_count = sec_data.get("questions_count") or sec_data.get("questions") or 0
         hints = _query_hints_for_types(sec_types, effective_subject)
         ctx = get_section_context(class_name, effective_subject, chapters, hints, school_id=school_id)
+
         # If subsection store is empty (e.g. 10_history not ingested), retry with parent subject
         if not ctx and effective_subject != subject:
             print(f"[Section-Context] '{sec_name}' subsection store empty, retrying with parent subject '{subject}'")
             hints = _query_hints_for_types(sec_types, subject)
             ctx = get_section_context(class_name, subject, chapters, hints, school_id=school_id)
+
+        # 3.3 — Context quality pre-check with fallback
+        if not _validate_context_quality(ctx, sec_name, q_count, effective_subject, class_name, sec_types):
+            print(f"[Context-QC] '{sec_name}': retrying with broader query (no chapter filter)")
+            broad_hints = [f"{effective_subject} {ch}" for ch in (chapters or [])] + hints
+            ctx_broad = get_section_context(class_name, effective_subject, [], broad_hints, school_id=school_id)
+            if len(ctx_broad) > len(ctx):
+                ctx = ctx_broad
+                print(f"[Context-QC] '{sec_name}': broad retry improved to {len(ctx)} chars")
+
         context_map[sec_name] = ctx
         print(f"[Section-Context] '{sec_name}' (subject={effective_subject}): {len(ctx)} chars")
+
+        # 3.2 — Build per-type context for this section
+        type_ctx: dict = {}
+        for type_key, profile in TYPE_CONTEXT_PROFILES.items():
+            # Only build per-type context if this section has that type
+            if any(type_key in _type_str(t) for t in sec_types):
+                type_hints = [f"{effective_subject} {' '.join(profile['extra_hints'])}"] + hints[:2]
+                tctx = get_section_context(
+                    class_name, effective_subject, chapters,
+                    type_hints, max_chars=profile["max_chars"], school_id=school_id
+                )
+                if tctx:
+                    type_ctx[type_key] = tctx
+        context_by_type_map[sec_name] = type_ctx
+
+    # Store per-type map on the returned dict using a sentinel key
+    context_map["__context_by_type__"] = context_by_type_map
     return context_map
 
 
@@ -774,6 +1680,9 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         for ps in pattern.sections:
             if isinstance(ps, dict):
                 pattern_section_map[ps.get("name", "")] = ps
+
+    # 3.2: extract per-type context map stored under sentinel key
+    context_by_type_all = context_map.get("__context_by_type__", {})
 
     work_orders = []
     for idx, (sec_name, sec_data) in enumerate(blueprint.items()):
@@ -840,6 +1749,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             passage_instruction=ps.get("passage_instruction"),
             extract_instruction=ps.get("extract_instruction"),
             subsections=sec_data.get("subsections", []),
+            context_by_type=context_by_type_all.get(sec_name, {}),  # 3.2
         )
         work_orders.append(wo)
         subj_tag = f" [{section_subject}]" if section_subject else ""
@@ -853,12 +1763,46 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
 # ─────────────────────────────────────────────
 
 def cross_section_validate(paper_data: dict, blueprint: dict) -> dict:
-    """Renumber questions sequentially across sections in blueprint order."""
+    """Renumber questions sequentially and run cross-section deduplication."""
+    # Renumber
     q_num = 1
     for sec_name in blueprint.keys():
         for q in paper_data.get(sec_name, {}).get("questions", []):
             q["qnum"] = q_num
             q_num += 1
+
+    # Cross-section dedup (3.1) — code-only, no LLM cost
+    # Collect (section, q_idx, text) tuples
+    all_qs = []
+    for sec_name, sec_data in paper_data.items():
+        for q_idx, q in enumerate(sec_data.get("questions", [])):
+            text = q.get("text", "")
+            if text:
+                all_qs.append((sec_name, q_idx, q.get("qnum", 0), text))
+
+    cross_dupes = []
+    for i in range(len(all_qs)):
+        for j in range(i + 1, len(all_qs)):
+            sec_i, _, qnum_i, text_i = all_qs[i]
+            sec_j, _, qnum_j, text_j = all_qs[j]
+            if sec_i == sec_j:
+                continue  # same section already handled by validate_uniqueness
+            score = _concept_overlap(text_i, text_j)
+            if score > 0.55:
+                cross_dupes.append(
+                    f"Q{qnum_i} ({sec_i}) ↔ Q{qnum_j} ({sec_j}) — {score:.0%} concept overlap"
+                )
+
+    if cross_dupes:
+        print(f"[Cross-Section-Dedup] ⚠️  {len(cross_dupes)} cross-section duplicate(s):")
+        for d in cross_dupes:
+            print(f"  • {d}")
+        # Store in each section for downstream use
+        for sec_data in paper_data.values():
+            sec_data.setdefault("_cross_section_duplicates", cross_dupes)
+    else:
+        print("[Cross-Section-Dedup] ✅ No cross-section concept overlaps detected")
+
     return paper_data
 
 
@@ -915,6 +1859,291 @@ def validate_competency_distribution(paper_data: dict) -> dict:
     return result
 
 
+def run_final_paper_audit(paper_data: dict, class_name: str, subject: str, difficulty: str) -> dict:
+    """
+    V10 — Final paper-level LLM audit (deepseek.v3.2, one call per paper).
+    This is the master QC gate — aggregates all warning flags and makes a final
+    holistic assessment of paper quality. Does NOT block generation but produces
+    a comprehensive report stored on each section.
+
+    Checks:
+      - Overall paper quality score (1–10)
+      - Worst offending questions (by _quality_flags, _mcq_answer_warnings, _grounding_issues)
+      - Whether the paper is ready to issue to students as-is
+      - Top 3 recommendations for improvement
+    """
+    # Aggregate all accumulated warnings into a single summary for the LLM
+    all_warnings = []
+    total_qs = 0
+    for sec_name, sec_data in paper_data.items():
+        qs = sec_data.get("questions", [])
+        total_qs += len(qs)
+
+        for w in sec_data.get("_uniqueness_warnings", []):
+            all_warnings.append(f"[Uniqueness] {sec_name}: {w}")
+        for w in sec_data.get("_mcq_answer_warnings", []):
+            all_warnings.append(
+                f"[MCQ-Answer] {sec_name} Q{w.get('qnum')}: stored='{w.get('stored')}' "
+                f"but LLM says '{w.get('llm_answer')}' (conf={w.get('confidence')})"
+            )
+        for w in sec_data.get("_quality_flags", []):
+            all_warnings.append(
+                f"[Quality] {sec_name} Q{w.get('qnum')}: avg={w.get('avg_score')} — {w.get('issues','')}"
+            )
+        for w in sec_data.get("_grounding_issues", []):
+            all_warnings.append(
+                f"[Grounding] {sec_name} Q{w.get('qnum')}: {w.get('issue','')}"
+            )
+        for w in sec_data.get("_cbq_passage_issues", []):
+            all_warnings.append(f"[CBQ-Passage] {sec_name}: {w}")
+        for w in sec_data.get("_cross_section_duplicates", []):
+            all_warnings.append(f"[CrossDup] {w}")
+
+    warnings_block = (
+        "\n".join(f"  • {w}" for w in all_warnings[:40])
+        if all_warnings
+        else "  None — all validation checks passed"
+    )
+
+    prompt = (
+        f"You are the final reviewer for a CBSE Class {class_name} {subject} question paper.\n"
+        f"Difficulty: {difficulty}. Total questions: {total_qs}.\n\n"
+        f"VALIDATION WARNINGS ACCUMULATED DURING GENERATION:\n{warnings_block}\n\n"
+        "Based on these warnings, provide a final paper quality assessment:\n"
+        "1. Overall quality score (1–10, where 10 = exam-ready, no issues)\n"
+        "2. Is this paper ready to issue to students as-is? (yes/no/needs-minor-fix)\n"
+        "3. The 3 most important issues to fix before issuing (if any)\n"
+        "4. A one-line verdict for the teacher\n\n"
+        "Output JSON only:\n"
+        '{"quality_score": 8, "ready_to_issue": "yes", '
+        '"top_issues": ["issue 1", "issue 2", "issue 3"], '
+        '"verdict": "Paper is ready with minor answer key concerns in Section B"}'
+    )
+
+    try:
+        raw, _, _ = mantle_client.converse(
+            model_id=mantle_client.GEN_MODEL,
+            prompt=prompt,
+            max_tokens=512,
+            temperature=0.1,
+        )
+        raw = raw.strip()
+        m = re.search(r"\{.*\}", raw, re.S)
+        result = json.loads(m.group()) if m else {}
+    except Exception as e:
+        print(f"[V10-FinalAudit] LLM call failed: {e}")
+        return {"quality_score": None, "ready_to_issue": "unknown", "top_issues": [], "verdict": "Audit unavailable"}
+
+    score = result.get("quality_score", "?")
+    verdict = result.get("verdict", "")
+    ready = result.get("ready_to_issue", "unknown")
+    top_issues = result.get("top_issues", [])
+
+    print(f"[V10-FinalAudit] Quality score: {score}/10 | ready={ready}")
+    print(f"[V10-FinalAudit] Verdict: {verdict}")
+    if top_issues:
+        for issue in top_issues:
+            print(f"[V10-FinalAudit]   • {issue}")
+
+    return {
+        "quality_score": score,
+        "ready_to_issue": ready,
+        "top_issues": top_issues,
+        "verdict": verdict,
+        "total_warnings": len(all_warnings),
+    }
+
+
+def run_cross_section_coherence_audit(paper_data: dict, class_name: str, subject: str, chapters: list) -> dict:
+    """
+    V8 — Cross-section coherence audit (one LLM call per paper).
+    Checks:
+      1. No chapter is over-represented (>50% of questions from single chapter).
+      2. Difficulty arc is consistent (easy → hard progression across sections).
+      3. Question type distribution matches CBSE blueprint expectations.
+      4. No factual contradictions between sections.
+    Returns {"coherent": bool, "issues": [...], "chapter_balance": {...}}.
+    """
+    # Build paper summary for LLM
+    section_summaries = []
+    for sec_name, sec_data in paper_data.items():
+        qs = sec_data.get("questions", [])
+        chapter_tags = [q.get("chapter_tag", "") for q in qs if q.get("chapter_tag")]
+        types = [str(q.get("type", "?")) for q in qs]
+        section_summaries.append(
+            f"Section '{sec_name}' ({sec_data.get('marks', '?')}m): "
+            f"{len(qs)} questions, types=[{', '.join(set(types))}], "
+            f"chapters=[{', '.join(set(chapter_tags)) or 'not tagged'}]"
+        )
+
+    if not section_summaries:
+        return {"coherent": True, "issues": [], "chapter_balance": {}}
+
+    prompt = (
+        f"You are auditing a CBSE Class {class_name} {subject} question paper.\n"
+        f"Chapters covered: {', '.join(str(c) for c in chapters)}\n\n"
+        "PAPER STRUCTURE:\n" + "\n".join(section_summaries) + "\n\n"
+        "Check for:\n"
+        "1. Chapter balance: Is any single chapter over-represented (>50% of questions)?\n"
+        "2. Coverage: Are all requested chapters represented?\n"
+        "3. Section progression: Do question types match what CBSE expects "
+        "(MCQ in early sections, SA/LA in later sections)?\n"
+        "4. Any obvious structural problems?\n\n"
+        "Output JSON only:\n"
+        '{"coherent": true, "issues": [], "chapter_balance": {"chapter_name": "15%"}, '
+        '"missing_chapters": [], "recommendation": ""}'
+    )
+
+    try:
+        raw, _, _ = mantle_client.converse(
+            model_id=mantle_client.VAL_MODEL,
+            prompt=prompt,
+            max_tokens=512,
+            temperature=0.1,
+        )
+        raw = raw.strip()
+        m = re.search(r"\{.*\}", raw, re.S)
+        result = json.loads(m.group()) if m else {}
+    except Exception as e:
+        print(f"[V8-Coherence] LLM call failed: {e}")
+        return {"coherent": True, "issues": [], "chapter_balance": {}}
+
+    issues = result.get("issues", [])
+    if issues:
+        print(f"[V8-Coherence] ⚠️  {len(issues)} coherence issue(s): {issues}")
+        if result.get("recommendation"):
+            print(f"[V8-Coherence] Recommendation: {result['recommendation']}")
+    else:
+        print("[V8-Coherence] ✅ Paper is coherent across sections")
+
+    return {
+        "coherent": result.get("coherent", True),
+        "issues": issues,
+        "chapter_balance": result.get("chapter_balance", {}),
+        "missing_chapters": result.get("missing_chapters", []),
+        "recommendation": result.get("recommendation", ""),
+    }
+
+
+def enforce_competency_distribution(paper_data: dict, class_name: str, subject: str) -> dict:
+    """
+    V7 — Bloom's Taxonomy Enforcement.
+    If paper is non-compliant, asks the LLM to re-tag or replace questions to fix
+    the competency balance. Strategy: relabel / replace individual questions in a
+    single batched LLM call per offending section to avoid blowing the token budget.
+
+    Rules enforced:
+      - application ≥ 45 %  (relabel recall→application where semantically valid)
+      - recall ≤ 25 %        (demote excess recall questions)
+      - constructed ≥ 25 %   (SA/LA should always be constructed)
+    """
+    _VALID_TYPES = {"recall", "application", "constructed"}
+
+    # 1. Audit
+    def _audit(pd):
+        totals = {"recall": 0.0, "application": 0.0, "constructed": 0.0}
+        grand = 0.0
+        for sec_data in pd.values():
+            for q in sec_data.get("questions", []):
+                marks = float(q.get("marks", 1))
+                ct = q.get("competency_type", "").strip().lower()
+                grand += marks
+                totals[ct] = totals.get(ct, 0.0) + marks
+        if grand == 0:
+            return None, totals, 0.0
+        pcts = {k: v / grand * 100 for k, v in totals.items()}
+        return pcts, totals, grand
+
+    pcts, totals, grand = _audit(paper_data)
+    if pcts is None:
+        return paper_data
+
+    app_ok = pcts.get("application", 0) >= 45
+    recall_ok = pcts.get("recall", 0) <= 25
+    constr_ok = pcts.get("constructed", 0) >= 25
+
+    if app_ok and recall_ok and constr_ok:
+        print("[V7-Bloom] ✅ Competency already compliant — no action needed")
+        return paper_data
+
+    print(
+        f"[V7-Bloom] Non-compliant — app={pcts.get('application',0):.1f}% "
+        f"recall={pcts.get('recall',0):.1f}% constructed={pcts.get('constructed',0):.1f}%"
+    )
+
+    # 2. Collect all questions with their section key for relabelling
+    candidates = []
+    for sec_key, sec_data in paper_data.items():
+        for q_idx, q in enumerate(sec_data.get("questions", [])):
+            candidates.append((sec_key, q_idx, q))
+
+    # Build a minimal list of (sec_key, q_idx, text, marks, current_type) for LLM
+    q_lines = []
+    for i, (sk, qi, q) in enumerate(candidates):
+        q_lines.append(
+            f"{i + 1}. [{q.get('competency_type','untagged')}] "
+            f"({q.get('marks', 1)}m, type={q.get('type','?')}) "
+            f"{str(q.get('text',''))[:120]}"
+        )
+
+    prompt = (
+        f"You are auditing a CBSE Class {class_name} {subject} question paper.\n"
+        "CBSE 2025-26 policy requires: application ≥ 45%, recall ≤ 25%, constructed ≥ 25% (by marks).\n\n"
+        f"Current distribution: application={pcts.get('application',0):.1f}% "
+        f"recall={pcts.get('recall',0):.1f}% constructed={pcts.get('constructed',0):.1f}%\n\n"
+        "Questions (numbered, with current competency_type):\n"
+        + "\n".join(q_lines)
+        + "\n\nFor each question whose competency_type label is WRONG for that question style, "
+        "output a correction. Only output questions that need changing. "
+        "Rules: MCQ testing facts/definitions → recall. MCQ with case/data/scenario → application. "
+        "SA/LA requiring explanation/analysis/evaluation → constructed. "
+        "CBQ/Source-based → application. Map-based → application.\n\n"
+        "Output JSON array only:\n"
+        '[{"n": 1, "new_type": "application"}, ...]\n'
+        "Do NOT change constructed→recall or constructed→application. "
+        "Do NOT output questions that are already correct."
+    )
+
+    try:
+        raw, in_tok, out_tok = mantle_client.converse(
+            model_id=mantle_client.VAL_MODEL,
+            prompt=prompt,
+            max_tokens=1024,
+            temperature=0.1,
+        )
+        raw = raw.strip()
+        m = re.search(r"\[.*\]", raw, re.S)
+        corrections = json.loads(m.group()) if m else []
+    except Exception as e:
+        print(f"[V7-Bloom] LLM call failed: {e} — skipping enforcement")
+        return paper_data
+
+    # 3. Apply corrections
+    applied = 0
+    for corr in corrections:
+        n = corr.get("n")
+        new_type = str(corr.get("new_type", "")).strip().lower()
+        if not n or new_type not in _VALID_TYPES:
+            continue
+        idx = int(n) - 1
+        if 0 <= idx < len(candidates):
+            sk, qi, _ = candidates[idx]
+            paper_data[sk]["questions"][qi]["competency_type"] = new_type
+            applied += 1
+
+    print(f"[V7-Bloom] Applied {applied} competency re-tag(s)")
+
+    # 4. Re-audit and report
+    pcts2, _, _ = _audit(paper_data)
+    if pcts2:
+        print(
+            f"[V7-Bloom] After fix — app={pcts2.get('application',0):.1f}% "
+            f"recall={pcts2.get('recall',0):.1f}% constructed={pcts2.get('constructed',0):.1f}%"
+        )
+
+    return paper_data
+
+
 # ─────────────────────────────────────────────
 # Main parallel generator
 # ─────────────────────────────────────────────
@@ -961,7 +2190,24 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
     print(f"[Parallel-Gen] ✅ {len(paper_data)} sections, {total_q} questions | in={total_input_tokens} out={total_output_tokens} tokens")
 
     competency_report = validate_competency_distribution(paper_data)
+    if not competency_report.get("compliant", True):
+        # V7 — attempt to fix competency distribution via targeted LLM relabelling
+        paper_data = enforce_competency_distribution(paper_data, class_name, subject)
+        # Re-run check to capture final distribution
+        competency_report = validate_competency_distribution(paper_data)
     for sec_data in paper_data.values():
         sec_data["_competency_report"] = competency_report
+
+    # V8 — Cross-section coherence audit (one LLM call for the full paper)
+    coherence_report = run_cross_section_coherence_audit(
+        paper_data, class_name, subject, chapters
+    )
+    for sec_data in paper_data.values():
+        sec_data["_coherence_report"] = coherence_report
+
+    # V10 — Final paper-level audit (master QC gate, deepseek.v3.2)
+    final_audit = run_final_paper_audit(paper_data, class_name, subject, difficulty)
+    for sec_data in paper_data.values():
+        sec_data["_final_audit"] = final_audit
 
     return paper_data, total_input_tokens, total_output_tokens

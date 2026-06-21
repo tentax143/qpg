@@ -178,11 +178,13 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         paper.input_tokens = input_tokens
         paper.output_tokens = output_tokens
         paper.status = "done"
-        # Persist the raw generated JSON so we can re-render later without calling the LLM
+        # Persist the raw generated JSON so we can re-render later without calling the LLM.
+        # Read from thread-local state set by generator.enforce_json() or
+        # generator._render_paper_from_data() — avoids the shared temp_clean.json race condition.
         try:
-            import json as _json
-            with open("temp_clean.json", "r", encoding="utf-8") as _f:
-                paper.paper_data = _json.load(_f)
+            paper.paper_data = getattr(generator._request_state, 'paper_data', None)
+            if paper.paper_data is None:
+                print(f"[Task] paper_data not available in request state; paper_data will be empty")
         except Exception as _e:
             print(f"[Task] Could not save paper_data: {_e}")
         paper.save()

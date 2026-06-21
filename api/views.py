@@ -54,6 +54,17 @@ def _allowed_subject(user):
         return None
 
 
+ALLOWED_MATERIAL_EXTENSIONS = {'.pdf', '.docx', '.doc', '.txt'}
+
+
+def _can_modify_paper(user, paper):
+    """True if the user owns the paper or has school_admin/superadmin role."""
+    if paper.created_by == user:
+        return True
+    role = _user_role(user)
+    return role in ('superadmin', 'school_admin') or user.is_superuser
+
+
 class ExamPatternViewSet(viewsets.ModelViewSet):
     """
     ViewSet for ExamPattern model.
@@ -61,7 +72,7 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
     """
     serializer_class = ExamPatternSerializer
     pagination_class = LargeResultsSetPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['class_name', 'subject', 'pattern_source']
     search_fields = ['name', 'subject', 'class_name']
@@ -69,8 +80,6 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         from django.db.models import Q
         user = self.request.user
-        if not user.is_authenticated:
-            return ExamPattern.objects.all().order_by('-created_at')
         role = _user_role(user)
         if role == 'superadmin' or user.is_superuser:
             return ExamPattern.objects.all().order_by('-created_at')
@@ -131,7 +140,7 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         subject = request.query_params.get('subject')
         class_name = request.query_params.get('class')
         
-        queryset = self.queryset
+        queryset = self.get_queryset()
         if subject:
             queryset = queryset.filter(subject=subject)
         if class_name:
@@ -175,7 +184,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     """
     serializer_class = QuestionPaperSerializer
     pagination_class = LargeResultsSetPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['class_name', 'subject', 'status', 'difficulty']
     search_fields = ['subject', 'class_name']
@@ -210,8 +219,6 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         base = QuestionPaper.objects.all().order_by('-created_at')
-        if not user.is_authenticated:
-            return base
         role = _user_role(user)
         if role == 'superadmin' or user.is_superuser:
             queryset = base
@@ -367,6 +374,8 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def cancel(self, request, pk=None):
         """Cancel a question paper generation task"""
         paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to cancel this paper'}, status=status.HTTP_403_FORBIDDEN)
         if paper.status in ['queued', 'generating']:
             # TODO: Implement Celery task cancellation
             paper.status = 'cancelled'
@@ -382,7 +391,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         """Retry a failed question paper generation task"""
         try:
             paper = self.get_object()
-            
+            if not _can_modify_paper(request.user, paper):
+                return Response({'error': 'Not authorized to retry this paper'}, status=status.HTTP_403_FORBIDDEN)
+
             # Using the exact logic from core.views.retry_paper_view
             if paper.status == "failed" or paper.status == "cancelled":
                 paper.status = "queued"
@@ -406,7 +417,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         if not ids:
             return Response({'error': 'No IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
         
-        papers = QuestionPaper.objects.filter(id__in=ids)
+        papers = self.get_queryset().filter(id__in=ids)
         count = papers.count()
         papers.delete()
         
@@ -435,6 +446,8 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def rerender(self, request, pk=None):
         """Re-render the DOCX from the stored paper_data JSON without calling the LLM."""
         paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to re-render this paper'}, status=status.HTTP_403_FORBIDDEN)
         if not paper.paper_data:
             return Response(
                 {'error': 'No stored paper_data for this paper. Only papers generated after this feature was added can be re-rendered.'},
@@ -492,6 +505,8 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def save_content(self, request, pk=None):
         """Save edited content"""
         paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to edit this paper'}, status=status.HTTP_403_FORBIDDEN)
         content = request.data.get('content', '')
         
         paper.edited_content = content
@@ -503,6 +518,8 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def regenerate_pdf(self, request, pk=None):
         """Regenerate PDF from edited content"""
         paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to regenerate this paper'}, status=status.HTTP_403_FORBIDDEN)
         content = request.data.get('content', '') or paper.edited_content
         
         if not content:
@@ -572,7 +589,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
     """
     serializer_class = MaterialSerializer
     pagination_class = LargeResultsSetPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['class_name', 'subject', 'type', 'unit']
     search_fields = ['title', 'subject', 'class_name']
@@ -580,8 +597,6 @@ class MaterialViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         base = Material.objects.all().select_related('uploaded_by', 'school').order_by('-uploaded_at')
-        if not user.is_authenticated:
-            return base
         role = _user_role(user)
         if role == 'superadmin' or user.is_superuser:
             return base
@@ -640,7 +655,14 @@ class MaterialViewSet(viewsets.ModelViewSet):
                     return Response({"error": "No files provided for bulk upload"}, status=status.HTTP_400_BAD_REQUEST)
 
                 for file in files:
-                    if not file: continue
+                    if not file:
+                        continue
+                    ext = os.path.splitext(file.name)[1].lower()
+                    if ext not in ALLOWED_MATERIAL_EXTENSIONS:
+                        return Response(
+                            {"error": f"'{file.name}' has an unsupported type. Allowed: PDF, DOCX, DOC, TXT"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
                     filename = file.name
                     base_name = os.path.splitext(filename)[0]
 
@@ -671,7 +693,14 @@ class MaterialViewSet(viewsets.ModelViewSet):
                     title = request.data.get(f"title_{i}")
                     file = request.FILES.get(f"file_{i}")
 
-                    if not file: continue
+                    if not file:
+                        continue
+                    ext = os.path.splitext(file.name)[1].lower()
+                    if ext not in ALLOWED_MATERIAL_EXTENSIONS:
+                        return Response(
+                            {"error": f"'{file.name}' has an unsupported type. Allowed: PDF, DOCX, DOC, TXT"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
                     material = Material.objects.create(
                         class_name=class_name,
@@ -735,7 +764,7 @@ class BlueprintTemplateViewSet(viewsets.ModelViewSet):
     """
     queryset = BlueprintTemplate.objects.filter(is_active=True).order_by('subject', 'class_name')
     serializer_class = BlueprintTemplateSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filterset_fields = ['subject', 'class_name', 'is_default']
     search_fields = ['name', 'subject']
 
@@ -759,7 +788,7 @@ class ExamBlueprintViewSet(viewsets.ModelViewSet):
     queryset = ExamBlueprint.objects.filter(is_active=True).order_by('class_name', 'subject')
     serializer_class = ExamBlueprintSerializer
     pagination_class = LargeResultsSetPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filterset_fields = ['class_name', 'subject']
     search_fields = ['subject', 'class_name', 'code']
 
@@ -812,7 +841,7 @@ def cbse_subject_pattern(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsAuthenticated])
 def get_subjects_for_class(request):
     """Return subjects available to the requesting user's school."""
     class_name = request.GET.get("class_name", "").strip()
@@ -844,7 +873,7 @@ def get_subjects_for_class(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsAuthenticated])
 def get_chapters(request):
     """Return chapters available to the requesting user's school."""
     class_name = request.GET.get("class_name", "").strip()
@@ -870,7 +899,7 @@ def get_chapters(request):
     return Response({"chapters": list(chapters)})
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsAuthenticated])
 def get_blueprints(request):
     """API version of blueprint lookup"""
     try:
@@ -937,7 +966,7 @@ def get_blueprints(request):
         return Response({"error": str(e), "trace": traceback.format_exc()}, status=500)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsAuthenticated])
 def get_blueprint_details(request, blueprint_id):
     """API version of blueprint details lookup"""
     try:

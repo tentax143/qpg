@@ -1,5 +1,10 @@
-import os, re, json, random, time, traceback
+import os, re, json, random, time, traceback, threading
 import hashlib
+
+# Per-request storage for the last validated paper JSON.
+# Eliminates the shared temp_clean.json file, which caused cross-user data
+# contamination under concurrent Celery workers or gunicorn threads.
+_request_state = threading.local()
 import numpy as np
 from datetime import datetime
 from PyPDF2 import PdfReader, PdfWriter
@@ -571,8 +576,7 @@ def enforce_json(validated_json):
         f.write(validated_json)
 
     if data:
-        with open("temp_clean.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        _request_state.paper_data = data
         return data
 
     raise ValueError("Validator did not return valid JSON. Check temp_raw.json and temp_validated.json")
@@ -1578,40 +1582,14 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
     print("=" * 50)
     print("USING DIRECT JSON APPROACH")
     print("=" * 50)
-    
-    # Write debug output to file
-    debug_file = "debug_render.txt"
-    with open(debug_file, "w", encoding="utf-8") as debug_f:
-        debug_f.write("=" * 50 + "\n")
-        debug_f.write("RENDER DEBUG LOG\n")
-        debug_f.write("=" * 50 + "\n")
-    
-    # Read the temp_clean.json file directly
-    try:
-        with open("temp_clean.json", "r", encoding="utf-8") as f:
-            direct_data = json.load(f)
-        print(f"[DIRECT] Successfully loaded temp_clean.json with keys: {list(direct_data.keys())}")
-        
-        with open(debug_file, "a", encoding="utf-8") as debug_f:
-            debug_f.write(f"Loaded temp_clean.json with keys: {list(direct_data.keys())}\n")
-        
-        # Use the direct data instead of the processed data
-        all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
-        print(f"[DIRECT] Generated {len(all_questions)} questions from temp_clean.json")
-        
-        with open(debug_file, "a", encoding="utf-8") as debug_f:
-            debug_f.write(f"Generated {len(all_questions)} questions\n")
-            debug_f.write("First 10 questions:\n")
-            for i, (typ, text) in enumerate(all_questions[:10]):
-                debug_f.write(f"  {i+1}. [{typ}] {text[:100]}...\n")
-        
-    except Exception as e:
-        print(f"[DIRECT] Error loading temp_clean.json: {e}")
-        with open(debug_file, "a", encoding="utf-8") as debug_f:
-            debug_f.write(f"Error: {e}\n")
-        # Fallback to original approach
-        all_questions = render_section_questions([], data, blueprint, class_name, subject, chapters, None)
-    
+
+    # Use in-memory paper data stored by enforce_json() — thread-safe and avoids
+    # the shared temp_clean.json file that caused cross-user data contamination.
+    direct_data = getattr(_request_state, 'paper_data', None) or data
+    print(f"[DIRECT] Using paper data with keys: {list(direct_data.keys())}")
+    all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
+    print(f"[DIRECT] Generated {len(all_questions)} questions")
+
     summary = {sec: {"title": sec_info["title"], "marks": sec_info["marks"]}
                for sec, sec_info in blueprint.items()}
     return render_docx(class_name, subject, chapters, all_questions, summary)
@@ -2376,15 +2354,29 @@ def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters
     Used by the parallel pipeline after generate_paper_parallel() succeeds.
     Returns (file_path, summary, total_cost, total_input_tokens, total_output_tokens).
     """
-    import json as _json
+    # Store paper data in thread-local state so tasks.py can persist it
+    # without reading from a shared temp file (avoids cross-user data contamination).
+    _request_state.paper_data = paper_data
 
-    with open("temp_clean.json", "w", encoding="utf-8") as _f:
-        _json.dump(paper_data, _f, ensure_ascii=False, indent=2)
+    # Strip internal pipeline metadata fields (prefixed with _) before rendering
+    # These hold validation reports and warnings and must not appear in the DOCX
+    _INTERNAL_KEYS = {
+        "_competency_report", "_coherence_report", "_final_audit",
+        "_uniqueness_warnings", "_mcq_answer_warnings", "_quality_flags",
+        "_grounding_issues", "_cbq_passage_issues", "_cross_section_duplicates",
+        "_partial", "_errors",
+    }
+    render_data = {}
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__"):  # sentinel keys e.g. __context_by_type__
+            continue
+        clean_sec = {k: v for k, v in sec_data.items() if k not in _INTERNAL_KEYS}
+        render_data[sec_name] = clean_sec
 
-    all_questions = render_section_questions([], paper_data, blueprint, class_name, subject, chapters, None)
+    all_questions = render_section_questions([], render_data, blueprint, class_name, subject, chapters, None)
     all_questions = materialize_images(all_questions, allow=allow_images)
 
-    summary = {sec: {"title": sec, "marks": paper_data.get(sec, {}).get("marks", 0)} for sec in paper_data.keys()}
+    summary = {sec: {"title": sec, "marks": render_data.get(sec, {}).get("marks", 0)} for sec in render_data.keys()}
 
     header_meta = {
         "class_name": class_name,
@@ -2984,59 +2976,28 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
         print("=" * 50)
         print("USING DIRECT JSON APPROACH")
         print("=" * 50)
-        
-        # Write debug output to file
-        debug_file = "debug_render.txt"
-        with open(debug_file, "w", encoding="utf-8") as debug_f:
-            debug_f.write("=" * 50 + "\n")
-            debug_f.write("RENDER DEBUG LOG\n")
-            debug_f.write("=" * 50 + "\n")
-        
-        # Read the temp_clean.json file directly
+
+        # Use in-memory paper data stored by enforce_json() — thread-safe and avoids
+        # the shared temp_clean.json file that caused cross-user data contamination.
+        direct_data = getattr(_request_state, 'paper_data', None) or paper_data
+        print(f"[DIRECT] Using paper data with keys: {list(direct_data.keys())}")
+        all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
+        # Attach AI-generated images if prompts/markers present
+        allow_images = True
         try:
-            with open("temp_clean.json", "r", encoding="utf-8") as f:
-                direct_data = json.load(f)
-            print(f"[DIRECT] Successfully loaded temp_clean.json with keys: {list(direct_data.keys())}")
-            
-            with open(debug_file, "a", encoding="utf-8") as debug_f:
-                debug_f.write(f"Loaded temp_clean.json with keys: {list(direct_data.keys())}\n")
-            
-            # Use the direct data instead of the processed data
-            all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
-            # Attach AI-generated images if prompts/markers present
-            allow_images = True
-            try:
-                if additional_context:
-                    ctx = json.loads(additional_context) if isinstance(additional_context, str) else {}
-                    if isinstance(ctx, dict):
-                        allow_images = ctx.get('allow_ai_images', True) is not False
-            except Exception:
-                pass
-            all_questions = materialize_images(all_questions, allow=allow_images)
-            try:
-                num_imgs = sum(1 for t, _ in all_questions if t == 'image')
-                print(f"[ImageGen] Images attached: {num_imgs}")
-            except Exception:
-                pass
-            print(f"[DIRECT] Generated {len(all_questions)} questions from temp_clean.json")
-            
-            with open(debug_file, "a", encoding="utf-8") as debug_f:
-                debug_f.write(f"Generated {len(all_questions)} questions\n")
-                for i, (typ, text) in enumerate(all_questions[:10]):
-                    debug_f.write(f"  {i+1}. [{typ}] {text[:100]}...\n")
-            
-        except Exception as e:
-            print(f"[DIRECT] Error loading temp_clean.json: {e}")
-            with open(debug_file, "a", encoding="utf-8") as debug_f:
-                debug_f.write(f"Error: {e}\n")
-            # Fallback to original approach - use paper_data instead of undefined 'data'
-            all_questions = render_section_questions([], paper_data, blueprint, class_name, subject, chapters, None)
-            all_questions = materialize_images(all_questions)
-            try:
-                num_imgs = sum(1 for t, _ in all_questions if t == 'image')
-                print(f"[ImageGen] Images attached (fallback): {num_imgs}")
-            except Exception:
-                pass
+            if additional_context:
+                ctx = json.loads(additional_context) if isinstance(additional_context, str) else {}
+                if isinstance(ctx, dict):
+                    allow_images = ctx.get('allow_ai_images', True) is not False
+        except Exception:
+            pass
+        all_questions = materialize_images(all_questions, allow=allow_images)
+        try:
+            num_imgs = sum(1 for t, _ in all_questions if t == 'image')
+            print(f"[ImageGen] Images attached: {num_imgs}")
+        except Exception:
+            pass
+        print(f"[DIRECT] Generated {len(all_questions)} questions")
         
         summary = {sec: {"title": sec, "marks": paper_data.get(sec, {}).get('marks', 0)}
                    for sec in paper_data.keys()}

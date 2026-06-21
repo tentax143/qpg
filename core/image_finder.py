@@ -475,6 +475,159 @@ def _generate_pollinations(prompt: str) -> tuple[bytes, str]:
     return resp.content, mime
 
 
+# ─── V9.1 — Multi-image generation + Kimi ranking ─────────────────────────────
+
+_POLLINATIONS_VARIANTS = 3  # how many images to generate before picking best
+
+
+def _rank_images_with_kimi(
+    question_text: str,
+    sub_questions: list[dict],
+    candidates: list[tuple[bytes, str]],  # (img_bytes, mime)
+) -> tuple[bytes, str]:
+    """
+    V9.1 — Show all candidate images to Kimi and pick the best one.
+    Returns (best_img_bytes, best_mime).
+    Falls back to first candidate on any error.
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+
+    sub_q_lines = "\n".join(
+        f"  ({chr(97 + i)}) {sq.get('text', '')} [{sq.get('marks', 1)}m]"
+        for i, sq in enumerate(sub_questions[:4])
+    )
+
+    scores = []
+    for idx, (img_bytes, mime) in enumerate(candidates):
+        prompt = (
+            f"This is candidate image {idx + 1} for the following CBSE question:\n\n"
+            f"QUESTION: {question_text}\n"
+            f"SUB-QUESTIONS:\n{sub_q_lines}\n\n"
+            "Score this image from 1–10 on:\n"
+            "  - scientific_accuracy (is it scientifically correct?)\n"
+            "  - relevance (does it clearly show what the sub-questions ask about?)\n"
+            "  - label_clarity (are key parts labeled A/B/C or clearly identifiable?)\n"
+            "  - exam_suitability (is it clean and appropriate for a CBSE exam paper?)\n\n"
+            "Output JSON only:\n"
+            '{"scientific_accuracy": 8, "relevance": 9, "label_clarity": 7, "exam_suitability": 8}'
+        )
+        try:
+            raw = _vision_call(prompt, img_bytes, mime, max_tokens=150)
+            m = re.search(r"\{.*\}", raw, re.DOTALL)
+            result = json.loads(m.group()) if m else {}
+            total = (
+                result.get("scientific_accuracy", 5)
+                + result.get("relevance", 5)
+                + result.get("label_clarity", 5)
+                + result.get("exam_suitability", 5)
+            )
+            scores.append(total)
+            logger.info(
+                "[V9.1-Rank] Candidate %d: scientific=%d relevance=%d label=%d exam=%d → total=%d",
+                idx + 1,
+                result.get("scientific_accuracy", 5),
+                result.get("relevance", 5),
+                result.get("label_clarity", 5),
+                result.get("exam_suitability", 5),
+                total,
+            )
+        except Exception as exc:
+            logger.warning("[V9.1-Rank] Kimi scoring failed for candidate %d: %s", idx + 1, exc)
+            scores.append(0)
+
+    best_idx = scores.index(max(scores))
+    logger.info("[V9.1-Rank] Best candidate: %d (score=%d)", best_idx + 1, scores[best_idx])
+    return candidates[best_idx]
+
+
+def _generate_pollinations_multi(
+    prompt: str,
+    question_text: str,
+    sub_questions: list[dict],
+    n: int = _POLLINATIONS_VARIANTS,
+) -> tuple[bytes, str]:
+    """
+    V9.1 — Generate N Pollinations images, rank with Kimi, return best.
+    Falls back to single-image if generation fails.
+    """
+    base_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
+    base_params = {
+        "model": POLLINATIONS_MODEL,
+        "width": 1024,
+        "height": 1024,
+        "nologo": "true",
+        "private": "true",
+    }
+    if POLLINATIONS_KEY:
+        base_params["token"] = POLLINATIONS_KEY
+
+    candidates = []
+    for i in range(n):
+        try:
+            params = dict(base_params, seed=str(42 + i * 17))
+            resp = requests.get(base_url, params=params, timeout=120)
+            resp.raise_for_status()
+            mime = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+            candidates.append((resp.content, mime))
+            logger.info("[V9.1-Multi] Generated Pollinations candidate %d/%d", i + 1, n)
+        except Exception as exc:
+            logger.warning("[V9.1-Multi] Pollinations candidate %d failed: %s", i + 1, exc)
+
+    if not candidates:
+        raise RuntimeError("All Pollinations candidates failed")
+
+    return _rank_images_with_kimi(question_text, sub_questions, candidates)
+
+
+# ─── V9.2 — Scientific accuracy check ─────────────────────────────────────────
+
+def _check_scientific_accuracy(
+    question_text: str,
+    image_bytes: bytes,
+    mime: str,
+    subject: str,
+    source: str,
+) -> dict:
+    """
+    V9.2 — Ask Kimi to check if the generated image is scientifically accurate.
+    Skips for rdkit (structurally generated from SMILES — always accurate).
+    Returns {"accurate": bool, "issues": [str], "score": int}.
+    """
+    if source == "rdkit":
+        return {"accurate": True, "issues": [], "score": 10}
+
+    prompt = (
+        f"You are a CBSE {subject} expert. Examine this scientific diagram.\n\n"
+        f"Context: This image illustrates a concept for the question:\n{question_text[:200]}\n\n"
+        "Check for scientific accuracy:\n"
+        "1. Are all labeled structures/parts correctly named?\n"
+        "2. Are proportions/relationships scientifically valid?\n"
+        "3. Are any labels or arrows misleading or wrong?\n"
+        "4. Is the diagram consistent with NCERT Class 10 content?\n\n"
+        "Output JSON only:\n"
+        '{"accurate": true, "score": 8, "issues": []}\n'
+        "score: 1–10 (10=perfectly accurate). issues: list any specific errors found."
+    )
+    try:
+        raw = _vision_call(prompt, image_bytes, mime, max_tokens=300)
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            result = json.loads(m.group())
+            score = result.get("score", 5)
+            issues = result.get("issues", [])
+            accurate = result.get("accurate", score >= 6)
+            logger.info(
+                "[V9.2-SciAccuracy] source=%s accurate=%s score=%d issues=%s",
+                source, accurate, score, issues,
+            )
+            return {"accurate": accurate, "score": score, "issues": issues}
+    except Exception as exc:
+        logger.warning("[V9.2-SciAccuracy] Kimi check failed: %s", exc)
+
+    return {"accurate": True, "issues": [], "score": 5}
+
+
 # ─── Kimi K2.5 verification + sub-question correction ─────────────────────────
 
 def _verify_and_correct(
@@ -584,6 +737,8 @@ def generate_image_for_question(
                 img_bytes, mime = _render_rdkit(smiles, compound_name)
                 image_path      = _save_image(img_bytes, mime, name_hint)
                 logger.info("[ImageFinder] RDKit image saved: %s", image_path)
+                # V9.2 — scientific accuracy (rdkit always passes, but log it)
+                _check_scientific_accuracy(question_text, img_bytes, mime, subject, "rdkit")
                 verified_sqs = _verify_and_correct(question_text, sub_questions, img_bytes, mime)
                 return {
                     "image_path":             image_path,
@@ -616,6 +771,16 @@ def generate_image_for_question(
                 image_path = _save_image(img_bytes, winner["mime"], name_hint)
                 logger.info("[ImageFinder] Wikimedia winner: %s (score=%s)",
                             winner["title"][:50], winner["eval"]["score"])
+                # V9.2 — scientific accuracy check on Wikimedia image
+                sci_check = _check_scientific_accuracy(
+                    question_text, img_bytes, winner["mime"], subject, "wikimedia"
+                )
+                if not sci_check.get("accurate") and sci_check.get("score", 10) < 5:
+                    logger.warning(
+                        "[V9.2] Wikimedia image low accuracy (score=%d) — falling through to Pollinations",
+                        sci_check.get("score", 0),
+                    )
+                    raise ValueError("Wikimedia image failed scientific accuracy check")
                 verified_sqs = _verify_and_correct(question_text, sub_questions,
                                                    img_bytes, winner["mime"])
                 return {
@@ -623,24 +788,33 @@ def generate_image_for_question(
                     "mime":                   winner["mime"],
                     "source":                 "wikimedia",
                     "verified_sub_questions": verified_sqs,
+                    "sci_accuracy":           sci_check,
                 }
     except Exception as exc:
         logger.warning("[ImageFinder] Wikimedia path failed: %s", exc)
 
-    # ── Step 3: Pollinations fallback ──────────────────────────────────────────
+    # ── Step 3: Pollinations — multi-image + Kimi ranking (V9.1) ───────────────
     try:
         gen_prompt = route.get("image_prompt") or _build_prompt_from_question(
             question_text, sub_questions, subject, chapter
         )
-        img_bytes, mime = _generate_pollinations(gen_prompt)
+        # V9.1: generate N candidates and let Kimi pick the best one
+        img_bytes, mime = _generate_pollinations_multi(
+            gen_prompt, question_text, sub_questions, n=_POLLINATIONS_VARIANTS
+        )
         image_path      = _save_image(img_bytes, mime, name_hint)
-        logger.info("[ImageFinder] Pollinations image saved: %s", image_path)
+        logger.info("[ImageFinder] Pollinations best image saved: %s", image_path)
+        # V9.2 — scientific accuracy check on winner
+        sci_check = _check_scientific_accuracy(
+            question_text, img_bytes, mime, subject, "pollinations"
+        )
         verified_sqs = _verify_and_correct(question_text, sub_questions, img_bytes, mime)
         return {
             "image_path":             image_path,
             "mime":                   mime,
             "source":                 "pollinations",
             "verified_sub_questions": verified_sqs,
+            "sci_accuracy":           sci_check,
         }
     except Exception as exc:
         logger.error("[ImageFinder] Pollinations path failed: %s", exc)
