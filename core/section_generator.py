@@ -34,8 +34,10 @@ _AR_STANDARD_OPTIONS = {
     "c": "A is true but R is false",
     "d": "A is false but R is true",
 }
-# LLMs sometimes embed the letter prefix in option values: "(a) text" → strip before render
-_OPT_PREFIX_RE = re.compile(r'^\([a-dA-D]\)\s*')
+# Strip embedded LOWERCASE option label prefix from values (e.g. LLM writes "(a) text").
+# Lowercase-only: uppercase (A)-(D) appear legitimately in AR options ("A is true but R is false")
+# and must NOT be stripped.
+_OPT_PREFIX_RE = re.compile(r'^\([a-d]\)\s*')
 
 # 4.3 — Per-question-type generation parameters (temperature + token budget)
 TYPE_PARAMS = {
@@ -179,6 +181,13 @@ def _needs_image(wo: SectionWorkOrder) -> bool:
     return False
 
 
+def _qt_marks(qt) -> float:
+    """Extract marks_each from a question_type entry (dict or string)."""
+    if isinstance(qt, dict):
+        return float(qt.get("marks_each", 1))
+    return 1.0
+
+
 def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> str:
     # Use substring matching — type strings like "MCQ / Objective" or "MCQ / Assertion-Reason"
     # would fail exact-equality checks. Substring is safer.
@@ -189,47 +198,51 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
     has_ar  = any("assertion" in _type_str(t) for t in wo.question_types)
     has_passage = bool(wo.passage_instruction or wo.extract_instruction)
     has_cbq = any("cbq" in _type_str(t) or "source" in _type_str(t) or "case" in _type_str(t) for t in wo.question_types)
-    has_la = any("long" in _type_str(t) or _type_str(t) in ("la", "long_answer") for t in wo.question_types)
-    is_map = wo.is_map_work
+    has_la  = any("long" in _type_str(t) or _type_str(t) in ("la", "long_answer") for t in wo.question_types)
+    has_sa  = any(_type_str(t) == "sa" or "short answer" in _type_str(t) for t in wo.question_types)
+    has_vsa = any(_type_str(t) == "vsa" or "very short" in _type_str(t) for t in wo.question_types)
+    has_map_type = wo.is_map_work or any("map" in _type_str(t) for t in wo.question_types)
+    is_map  = wo.is_map_work
     needs_img = _needs_image(wo)
     mpq = wo.marks_per_question
 
-    if is_map:
+    # Helpers to get per-type marks from blueprint (falls back to section average)
+    def _m(keyword: str, fallback: float = mpq) -> float:
+        for qt in wo.question_types:
+            if keyword in _type_str(qt):
+                return _qt_marks(qt)
+        return fallback
+
+    # ── Pure map-work section ─────────────────────────────────────────────────────
+    if is_map and not has_cbq and not has_mcq:
         return (
             '{\n'
             f'  "section_id": "{wo.section_id}",\n'
             f'  "section_name": "{wo.section_name}",\n'
             '  "questions": [\n'
             '    {\n'
-            '      "qnum": 1,\n'
-            '      "type": "SA",\n'
-            '      "subtype": "map_based",\n'
+            '      "qnum": 1, "type": "SA", "subtype": "map_based",\n'
             '      "text": "On the given outline map of India, locate and label the following: (a) ... (b) ...",\n'
             f'      "marks": {mpq},\n'
             '      "map_note": "[Attach outline map of India — examiner to supply]",\n'
-            '      "chapter_tag": "Chapter name or number from NCERT this question is drawn from",\n'
+            '      "chapter_tag": "Chapter name or number from NCERT",\n'
             '      "competency_type": "application"\n'
             '    }\n'
             '  ]\n'
             '}'
         )
+
+    # ── Dedicated image-based CBQ section ────────────────────────────────────────
     if (has_passage or has_cbq) and _is_dedicated_cbq_section(wo):
-        # Image-based CBQ (question-first): LLM writes observation questions from chapter knowledge.
-        # An image will be generated to match these questions AFTER section generation.
-        # The "image_based": true flag triggers post-processing in generate_section().
         return (
             '{\n'
             f'  "section_id": "{wo.section_id}",\n'
             f'  "section_name": "{wo.section_name}",\n'
             '  "questions": [\n'
             '    {\n'
-            '      "qnum": 1,\n'
-            '      "type": "CBQ",\n'
-            '      "subtype": "image_based",\n'
-            '      "image_based": true,\n'
+            '      "qnum": 1, "type": "CBQ", "subtype": "image_based", "image_based": true,\n'
             '      "text": "Observe the diagram carefully and answer the following questions:",\n'
-            f'      "marks": {mpq},\n'
-            '      "chapter_tag": "Chapter name or number from NCERT",\n'
+            f'      "marks": {mpq}, "chapter_tag": "Chapter name or number from NCERT",\n'
             '      "competency_type": "application",\n'
             '      "sub_questions": [\n'
             '        {"text": "What does this diagram represent? Identify it.", "marks": 1, "answer_explanation": "Key answer points"},\n'
@@ -240,58 +253,150 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             '  ]\n'
             '}'
         )
-    if has_passage or has_cbq:
-        # Show MCQ example first when section also has MCQs (prevents LLM generating MCQs without options)
-        mcq_example = ''
-        if has_mcq:
-            mcq_example = (
-                '    {\n'
-                '      "qnum": 1,\n'
-                '      "type": "MCQ",\n'
-                '      "subtype": "standard",\n'
-                '      "text": "MCQ question text",\n'
-                '      "options": {"a": "...", "b": "...", "c": "...", "d": "..."},\n'
-                '      "answer": "a",\n'
-                '      "answer_explanation": "Why correct option is right",\n'
-                f'      "marks": 1,\n'
-                '      "chapter_tag": "Chapter name",\n'
-                '      "competency_type": "recall"\n'
-                '    },\n'
+
+    # ── Mixed / compound section — show an example for EVERY type present ────────
+    # This is the most important branch: sections like A (MCQ+VSA+SA+LA+CBQ+Map) must
+    # see concrete schema examples for all their types, or the LLM invents wrong types.
+    is_mixed = sum([has_mcq or has_ar, has_cbq, has_la, has_sa, has_vsa, has_map_type]) > 1
+    if is_mixed or has_cbq or has_passage:
+        examples = []
+        qnum = 1
+
+        if has_mcq and not has_ar:
+            mcq_m = _m("mcq", _m("objective", 1.0))
+            examples.append(
+                f'    {{\n'
+                f'      "qnum": {qnum}, "type": "MCQ", "subtype": "standard",\n'
+                f'      "text": "MCQ question text",\n'
+                f'      "options": {{"a": "Option A", "b": "Option B", "c": "Option C", "d": "Option D"}},\n'
+                f'      "answer": "b",\n'
+                f'      "answer_explanation": "Why option b is correct and others are not (1-2 sentences)",\n'
+                f'      "marks": {mcq_m}, "chapter_tag": "Chapter name", "competency_type": "recall"\n'
+                f'    }}'
             )
+            qnum += 1
+
+        if has_ar:
+            ar_m = _m("assertion", _m("mcq", _m("objective", 1.0)))
+            examples.append(
+                f'    {{\n'
+                f'      "qnum": {qnum}, "type": "MCQ", "subtype": "assertion_reason",\n'
+                f'      "text": "Assertion (A): [full assertion statement]\\nReason (R): [full reason statement]",\n'
+                f'      "options": {{\n'
+                f'        "a": "Both A and R are true and R is the correct explanation of A",\n'
+                f'        "b": "Both A and R are true but R is NOT the correct explanation of A",\n'
+                f'        "c": "A is true but R is false",\n'
+                f'        "d": "A is false but R is true"\n'
+                f'      }},\n'
+                f'      "answer": "a",\n'
+                f'      "answer_explanation": "Why option a is correct",\n'
+                f'      "marks": {ar_m}, "chapter_tag": "Chapter name", "competency_type": "application"\n'
+                f'    }}'
+            )
+            qnum += 1
+
+        if has_vsa:
+            vsa_m = _m("vsa", _m("very short", 2.0))
+            examples.append(
+                f'    {{\n'
+                f'      "qnum": {qnum}, "type": "VSA", "subtype": "standard",\n'
+                f'      "text": "Very short answer question text (answer in max 40 words)",\n'
+                f'      "answer_explanation": "Key answer in 1-2 sentences",\n'
+                f'      "marks": {vsa_m}, "chapter_tag": "Chapter name", "competency_type": "recall"\n'
+                f'    }}'
+            )
+            qnum += 1
+
+        if has_sa:
+            sa_m = _m("short answer", _m("sa", 3.0))
+            examples.append(
+                f'    {{\n'
+                f'      "qnum": {qnum}, "type": "SA", "subtype": "standard",\n'
+                f'      "text": "Short answer question text (answer in max 60 words)",\n'
+                f'      "answer_explanation": "Model answer key points (2-3 sentences covering all mark-worthy content)",\n'
+                f'      "marks": {sa_m}, "chapter_tag": "Chapter name", "competency_type": "constructed"\n'
+                f'    }}'
+            )
+            qnum += 1
+
+        if has_la:
+            la_m = _m("long answer", _m("la", 5.0))
+            examples.append(
+                f'    {{\n'
+                f'      "qnum": {qnum}, "type": "LA", "subtype": "standard",\n'
+                f'      "text": "Long answer question text (answer in max 120 words)",\n'
+                f'      "answer_explanation": "Model answer key points — 4-6 bullet points covering all mark-worthy content",\n'
+                f'      "marks": {la_m}, "chapter_tag": "Chapter name", "competency_type": "constructed",\n'
+                f'      "or_alternative": "Alternate LA question on a DIFFERENT concept from the same chapter ({la_m}m)"\n'
+                f'    }}'
+            )
+            qnum += 1
+
+        if has_cbq:
+            cbq_m = _m("cbq", _m("source", _m("case", mpq)))
+            examples.append(
+                f'    {{\n'
+                f'      "qnum": {qnum}, "type": "CBQ", "subtype": "source_based",\n'
+                f'      "source_text": "The case/source passage for THIS question ONLY (150-250 words). '
+                f'This passage belongs to this CBQ alone — the MCQ/SA/LA questions in this section must NOT reference it.",\n'
+                f'      "text": "Read the source above and answer the following:",\n'
+                f'      "marks": {cbq_m}, "chapter_tag": "Chapter name", "competency_type": "application",\n'
+                f'      "sub_questions": [\n'
+                f'        {{"text": "Sub-question (a)", "marks": 1, "answer_explanation": "Key answer points"}},\n'
+                f'        {{"text": "Sub-question (b)", "marks": 1, "answer_explanation": "Key answer points"}},\n'
+                f'        {{"text": "Sub-question (c)", "marks": {max(1, round(cbq_m - 2))}, "answer_explanation": "Key answer points"}}\n'
+                f'      ]\n'
+                f'    }}'
+            )
+            qnum += 1
+
+        if has_map_type:
+            map_m = _m("map", 2.0)
+            examples.append(
+                f'    {{\n'
+                f'      "qnum": {qnum}, "type": "SA", "subtype": "map_based",\n'
+                f'      "text": "On the given outline map of India, locate and label: (a) ... (b) ...",\n'
+                f'      "marks": {map_m}, "chapter_tag": "Chapter name",\n'
+                f'      "map_note": "[Attach outline map of India — examiner to supply]",\n'
+                f'      "competency_type": "application"\n'
+                f'    }}'
+            )
+            qnum += 1
+
+        examples_str = ',\n'.join(examples)
+        # A genuine section-wide reading passage (driven by passage_instruction) stays at
+        # section level. A CBQ's source passage does NOT — it lives in the CBQ's
+        # "source_text" field so only that question references it.
+        passage_note = ('  "passage": "FULL SECTION READING PASSAGE (400-600 words) — all questions reference this",\n'
+                        if has_passage else '')
+        cbq_note = (
+            "\n— The CBQ's passage goes in its OWN \"source_text\" field, NOT at section level. "
+            "MCQ/VSA/SA/LA questions are STANDALONE and must not reference any passage."
+            if has_cbq else ""
+        )
         return (
             '{\n'
             f'  "section_id": "{wo.section_id}",\n'
             f'  "section_name": "{wo.section_name}",\n'
-            '  "passage": "FULL PASSAGE TEXT HERE (400-600 words for reading; 200-300 words for case/source-based)",\n'
+            f'{passage_note}'
             '  "questions": [\n'
-            f'{mcq_example}'
-            '    {\n'
-            '      "qnum": 2,\n'
-            '      "type": "CBQ",\n'
-            '      "subtype": "source_based",\n'
-            '      "text": "Read the passage above and answer the following:",\n'
-            f'      "marks": {mpq},\n'
-            '      "chapter_tag": "Chapter name or number from NCERT",\n'
-            '      "competency_type": "application",\n'
-            '      "sub_questions": [\n'
-            '        {"text": "Sub-question (a)", "marks": 1, "answer_explanation": "Key answer points"},\n'
-            '        {"text": "Sub-question (b)", "marks": 1, "answer_explanation": "Key answer points"},\n'
-            '        {"text": "Sub-question (c)", "marks": 2, "answer_explanation": "Key answer points"}\n'
-            '      ]\n'
-            '    }\n'
+            f'{examples_str}\n'
             '  ]\n'
-            '}'
+            '}\n'
+            '— NOTE: Above shows ONE example per type. Generate ALL '
+            f'{wo.questions_count} questions following EXACTLY these per-type formats.'
+            f'{cbq_note}'
         )
-    elif has_mcq:
+
+    # ── Pure MCQ section (no other types) ────────────────────────────────────────
+    if has_mcq:
         img_field = '\n      "image_prompt": "detailed description of the image/diagram to generate for this question",' if needs_img else ''
-        # Show AR example in the schema when section contains Assertion-Reason questions
         ar_example = ''
         if has_ar:
             ar_example = (
+                ',\n'
                 '    {\n'
-                '      "qnum": 2,\n'
-                '      "type": "MCQ",\n'
-                '      "subtype": "assertion_reason",\n'
+                '      "qnum": 2, "type": "MCQ", "subtype": "assertion_reason",\n'
                 '      "text": "Assertion (A): [full assertion statement]\\nReason (R): [full reason statement]",\n'
                 '      "options": {\n'
                 '        "a": "Both A and R are true and R is the correct explanation of A",\n'
@@ -301,8 +406,7 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
                 '      },\n'
                 '      "answer": "a",\n'
                 '      "answer_explanation": "Why this option is correct",\n'
-                f'      "marks": {mpq},\n'
-                '      "chapter_tag": "Chapter name or number from NCERT",\n'
+                f'      "marks": {mpq}, "chapter_tag": "Chapter name or number from NCERT",\n'
                 '      "competency_type": "application"\n'
                 '    }\n'
             )
@@ -312,24 +416,22 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             f'  "section_name": "{wo.section_name}",\n'
             '  "questions": [\n'
             '    {\n'
-            '      "qnum": 1,\n'
-            '      "type": "MCQ",\n'
-            '      "subtype": "standard",\n'
+            '      "qnum": 1, "type": "MCQ", "subtype": "standard",\n'
             '      "text": "Question text",'
             f'{img_field}\n'
             '      "options": {"a": "...", "b": "...", "c": "...", "d": "..."},\n'
             '      "answer": "a",\n'
             '      "answer_explanation": "Why the correct option is right and why others are wrong (1-2 sentences)",\n'
-            f'      "marks": {mpq},\n'
-            '      "chapter_tag": "Chapter name or number from NCERT",\n'
+            f'      "marks": {mpq}, "chapter_tag": "Chapter name or number from NCERT",\n'
             '      "competency_type": "recall or application"\n'
             '    }'
-            + (',\n' + ar_example if ar_example else '\n') +
+            f'{ar_example}'
             '  ]\n'
             '}'
         )
-    elif has_la:
-        # M-02: or_alternative field for LA questions
+
+    # ── Pure LA section ──────────────────────────────────────────────────────────
+    if has_la:
         img_field = ', "image_prompt": "detailed description of the image/diagram to generate"' if needs_img else ''
         return (
             '{\n'
@@ -337,9 +439,7 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             f'  "section_name": "{wo.section_name}",\n'
             '  "questions": [\n'
             '    {\n'
-            '      "qnum": 1,\n'
-            '      "type": "LA",\n'
-            '      "subtype": "standard",\n'
+            '      "qnum": 1, "type": "LA", "subtype": "standard",\n'
             f'      "text": "Long answer question text"{img_field},\n'
             f'      "marks": {mpq},\n'
             '      "answer_explanation": "Model answer key points — 4-6 bullet points covering all mark-worthy content",\n'
@@ -350,19 +450,20 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             '  ]\n'
             '}'
         )
-    else:
-        img_field = ', "image_prompt": "detailed description of the image/diagram to generate"' if needs_img else ''
-        return (
-            '{\n'
-            f'  "section_id": "{wo.section_id}",\n'
-            f'  "section_name": "{wo.section_name}",\n'
-            '  "questions": [\n'
-            f'    {{"qnum": 1, "type": "SA", "subtype": "standard", "text": "Question text"{img_field}, "marks": {mpq}, '
-            f'"answer_explanation": "Model answer key points (2-3 sentences)", '
-            f'"chapter_tag": "Chapter name or number from NCERT", "competency_type": "constructed"}}\n'
-            '  ]\n'
-            '}'
-        )
+
+    # ── Pure SA/VSA section (fallback) ───────────────────────────────────────────
+    img_field = ', "image_prompt": "detailed description of the image/diagram to generate"' if needs_img else ''
+    return (
+        '{\n'
+        f'  "section_id": "{wo.section_id}",\n'
+        f'  "section_name": "{wo.section_name}",\n'
+        '  "questions": [\n'
+        f'    {{"qnum": 1, "type": "SA", "subtype": "standard", "text": "Question text"{img_field}, "marks": {mpq}, '
+        f'"answer_explanation": "Model answer key points (2-3 sentences)", '
+        f'"chapter_tag": "Chapter name or number from NCERT", "competency_type": "constructed"}}\n'
+        '  ]\n'
+        '}'
+    )
 
 
 def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: str = "", image_vision: dict | None = None) -> str:
@@ -479,18 +580,100 @@ MATHEMATICAL NOTATION (strictly follow):
 
     generate_count = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
 
+    # ── Per-type marks breakdown (critical for mixed-marks sections) ──────────────
+    # For sections with uniform marks, a single "marks per question" line is fine.
+    # For mixed sections (MCQ=1m, SA=3m, LA=5m, CBQ=4m, …) we MUST list marks per
+    # type explicitly — otherwise the LLM uses the section average (e.g. 2.2m) for
+    # every question, causing blanket marks-mismatch failures on every attempt.
+    if wo.mixed_marks and wo.question_types:
+        lines = []
+        for qt in wo.question_types:
+            if isinstance(qt, dict):
+                rng  = qt.get("range", "")
+                typ  = qt.get("type", "")
+                cnt  = qt.get("count", 1)
+                mke  = qt.get("marks_each", wo.marks_per_question)
+                lines.append(f"  {rng}: {typ} → {mke} mark{'s' if mke != 1 else ''} each")
+        marks_spec = (
+            "- Marks per question: VARIES BY TYPE — use EXACT marks below:\n"
+            + "\n".join(lines)
+        )
+        marks_rule4 = (
+            "4. MARKS PER QUESTION TYPE — MANDATORY (section has mixed marks):\n"
+            + "\n".join(f"   {l.strip()}" for l in lines) + "\n"
+            "   ⚠️  DO NOT use the section average for all questions — each question's\n"
+            "   marks must match its type as shown above. Using 2.2 or 2.0 for all\n"
+            "   questions is WRONG and will cause the entire section to be rejected."
+        )
+    else:
+        marks_spec = f"- Marks per question: {wo.marks_per_question}"
+        marks_rule4 = f"4. Each question marks = {wo.marks_per_question}"
+
+    # ── Question-position blueprint (for mixed-type sections) ─────────────────────
+    # When a section has multiple question types (e.g. MCQ for Q1-4, VSA for Q5,
+    # SA for Q6, LA for Q7, CBQ for Q8, Map for Q9), list the expected type at each
+    # position explicitly so the LLM doesn't assign types freely.
+    # Maps blueprint category to the canonical "type" value the LLM must write in JSON
+    _cat_to_json = {
+        "mcq": '"type": "MCQ"',
+        "vsa": '"type": "VSA"',
+        "sa":  '"type": "SA"',
+        "la":  '"type": "LA"',
+        "cbq": '"type": "CBQ"',
+        "map": '"type": "SA", "subtype": "map_based"',
+    }
+
+    qpos_block = ""
+    if wo.mixed_marks and wo.question_types:
+        pos_lines = []
+        has_ar_pos = False
+        local_start = 1
+        for qt in wo.question_types:
+            if isinstance(qt, dict):
+                cnt  = int(qt.get("count", 1))
+                typ  = qt.get("type", "")
+                rng  = qt.get("range", f"Q{local_start}" if cnt == 1 else f"Q{local_start}-{local_start+cnt-1}")
+                mke  = qt.get("marks_each", wo.marks_per_question)
+                typ_lower = str(typ).lower()
+                # Assertion-Reason is an MCQ subtype — emit it explicitly so the model
+                # doesn't downgrade it to a plain MCQ (which loses the A/R statements).
+                if "assertion" in typ_lower:
+                    json_type = '"type": "MCQ", "subtype": "assertion_reason"'
+                    has_ar_pos = True
+                else:
+                    cat = _type_category(typ)
+                    json_type = _cat_to_json.get(cat, f'"type": "{cat.upper()}"')
+                pos_lines.append(f"  {rng} ({cnt} question{'s' if cnt>1 else ''}): {json_type}, marks={mke}")
+                local_start += cnt
+        if pos_lines:
+            ar_note = (
+                "\nFor assertion_reason positions: 'text' MUST be "
+                '"Assertion (A): [full statement]\\nReason (R): [full statement]" '
+                "(both statements written out in full, NOT the word \"Assertion\" alone), "
+                "with the 4 standard AR options.\n"
+                if has_ar_pos else ""
+            )
+            qpos_block = (
+                "\nQUESTION-POSITION BLUEPRINT — MANDATORY:\n"
+                "Generate questions in EXACTLY this order, type, and marks:\n"
+                + "\n".join(pos_lines) + "\n"
+                "Each question's 'type', 'subtype', and 'marks' MUST match this blueprint exactly.\n"
+                "Do NOT assign the same type to all questions — the section has MULTIPLE question types.\n"
+                "Do NOT add Assertion-Reason questions at positions not marked assertion_reason above.\n"
+                + ar_note
+            )
+
     return f"""You are a CBSE Class {wo.class_name} {effective_subject} question paper author.
 Generate ONLY the questions for {wo.section_name} of the exam.
 
 SECTION SPECIFICATION:
 - Section: {wo.section_name} ({wo.title})
 - Questions required: {generate_count}
-- Marks per question: {wo.marks_per_question}
+{marks_spec}
 - Total marks: {wo.marks}
-- Question types: {types_str}
 - Chapters to cover: {chapters_str}
 - Subject focus: {effective_subject}
-
+{qpos_block}
 CHAPTER DISTRIBUTION — MANDATORY:
 Spread questions across ALL {chapter_count} chapter(s): {chapters_str}
 Target ~{per_chapter} question(s) per chapter. Never draw all questions from one chapter.
@@ -511,7 +694,7 @@ STRICT RULES:
 1. Generate EXACTLY {generate_count} questions — no more, no less
 2. MCQ / Assertion-Reason questions MUST have 4 options: a, b, c, d
 3. Do NOT embed section headers or question numbers in the 'text' field
-4. Each question marks = {wo.marks_per_question}
+{marks_rule4}
 5. Draw question content from the reference material above
 6. MCQ ANSWER DISTRIBUTION — MANDATORY: Spread correct answers across a, b, c, d roughly equally. Never place the correct answer in the same option letter for more than 2 consecutive questions. A biased answer key (e.g. mostly 'a' or 'b') will be REJECTED.
 7. Questions MUST come from different chapters — no chapter monopoly.
@@ -579,7 +762,17 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
 
     # ── MCQ ──────────────────────────────────────────────────────────────────────
     is_mcq = ("mcq" in type_lower or "objective" in type_lower or "multiple" in type_lower)
-    is_ar_type = "assertion" in type_lower or subtype == "assertion_reason"
+    # Detect AR by declared type/subtype OR by the tell-tale option content. The model
+    # sometimes emits subtype="standard" but fills the 4 standard AR choices and leaves
+    # 'text' as just "Assertion" — without the option-content check this passes as a
+    # plain MCQ and renders as a headless Assertion-Reason question.
+    _opt_blob = " ".join(str(v).lower() for v in opts.values())
+    looks_like_ar = (
+        "both a and r" in _opt_blob
+        or ("a is true" in _opt_blob and "r is false" in _opt_blob)
+        or ("a is false" in _opt_blob and "r is true" in _opt_blob)
+    )
+    is_ar_type = "assertion" in type_lower or subtype == "assertion_reason" or looks_like_ar
 
     if is_mcq or is_ar_type:
         if is_ar_type:
@@ -681,8 +874,63 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
         # Ensure image generation flag is set for image_based questions
         if subtype == "image_based" or type_lower == "image_based":
             q["image_based"] = True
+        # Source-based CBQ must carry its own passage in 'source_text' (mixed-section flow).
+        # An image_based CBQ gets its visual from the image pipeline instead, so it's exempt.
+        elif subtype == "source_based" or "source" in type_lower or "case" in type_lower:
+            # Accept legacy 'passage' key too, but prefer 'source_text'
+            src = str(q.get("source_text", "") or q.get("passage", "") or "").strip()
+            if len(src) < 80:
+                errors.append(
+                    f"Q{n} [CBQ/{subtype}]: missing 'source_text' — provide the case/source "
+                    "passage (150-250 words) in a 'source_text' field on THIS question"
+                )
 
     return errors
+
+
+# ─────────────────────────────────────────────
+# Blueprint position → expected type helper
+# ─────────────────────────────────────────────
+
+def _blueprint_type_at(n: int, wo: SectionWorkOrder) -> tuple[str, float] | None:
+    """
+    Return (expected_type_string, marks_each) for the nth question (1-based) in the section,
+    derived from wo.question_types blueprint. Returns None if blueprint can't be resolved.
+    """
+    if not wo.question_types:
+        return None
+    pos = 1
+    for qt in wo.question_types:
+        if isinstance(qt, dict):
+            count = int(qt.get("count", 1))
+            marks = float(qt.get("marks_each", wo.marks_per_question))
+            t = qt.get("type", "")
+        else:
+            count = 1
+            marks = float(wo.marks_per_question)
+            t = str(qt)
+        if pos <= n < pos + count:
+            return (t, marks)
+        pos += count
+    return None
+
+
+def _type_category(type_str: str) -> str:
+    """Map any type string to a short category key for mismatch comparison."""
+    t = type_str.strip().lower()
+    if "mcq" in t or "objective" in t or "multiple" in t or "assertion" in t:
+        return "mcq"
+    if "vsa" in t or "very short" in t:
+        return "vsa"
+    if "short answer" in t or t == "sa":
+        return "sa"
+    if "long answer" in t or t == "la":
+        return "la"
+    if "cbq" in t or "source" in t or "case" in t or "case-based" in t:
+        return "cbq"
+    if "map" in t:
+        return "map"
+    return "other"
 
 
 # ─────────────────────────────────────────────
@@ -734,6 +982,60 @@ def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
 
         type_lower = _type_str(q.get("type", ""))
         q_subtype = str(q.get("subtype", "")).strip().lower()
+
+        # ── Blueprint type-mismatch: LLM-assigned type vs expected from blueprint ─
+        bp = _blueprint_type_at(n, wo)
+        if bp is not None:
+            bp_type_str, bp_marks = bp
+            expected_cat = _type_category(bp_type_str)
+            # Derive the ACTUAL category honoring subtype:
+            #   • map_based  → rendered as "type":"SA" but is conceptually a MAP question
+            #   • assertion_reason → rendered as "type":"MCQ" (category mcq)
+            # Without this, a correct map question (SA + map_based) is falsely flagged as
+            # "expected MAP but got SA" on every retry, so the section never validates.
+            if q_subtype == "map_based":
+                actual_cat = "map"
+            elif q_subtype == "assertion_reason":
+                actual_cat = "mcq"
+            else:
+                actual_cat = _type_category(q.get("type", ""))
+
+            if expected_cat == "map":
+                # Map position: accept anything categorized as map (SA + map_based).
+                if actual_cat != "map":
+                    errors.append(
+                        f"Q{n}: type mismatch — blueprint expects a MAP WORK question "
+                        f"('{bp_type_str}'). Use \"type\": \"SA\", \"subtype\": \"map_based\" "
+                        "with a 'map_note' field listing places to locate."
+                    )
+            elif actual_cat != "other" and expected_cat != "other" and actual_cat != expected_cat:
+                # Build a short correction hint
+                if expected_cat == "mcq":
+                    if "assertion" in bp_type_str.lower():
+                        hint = ('Change to "type": "MCQ", "subtype": "assertion_reason" with '
+                                '"text": "Assertion (A): ...\\nReason (R): ..." and the 4 standard AR options')
+                    else:
+                        hint = 'Change to "type": "MCQ" and add options {"a":..., "b":..., "c":..., "d":...}'
+                elif expected_cat == "vsa":
+                    hint = 'Change to "type": "VSA" and add "answer_explanation": "..."'
+                elif expected_cat == "sa":
+                    hint = 'Change to "type": "SA" and add "answer_explanation": "..."'
+                elif expected_cat == "la":
+                    hint = 'Change to "type": "LA" and add "answer_explanation" + "or_alternative": "..."'
+                elif expected_cat == "cbq":
+                    hint = 'Change to "type": "CBQ" and add "sub_questions": [...]'
+                else:
+                    hint = f'Change to match blueprint type: {bp_type_str!r}'
+                errors.append(
+                    f"Q{n}: type mismatch — blueprint expects {expected_cat.upper()} "
+                    f"('{bp_type_str}') but got '{q.get('type', '')}'. {hint}"
+                )
+            # Also check marks match blueprint when section uses mixed marks
+            if wo.mixed_marks and abs(float(q.get("marks", bp_marks)) - bp_marks) > 0.1:
+                errors.append(
+                    f"Q{n}: marks mismatch — blueprint expects {bp_marks}m "
+                    f"but got {q.get('marks', '?')}m"
+                )
 
         # ── Per-type/subtype structural validation (delegates to _validate_by_subtype) ─
         errors.extend(_validate_by_subtype(q, n, wo))
@@ -1521,21 +1823,50 @@ def _repair_section_data(section_data: dict) -> dict:
             if isinstance(v, str) and _OPT_PREFIX_RE.match(v):
                 opts[k] = _OPT_PREFIX_RE.sub('', v).strip()
 
-        # ── AR: inject standard 4 options when A/R text present but options missing ─
+        # ── AR detection: by declared type/subtype OR by option content ──────────
         type_lower = _type_str(q.get("type", ""))
         subtype = str(q.get("subtype", "")).strip().lower()
-        is_ar = "assertion" in type_lower or subtype == "assertion_reason"
+        _opt_blob = " ".join(str(v).lower() for v in opts.values())
+        _looks_like_ar = (
+            "both a and r" in _opt_blob
+            or ("a is true" in _opt_blob and "r is false" in _opt_blob)
+            or ("a is false" in _opt_blob and "r is true" in _opt_blob)
+        )
+        is_ar = "assertion" in type_lower or subtype == "assertion_reason" or _looks_like_ar
         if is_ar:
-            text = q.get("text", "")
+            text = str(q.get("text", "")).strip()
+            # The model often puts the statements in separate 'assertion'/'reason' fields
+            # and leaves 'text' as the bare word "Assertion". Compose proper text from them.
+            assertion_f = str(q.get("assertion", "") or q.get("assertion_statement", "")).strip()
+            reason_f    = str(q.get("reason", "") or q.get("reason_statement", "")).strip()
+            text_is_placeholder = (
+                len(text) < 50
+                or text.lower().rstrip(":.") in ("assertion", "assertion-reason", "assertion reason", "a and r")
+            )
+            if assertion_f and reason_f and text_is_placeholder:
+                q["text"] = f"Assertion (A): {assertion_f}\nReason (R): {reason_f}"
+                text = q["text"]
+                print(f"[Repair] Q{q.get('qnum','?')}: composed AR text from assertion/reason fields")
+            # Inject the standard 4 options when A/R text is present but options are missing
             has_assertion = ("Assertion" in text or "A:" in text)
             has_reason = ("Reason" in text or "R:" in text)
             is_substantive = len(text.strip()) > 50
             if has_assertion and has_reason and is_substantive and len(opts) < 4:
                 q["options"] = dict(_AR_STANDARD_OPTIONS)
                 print(f"[Repair] Q{q.get('qnum','?')}: injected standard AR options (had A/R text, options missing)")
+            # Normalize subtype so downstream validation enforces the AR text format
+            q["subtype"] = "assertion_reason"
 
-        # ── Infer and inject subtype when LLM omitted it ─────────────────────────
-        if not q.get("subtype"):
+        # ── Infer and inject subtype when LLM omitted it (or set it wrong) ───────
+        # Map questions arrive as type="SA" (no "map" in type_lower), so detect them by
+        # the map_note field or "outline map" phrasing — otherwise they'd default to
+        # "standard" and fail the blueprint MAP-position check, wasting a retry.
+        _txt_lower = str(q.get("text", "")).lower()
+        _has_map_signal = bool(str(q.get("map_note", "")).strip()) or "outline map" in _txt_lower
+        cur_subtype = str(q.get("subtype", "")).strip().lower()
+        if _has_map_signal and cur_subtype in ("", "standard"):
+            q["subtype"] = "map_based"
+        elif not q.get("subtype"):
             if is_ar:
                 q["subtype"] = "assertion_reason"
             elif "map" in type_lower:
@@ -1548,6 +1879,117 @@ def _repair_section_data(section_data: dict) -> dict:
                 q["subtype"] = "standard"
 
     return section_data
+
+
+def _ar_text_is_complete(text: str) -> bool:
+    """True if 'text' already contains full Assertion AND Reason statements."""
+    t = str(text or "").strip()
+    has_a = ("Assertion (A):" in t or "Assertion:" in t)
+    has_r = ("Reason (R):" in t or "Reason:" in t)
+    return has_a and has_r and len(t) > 50
+
+
+def _post_process_assertion_reason(section_data: dict, wo: SectionWorkOrder) -> tuple:
+    """
+    Guarantee every Assertion-Reason question carries full Assertion + Reason statements.
+
+    The base model reliably emits the 4 standard AR options but frequently leaves 'text' as a
+    bare placeholder ("Assertion") and never writes the statements — so after retries the
+    section ships a headless AR question. This deterministic post-process detects such
+    questions and fills them: first by salvaging separate assertion/reason fields (free),
+    then via a focused single-question LLM call. The question is then assembled structurally,
+    so the result never depends on the base model getting the inline format right.
+
+    Mutates section_data in place. Returns (in_tokens, out_tokens) consumed.
+    """
+    questions = section_data.get("questions", [])
+    if not isinstance(questions, list):
+        return 0, 0
+
+    total_in = 0
+    total_out = 0
+    subject = wo.section_subject or wo.subject or "Social Science"
+    chapters = wo.chapters or []
+
+    for i, q in enumerate(questions):
+        if not isinstance(q, dict):
+            continue
+        opts = q.get("options") if isinstance(q.get("options"), dict) else {}
+        opt_blob = " ".join(str(v).lower() for v in opts.values())
+        subtype = str(q.get("subtype", "")).strip().lower()
+        looks_like_ar = (
+            subtype == "assertion_reason"
+            or "both a and r" in opt_blob
+            or ("a is true" in opt_blob and "r is false" in opt_blob)
+            or ("a is false" in opt_blob and "r is true" in opt_blob)
+        )
+        if not looks_like_ar or _ar_text_is_complete(q.get("text", "")):
+            continue
+
+        qnum = q.get("qnum", i + 1)
+
+        # 1) Salvage from separate fields (no LLM cost) ──────────────────────────
+        a_field = str(q.get("assertion", "") or q.get("assertion_statement", "")
+                      or q.get("statement_1", "") or q.get("statement1", "")).strip()
+        r_field = str(q.get("reason", "") or q.get("reason_statement", "")
+                      or q.get("statement_2", "") or q.get("statement2", "")).strip()
+        answer = str(q.get("answer", "")).strip().lower()
+
+        # 2) Focused LLM call when statements are genuinely absent ────────────────
+        if not (a_field and r_field):
+            chapter = q.get("chapter_tag") or (chapters[0] if chapters else subject)
+            ctx = str(wo.context_text or "")[:1500]
+            ctx_block = ("Base it on this reference material:\n" + ctx + "\n\n") if ctx else ""
+            prompt = (
+                f"Create ONE Assertion-Reason question for CBSE Class {wo.class_name} "
+                f"{subject}, topic: {chapter}.\n"
+                + ctx_block +
+                "Return ONLY this JSON (no markdown, no commentary):\n"
+                '{"assertion": "<one complete factual sentence>", '
+                '"reason": "<one complete sentence>", "answer": "<a|b|c|d>"}\n\n'
+                "The 'answer' must correctly describe the A–R relationship:\n"
+                "a = Both A and R are true and R is the correct explanation of A\n"
+                "b = Both A and R are true but R is NOT the correct explanation of A\n"
+                "c = A is true but R is false\n"
+                "d = A is false but R is true\n"
+                "Make A and R substantive (test real understanding); the relationship MUST match the answer."
+            )
+            try:
+                raw, in_tok, out_tok = mantle_client.converse(
+                    model_id=GEN_MODEL, prompt=prompt, max_tokens=400, temperature=0.7,
+                )
+                total_in += in_tok
+                total_out += out_tok
+                clean = re.sub(r"^```[a-zA-Z]*\n?", "", raw.strip(), flags=re.MULTILINE)
+                clean = re.sub(r"\n?```$", "", clean.strip())
+                m = re.search(r"\{.*\}", clean, re.S)
+                obj = json.loads(m.group(0)) if m else {}
+                a_field = str(obj.get("assertion", "")).strip()
+                r_field = str(obj.get("reason", "")).strip()
+                ans = str(obj.get("answer", "")).strip().lower()
+                if ans in ("a", "b", "c", "d"):
+                    answer = ans
+                print(f"[AR-Repair] Q{qnum}: generated Assertion/Reason statements via focused call")
+            except Exception as exc:
+                print(f"[AR-Repair] Q{qnum} focused generation failed: {exc}")
+
+        # 3) Assemble the question structurally ──────────────────────────────────
+        if a_field and r_field:
+            q["text"] = f"Assertion (A): {a_field}\nReason (R): {r_field}"
+            q["options"] = dict(_AR_STANDARD_OPTIONS)
+            q["type"] = "MCQ"
+            q["subtype"] = "assertion_reason"
+            if answer in ("a", "b", "c", "d"):
+                q["answer"] = answer
+            # Drop now-redundant scattered fields
+            for k in ("assertion", "reason", "assertion_statement", "reason_statement",
+                      "statement_1", "statement_2", "statement1", "statement2"):
+                q.pop(k, None)
+            print(f"[AR-Repair] Q{qnum}: assembled complete Assertion-Reason question")
+        else:
+            print(f"[AR-Repair] Q{qnum}: could not obtain statements — left as-is")
+
+    return total_in, total_out
 
 
 def generate_section(wo: SectionWorkOrder):
@@ -1642,6 +2084,12 @@ def generate_section(wo: SectionWorkOrder):
         # Deterministic repair before validation — fixes known structural LLM mistakes
         # so they don't waste retry budget (e.g. AR missing options, duplicate option prefixes)
         section_data = _repair_section_data(section_data)
+        # Guarantee Assertion-Reason questions carry full statements (focused fill when the
+        # base model leaves them headless). Idempotent — skips already-complete AR questions,
+        # so on retries it costs nothing. Runs before validation to avoid wasted retries.
+        _ar_in, _ar_out = _post_process_assertion_reason(section_data, wo)
+        total_in_tok += _ar_in
+        total_out_tok += _ar_out
         errors = validate_section_output(section_data, wo)
         if not errors:
             section_data["title"] = wo.title

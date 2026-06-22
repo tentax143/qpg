@@ -38,9 +38,9 @@ def _qt_str(qt) -> str:
         return str(qt.get("type", "")).lower()
     return str(qt).lower()
 
-# Strip embedded letter prefix from option values (e.g. LLM writes "(a) text" inside the
-# value; render_docx would then prepend "(a)" again → "(a) (a) text").
-_STRIP_OPT_PREFIX = re.compile(r'^\([a-dA-D]\)\s*')
+# Strip embedded LOWERCASE option label prefix from values (e.g. LLM writes "(a) text").
+# Lowercase-only: uppercase (A)-(D) in AR options ("A is true but R is false") must NOT be stripped.
+_STRIP_OPT_PREFIX = re.compile(r'^\([a-d]\)\s*')
 
 
 # ------------------------------
@@ -1146,6 +1146,13 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         if isinstance(options, list) and options and text_content:
             inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE | re.DOTALL)
             text_content = inline_pattern.sub('', text_content).strip()
+
+        # CBQ source passage lives on the question itself (NOT at section level), so it
+        # renders immediately before this question and is scoped to it alone.
+        _src_text = str(q.get("source_text", "") or "").strip()
+        if _src_text:
+            all_questions.append(("instruction", "Read the source/case and answer the questions that follow:"))
+            all_questions.append(("passage", _src_text))
 
         if text_content:
             marks_raw = q.get("marks")
