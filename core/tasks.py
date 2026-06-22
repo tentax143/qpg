@@ -1,7 +1,6 @@
 from celery import shared_task
 from .models import QuestionPaper, ExamPattern, School
 from . import generator, embeddings
-from django.core.files import File
 from django.conf import settings
 from django.db.models import F
 import os
@@ -167,12 +166,12 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         )
 
         # file_path is relative like "question_papers/filename.docx"
-        # Construct full path and save using File object to ensure proper extension
+        # Point the FileField at the already-saved disk file.
+        # Do NOT use paper.file.save() — Django renames to avoid collisions,
+        # storing a different path in the DB than what's on disk → 404 on download.
         full_path = os.path.join(settings.MEDIA_ROOT, file_path)
         if os.path.exists(full_path):
-            with open(full_path, 'rb') as f:
-                filename = os.path.basename(file_path)
-                paper.file.save(filename, File(f), save=False)
+            paper.file.name = file_path
 
         paper.cost = total_cost
         paper.input_tokens = input_tokens

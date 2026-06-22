@@ -44,12 +44,21 @@ _MANTLE_BASE = f"https://bedrock-mantle.{REGION}.api.aws/v1"
 VISION_MODEL = "moonshotai.kimi-k2.5"
 
 POLLINATIONS_KEY   = os.environ.get("POLLINATIONS_API_KEY", "").strip()
-POLLINATIONS_MODEL = "gpt-image-2"
+POLLINATIONS_MODEL = "ideogram"  # Ideogram 4.0 Balanced — best label/text accuracy for scientific diagrams
+# Alternatives: "ideogram-turbo" (cheaper, less accurate), "ideogram-quality" (best quality, $0.1/img)
 
 _UA = "QPG-ImageFinder/1.0"
 
 # Minimum Kimi score for a Wikimedia image to be accepted
-_SCORE_THRESHOLD = 7
+_SCORE_THRESHOLD = 8
+
+# Style prefix prepended to every Pollinations prompt to enforce scientific diagram style
+_DIAGRAM_STYLE_PREFIX = (
+    "Scientific technical line diagram, pure white background, black ink only, "
+    "NCERT Class 10 textbook style, clean labeled diagram with arrows, "
+    "no color fills, no shading, no realistic rendering, no decorative elements, "
+    "no photographs, exact scientific accuracy: "
+)
 
 
 # ─── Mantle key rotation (direct HTTP for vision — mantle_client.converse has no image support) ─
@@ -146,10 +155,12 @@ def _route_and_extract(
         "Return ONLY valid JSON — no markdown, no extra text:\n"
         "  rdkit:   {\"image_type\": \"rdkit\", \"smiles\": \"SMILES_STRING\", \"compound_name\": \"Name\"}\n"
         "  diagram: {\"image_type\": \"diagram\", \"image_prompt\": \"detailed generation prompt\"}\n\n"
-        "The image_prompt for diagram must describe: single clean scientific diagram, "
-        "pure white background, black line art, NCERT textbook style, "
-        "key parts labeled with arrows A/B/C where applicable, no color fills, no shading, "
-        "specific enough that an image model draws EXACTLY what the student observes to answer the sub-questions."
+        "The image_prompt for diagram MUST be 3-5 sentences and include ALL of these:\n"
+        "  1. WHAT to draw: name the exact scientific concept (e.g., 'cross-section of a leaf showing palisade cells, spongy mesophyll, and stomata with guard cells').\n"
+        "  2. LABELS: list every label that must appear with arrows (e.g., 'labeled A=xylem, B=phloem, C=epidermis').\n"
+        "  3. LAYOUT: one single diagram, portrait orientation, all parts visible and proportional.\n"
+        "  4. STYLE: pure white background, black ink line art only, NCERT Class 10 textbook illustration style, no color, no shading, no photos.\n"
+        "  The prompt must be specific enough that the AI model draws EXACTLY what the student needs to answer the sub-questions."
     )
     prompt = (
         f"Subject: {subject}, Chapter: {chapter}\n\n"
@@ -162,7 +173,7 @@ def _route_and_extract(
             model_id=mantle_client.GEN_MODEL,
             prompt=prompt,
             system_prompt=system,
-            max_tokens=350,
+            max_tokens=600,
             temperature=0.1,
         )
         m = re.search(r'\{.*\}', raw, re.DOTALL)
@@ -254,24 +265,26 @@ def _build_prompt_from_question(
     )
     system = (
         "You write image generation prompts for CBSE Class 10 exam question papers. "
-        "Output ONLY the image generation prompt string — no explanation, no quotes. "
-        "The image must be a single clean scientific diagram that students observe to answer the questions. "
-        "Style requirements: ONE experiment/process/structure (no collage), pure white background, "
-        "black line art, key components labeled with arrows marked A, B, C (if applicable), "
-        "NCERT textbook style, no color fills, no shading, simple and unambiguous."
+        "Output ONLY the image generation prompt string — no explanation, no quotes, no JSON. "
+        "Write 3-5 sentences. Include:\n"
+        "  1. The exact scientific diagram to draw (name the specific concept, experiment, or structure).\n"
+        "  2. Every labeled part that must appear (e.g., 'labeled A=nucleus, B=cell wall, C=chloroplast').\n"
+        "  3. Spatial layout (e.g., 'cross-section view', 'side view', 'circuit diagram').\n"
+        "  4. Style: pure white background, black ink line art, NCERT Class 10 textbook style, no color, no shading.\n"
+        "Be specific enough that an AI image model draws EXACTLY the right diagram."
     )
     prompt = (
         f"Subject: {subject}, Chapter: {chapter}\n\n"
         f"Question: {question_text}\n\n"
         f"Sub-questions:\n{sub_q_lines}\n\n"
-        "Write a super-detailed image generation prompt describing exactly what diagram to draw."
+        "Write a detailed image generation prompt for exactly the diagram needed."
     )
     try:
         raw, _, _ = mantle_client.converse(
             model_id=mantle_client.GEN_MODEL,
             prompt=prompt,
             system_prompt=system,
-            max_tokens=200,
+            max_tokens=400,
             temperature=0.2,
         )
         result = raw.strip().strip('"').strip("'")
@@ -286,6 +299,50 @@ def _build_prompt_from_question(
             "pure white background, black line art, arrows labeled A B C, "
             "NCERT textbook style, no color, no shading"
         )
+
+
+# ─── Retry prompt builder ─────────────────────────────────────────────────────
+
+def _build_retry_prompt(
+    original_prompt: str,
+    question_text: str,
+    sub_questions: list[dict],
+    sci_check: dict,
+) -> str:
+    """
+    Build an enriched retry prompt by extracting specific visual elements mentioned
+    in the question and appending the issues Kimi found in the previous attempt.
+    """
+    issues = sci_check.get("issues", [])
+
+    # Pull quoted/specific nouns from question text that are likely visual props
+    # (e.g., "beaker", "electrode", "circuit", "flask", "cell", "leaf", "magnet")
+    sub_q_text = " ".join(sq.get("text", "") for sq in sub_questions[:4])
+    combined_text = (question_text + " " + sub_q_text).lower()
+
+    visual_keywords = [
+        "beaker", "flask", "test tube", "electrode", "circuit", "battery",
+        "bulb", "switch", "wire", "magnet", "lens", "prism", "mirror",
+        "cell", "leaf", "root", "stem", "chloroplast", "mitochondria",
+        "nucleus", "membrane", "stomata", "vein", "xylem", "phloem",
+        "acid", "base", "solution", "litmus", "flame", "burner",
+        "piston", "cylinder", "spring", "pendulum", "pulley",
+        "neuron", "synapse", "heart", "kidney", "lung", "nephron",
+    ]
+    found_props = [kw for kw in visual_keywords if kw in combined_text]
+
+    retry = original_prompt
+    if found_props:
+        props_str = ", ".join(found_props)
+        retry += f". MUST clearly show: {props_str}"
+    if issues:
+        issues_str = "; ".join(str(i) for i in issues[:3])
+        retry += f". Fix these problems from previous attempt: {issues_str}"
+    retry += (
+        ". Draw exactly what the student needs to observe to answer the sub-questions. "
+        "Every visual element mentioned in the question must be clearly visible and labeled."
+    )
+    return retry
 
 
 # ─── Wikimedia Commons search (question-aware) ────────────────────────────────
@@ -477,7 +534,7 @@ def _generate_pollinations(prompt: str) -> tuple[bytes, str]:
 
 # ─── V9.1 — Multi-image generation + Kimi ranking ─────────────────────────────
 
-_POLLINATIONS_VARIANTS = 3  # how many images to generate before picking best
+_POLLINATIONS_VARIANTS = 2  # how many images to generate before picking best
 
 
 def _rank_images_with_kimi(
@@ -551,6 +608,9 @@ def _generate_pollinations_multi(
     V9.1 — Generate N Pollinations images, rank with Kimi, return best.
     Falls back to single-image if generation fails.
     """
+    # Always enforce scientific diagram style regardless of what the prompt says
+    if not prompt.startswith(_DIAGRAM_STYLE_PREFIX):
+        prompt = _DIAGRAM_STYLE_PREFIX + prompt
     base_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
     base_params = {
         "model": POLLINATIONS_MODEL,
@@ -622,10 +682,12 @@ def _check_scientific_accuracy(
                 source, accurate, score, issues,
             )
             return {"accurate": accurate, "score": score, "issues": issues}
+        logger.warning("[V9.2-SciAccuracy] No JSON in Kimi response: %s", raw[:200])
     except Exception as exc:
-        logger.warning("[V9.2-SciAccuracy] Kimi check failed: %s", exc)
+        logger.warning("[V9.2-SciAccuracy] Kimi check exception: %s", exc)
 
-    return {"accurate": True, "issues": [], "score": 5}
+    # Default assumes pass — don't trigger retry just because the vision call failed
+    return {"accurate": True, "issues": [], "score": 8}
 
 
 # ─── Kimi K2.5 verification + sub-question correction ─────────────────────────
@@ -802,12 +864,37 @@ def generate_image_for_question(
         img_bytes, mime = _generate_pollinations_multi(
             gen_prompt, question_text, sub_questions, n=_POLLINATIONS_VARIANTS
         )
-        image_path      = _save_image(img_bytes, mime, name_hint)
+        image_path = _save_image(img_bytes, mime, name_hint)
         logger.info("[ImageFinder] Pollinations best image saved: %s", image_path)
-        # V9.2 — scientific accuracy check on winner
+        # V9.2 — scientific accuracy check; retry once if score is low, but only replace if retry is better
         sci_check = _check_scientific_accuracy(
             question_text, img_bytes, mime, subject, "pollinations"
         )
+        orig_score = sci_check.get("score", 10)
+        orig_issues = sci_check.get("issues", [])
+        # Only retry when Kimi identified specific issues AND score is very low.
+        # If issues=[] the check was uncertain/failed — retrying with the same images won't help.
+        if orig_score < 4 and orig_issues:
+            logger.warning(
+                "[V9.2] Pollinations image very low accuracy (score=%d, issues=%s) — retrying with enriched prompt",
+                orig_score, orig_issues
+            )
+            retry_prompt = _build_retry_prompt(gen_prompt, question_text, sub_questions, sci_check)
+            retry_bytes, retry_mime = _generate_pollinations_multi(
+                retry_prompt, question_text, sub_questions, n=_POLLINATIONS_VARIANTS
+            )
+            retry_check = _check_scientific_accuracy(
+                question_text, retry_bytes, retry_mime, subject, "pollinations_retry"
+            )
+            retry_score = retry_check.get("score", 0)
+            logger.info("[V9.2] Retry accuracy score: %d (original was %d)", retry_score, orig_score)
+            if retry_score > orig_score:
+                img_bytes, mime = retry_bytes, retry_mime
+                image_path = _save_image(img_bytes, mime, name_hint + "_retry")
+                sci_check = retry_check
+                logger.info("[V9.2] Using retry image (score %d > %d)", retry_score, orig_score)
+            else:
+                logger.info("[V9.2] Keeping original image (retry score %d <= %d)", retry_score, orig_score)
         verified_sqs = _verify_and_correct(question_text, sub_questions, img_bytes, mime)
         return {
             "image_path":             image_path,

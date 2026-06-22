@@ -38,6 +38,10 @@ def _qt_str(qt) -> str:
         return str(qt.get("type", "")).lower()
     return str(qt).lower()
 
+# Strip embedded letter prefix from option values (e.g. LLM writes "(a) text" inside the
+# value; render_docx would then prepend "(a)" again → "(a) (a) text").
+_STRIP_OPT_PREFIX = re.compile(r'^\([a-dA-D]\)\s*')
+
 
 # ------------------------------
 # Mantle helper (replaces call_bedrock)
@@ -1128,10 +1132,13 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         # Handle questions that have only "text" field (new structure)
         text_content = q.get("text", "")
         q_type = q.get("type", "")
+        q_subtype = str(q.get("subtype", "")).strip().lower()
         _raw_opts = q.get("options")
         # Normalize dict options {"a": "...", "b": "..."} → list (parallel pipeline format)
+        # Also strip any embedded "(x) " prefix the LLM sometimes writes in values —
+        # render_docx adds its own "(a)" prefix so we'd get "(a) (a) text" without this.
         if isinstance(_raw_opts, dict):
-            options = [str(v) for _, v in sorted(_raw_opts.items())]
+            options = [_STRIP_OPT_PREFIX.sub('', str(v)).strip() for _, v in sorted(_raw_opts.items())]
         else:
             options = _raw_opts
 
@@ -1180,13 +1187,19 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         if _img_p and len(_img_p) > 10:
             all_questions.append(('image_gen', _img_p))
 
-        # M-04: map work note
+        # M-04: map work note — trigger on type, q_type field, OR subtype
         map_note = str(q.get('map_note', '') or '').strip()
-        if map_note or q_type == "map_work":
+        if map_note or q_type == "map_work" or q_subtype == "map_based":
             all_questions.append(("instruction", map_note or "[Attach outline map — examiner to supply]"))
 
-        # M-02: OR alternative for LA questions
-        or_alt = str(q.get('or_alternative', '') or '').strip()
+        # M-02: OR alternative for LA questions (or_alternative may be a string or dict)
+        _or_raw = q.get('or_alternative')
+        if isinstance(_or_raw, dict):
+            or_alt = str(_or_raw.get('text', '') or '').strip()
+        elif isinstance(_or_raw, str):
+            or_alt = _or_raw.strip()
+        else:
+            or_alt = ''
         if or_alt:
             all_questions.append(("or", "OR"))
             all_questions.append(("q", f"{qnum}. {or_alt}{_marks_suffix(q.get('marks'))}"))
@@ -1205,7 +1218,7 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         question_text = q.get("question", "")
         _raw_opts = q.get("options")
         if isinstance(_raw_opts, dict):
-            options = [str(v) for _, v in sorted(_raw_opts.items())]
+            options = [_STRIP_OPT_PREFIX.sub('', str(v)).strip() for _, v in sorted(_raw_opts.items())]
         else:
             options = _raw_opts
 
@@ -2037,6 +2050,44 @@ def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, is_tami
     return p
 
 
+def _parse_edited_text(text):
+    """
+    Parse AI-corrected plain text back into (type, text) tuples consumable by render_docx.
+
+    Detects:
+      header     — SECTION A / SECTION B … lines
+      q          — numbered questions  "1. ..."
+      subq       — roman sub-questions "(i) ..." / "(ii) ..."
+      opts       — MCQ options line    "(a) ... (b) ..."  or single "(a) ..."
+      or         — standalone OR
+      instruction — everything else (passage lead-ins, general instructions)
+    """
+    SECTION_RE  = re.compile(r'^SECTION\s+[A-Z]', re.IGNORECASE)
+    QUESTION_RE = re.compile(r'^\d+[\.\)]\s+\S')
+    ROMAN_RE    = re.compile(r'^\([ivxlIVXL]+\)\s+\S')
+    OPTION_RE   = re.compile(r'^\([a-dA-D]\)\s+\S')
+    OR_RE       = re.compile(r'^OR$', re.IGNORECASE)
+
+    result = []
+    for raw_line in text.split('\n'):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if OR_RE.match(line):
+            result.append(('or', line))
+        elif SECTION_RE.match(line):
+            result.append(('header', line))
+        elif QUESTION_RE.match(line):
+            result.append(('q', line))
+        elif ROMAN_RE.match(line):
+            result.append(('subq', line))
+        elif OPTION_RE.match(line):
+            result.append(('opts', line))
+        else:
+            result.append(('instruction', line))
+    return result
+
+
 def render_docx(class_name, subject, chapters, all_questions, summary, header_meta=None):
     BASE_DOCX = os.path.join(os.path.dirname(__file__), 'data', 'base.docx')
 
@@ -2650,6 +2701,66 @@ def generate_with_universal_prompt(class_name, subject, chapters, difficulty, pa
         compound_subject_spec = "\n".join(lines)
         print(f"[Universal-Prompt] Compound subject detected: {[s.get('subject') for s in pattern_sections]}")
 
+    # ── Fallback: detect discipline from section title/name when 'subject' field is absent ──
+    # Handles Social Science (History/Geography/PolSci/Economics) and Science (Phy/Chem/Bio)
+    if not compound_subject_spec and pattern_sections:
+        _DISC_RE = re.compile(
+            r'\b(history|geography|political[\s\-]science|economics|civics|'
+            r'physics|chemistry|biology)\b',
+            re.IGNORECASE,
+        )
+        # Keywords that classify a chapter into a discipline
+        _DISC_CHAPTER_KW = {
+            'History':            ['nationalism', 'global world', 'globalworld', 'industriali',
+                                   'print culture', 'rise of', 'making of', 'age of', 'work life',
+                                   'indo-china', 'indo china'],
+            'Geography':          ['resource', 'agriculture', 'water', 'forest', 'wildlife',
+                                   'mineral', 'manufacturing', 'lifeline', 'land', 'soil', 'energy',
+                                   'crops', 'irrigation'],
+            'Political Science':  ['power sharing', 'federali', 'democracy', 'gender', 'religion',
+                                   'political part', 'struggle', 'outcome', 'challenge', 'caste'],
+            'Civics':             ['power sharing', 'federali', 'democracy', 'gender', 'religion',
+                                   'political part', 'struggle', 'outcome', 'challenge', 'caste'],
+            'Economics':          ['development', 'sector', 'money', 'credit', 'globalisa',
+                                   'globaliza', 'consumer', 'income', 'poverty', 'employment'],
+            'Physics':            ['motion', 'force', 'gravit', 'electricity', 'magnetis',
+                                   'light', 'optic', 'nuclear', 'current', 'refraction'],
+            'Chemistry':          ['chemical', 'acid', 'base', 'salt', 'metal', 'carbon',
+                                   'periodic', 'reaction', 'compound', 'oxide'],
+            'Biology':            ['life process', 'reproduction', 'heredit', 'evolution',
+                                   'control', 'nervous', 'environment', 'ecosystem', 'organism'],
+        }
+
+        def _chapters_for_disc(disc, all_chapters):
+            kws = _DISC_CHAPTER_KW.get(disc, [])
+            matched = [c for c in all_chapters
+                       if any(kw in c.lower() for kw in kws)]
+            return matched or all_chapters  # fallback: all chapters
+
+        routed = []
+        for sec in pattern_sections:
+            title_raw = sec.get('title', '') or sec.get('name', '') or ''
+            m = _DISC_RE.search(title_raw)
+            if m:
+                routed.append((sec, m.group(1).title()))
+
+        if routed:
+            lines = [
+                "IMPORTANT: This paper covers multiple sub-disciplines. "
+                "Each section corresponds to exactly ONE sub-discipline. "
+                "You MUST generate questions for each section ONLY from the chapters listed for that section. "
+                "DO NOT cross-pollinate — Geography questions must never appear in the History section, etc.",
+            ]
+            for sec, disc in routed:
+                sec_name = sec.get('name', '')
+                sec_marks = sec.get('marks', 0)
+                relevant = _chapters_for_disc(disc, chapters) if chapters else []
+                ch_hint = f" | chapters: {', '.join(relevant)}" if relevant else ""
+                lines.append(f"  Section {sec_name} → {disc} ({sec_marks} marks){ch_hint}")
+            compound_subject_spec = "\n".join(lines)
+            print(f"[Universal-Prompt] Title-based compound subject routing: "
+                  f"{[(s.get('name',''), d) for s, d in routed]}")
+
     # Extract passage and extract instructions from pattern sections
     passage_instructions = ""
     if hasattr(pattern, 'sections') and pattern.sections:
@@ -2781,6 +2892,7 @@ You MUST spread questions across ALL {len(chapters) if chapters else 1} chapter(
 {chr(10).join(f'  Chapter {i+1}: {c}' for i, c in enumerate(chapters)) if chapters else ''}
 Do NOT take all or most questions from a single chapter. Each chapter must contribute at least one question.
 Aim for roughly equal representation: ~{max(1, round((blueprint and sum(v.get('marks',0) for v in blueprint.values() if isinstance(v,dict)) or 20) / max(1, len(chapters))))} marks per chapter.
+{"STRICT SECTION-CHAPTER ROUTING: Each section above lists its allowed chapters. You MUST only use those chapters for that section. A Geography chapter (e.g. Agriculture, Water Resources) MUST NOT appear in a History section and vice versa." if compound_subject_spec else ""}
 
 QUESTION PAPER STRUCTURE:
 {sections_spec}

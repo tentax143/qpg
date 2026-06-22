@@ -424,6 +424,49 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         return Response({'message': f'Successfully deleted {count} papers'})
 
     @action(detail=True, methods=['get'])
+    def docx_file(self, request, pk=None):
+        """Return the raw DOCX file as a binary download (used by the frontend preview)."""
+        from django.http import FileResponse, Http404
+        import re as _re
+        paper = self.get_object()
+        if not paper.file:
+            raise Http404("No file for this paper")
+        path = paper.file.path
+        if not os.path.exists(path):
+            stripped = _re.sub(r'_[A-Za-z0-9]{7}(\.[^.]+)$', r'\1', path)
+            if os.path.exists(stripped):
+                path = stripped
+            else:
+                raise Http404("File not found on disk")
+        filename = os.path.basename(path)
+        response = FileResponse(open(path, 'rb'),
+                                content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        response['Content-Disposition'] = f'inline; filename="{filename}"'
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    @action(detail=True, methods=['get'])
+    def docx_preview(self, request, pk=None):
+        """Convert the paper DOCX to HTML for Word-like browser preview."""
+        paper = self.get_object()
+        if not paper.file:
+            return Response({'error': 'No file available'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            import mammoth
+            path = paper.file.path
+            # Resolve renamed-suffix path if needed (same fallback as serve_media)
+            if not os.path.exists(path):
+                import re as _re
+                stripped = _re.sub(r'_[A-Za-z0-9]{7}(\.[^.]+)$', r'\1', path)
+                if os.path.exists(stripped):
+                    path = stripped
+            with open(path, 'rb') as f:
+                result = mammoth.convert_to_html(f)
+            return Response({'html': result.value, 'messages': [m.message for m in result.messages]})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'])
     def get_content(self, request, pk=None):
         """Get the text content of the paper for editing"""
         paper = self.get_object()
@@ -432,10 +475,14 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         if paper.edited_content:
             return Response({'content': paper.edited_content})
             
-        # Otherwise, try to extract from PDF
+        # Otherwise extract from the file — dispatch by extension
         if paper.file:
             try:
-                content = extract_text_from_pdf(paper.file.path)
+                path = paper.file.path
+                if path.lower().endswith('.docx'):
+                    content = extract_text_from_docx(path)
+                else:
+                    content = extract_text_from_pdf(path)
                 return Response({'content': content})
             except Exception as e:
                 return Response({'error': f"Failed to extract text: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -455,7 +502,6 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             )
         try:
             from core.generator import _render_paper_from_data, pattern_sections_to_blueprint_dict
-            from django.core.files import File as DjangoFile
 
             class_name = paper.class_name
             if '-' in class_name:
@@ -492,14 +538,124 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             from django.conf import settings as django_settings
             full_path = os.path.join(django_settings.MEDIA_ROOT, file_path)
             if os.path.exists(full_path):
-                with open(full_path, 'rb') as f:
-                    filename = os.path.basename(file_path)
-                    paper.file.save(filename, DjangoFile(f), save=False)
+                # Assign directly — do NOT use file.save() which renames on collision → 404
+                paper.file.name = file_path
             paper.save(update_fields=['file', 'updated_at'])
 
             return Response({'status': 'Re-rendered', 'file': paper.file.url if paper.file else None})
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def ai_correct(self, request, pk=None):
+        """Apply an AI correction instruction to the current paper text."""
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        content     = request.data.get('content', '').strip()
+        instruction = request.data.get('instruction', '').strip()
+        if not instruction:
+            return Response({'error': 'No instruction provided'}, status=status.HTTP_400_BAD_REQUEST)
+        if not content:
+            return Response({'error': 'No content to correct'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from core import mantle_client
+            system = (
+                "You are a CBSE exam paper editor. You receive a question paper in plain text and a correction "
+                "instruction from the teacher. Apply the correction precisely and return ONLY the corrected paper "
+                "text — no explanation, no commentary, no markdown fences."
+            )
+            prompt = f"PAPER:\n{content}\n\nCORRECTION INSTRUCTION:\n{instruction}\n\nCorrected paper:"
+            corrected, _, _ = mantle_client.converse(
+                model_id=mantle_client.GEN_MODEL,
+                prompt=prompt,
+                system_prompt=system,
+                max_tokens=4000,
+                temperature=0.3,
+            )
+            return Response({'corrected_content': corrected.strip()})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def render_edited_docx(self, request, pk=None):
+        """Regenerate a properly-formatted DOCX from AI-corrected plain text."""
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        content = request.data.get('content', '').strip() or (paper.edited_content or '').strip()
+        if not content:
+            return Response({'error': 'No content to render'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from core.generator import render_docx, _parse_edited_text
+
+            all_questions = _parse_edited_text(content)
+
+            school_name = ''
+            try:
+                school = paper.created_by.profile.school
+                if school:
+                    school_name = school.name or ''
+            except Exception:
+                pass
+
+            header_meta = {
+                'class_name': paper.class_name,
+                'subject': paper.subject,
+                'pattern_name': paper.pattern.name if paper.pattern else '',
+                'marks': paper.pattern.total_marks if paper.pattern else '',
+                'school_name': school_name,
+            }
+
+            file_path, _ = render_docx(
+                class_name=paper.class_name,
+                subject=paper.subject,
+                chapters=paper.chapters,
+                all_questions=all_questions,
+                summary={},
+                header_meta=header_meta,
+            )
+
+            # Persist corrected text and point paper.file at the new DOCX
+            paper.edited_content = content
+            paper.file.name = file_path
+            paper.save(update_fields=['edited_content', 'file'])
+
+            file_url = request.build_absolute_uri(f'/media/{file_path}')
+            return Response({'file': file_url, 'status': 'rendered'})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def upload_image(self, request, pk=None):
+        """Upload an image to embed in the paper. Returns the media URL."""
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        img = request.FILES.get('image')
+        if not img:
+            return Response({'error': 'No image file provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        import os, hashlib
+        from django.conf import settings as _s
+        ext      = os.path.splitext(img.name)[1].lower() or '.jpg'
+        raw      = img.read()
+        digest   = hashlib.sha256(raw).hexdigest()[:20]
+        filename = f"paper_{paper.id}_{digest}{ext}"
+        out_dir  = os.path.join(_s.MEDIA_ROOT, 'paper_images')
+        os.makedirs(out_dir, exist_ok=True)
+        dest     = os.path.join(out_dir, filename)
+        with open(dest, 'wb') as f:
+            f.write(raw)
+        url = f"{_s.MEDIA_URL}paper_images/{filename}"
+        return Response({'url': url, 'marker': f'[Image: {url}]'})
 
     @action(detail=True, methods=['post'])
     def save_content(self, request, pk=None):

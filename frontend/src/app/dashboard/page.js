@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Plus, FileText, Download, CheckCircle,
-  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap
+  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -22,7 +22,6 @@ export default function DashboardPage() {
     recent_activity: []
   });
   const [selectedPapers, setSelectedPapers] = useState([]);
-  const [modelSource, setModelSource] = useState('local');
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [rerenderingId, setRerenderingId] = useState(null);
@@ -72,10 +71,6 @@ export default function DashboardPage() {
         success_rate: `${successRate}%`,
         recent_activity: papers.slice(0, 10)
       });
-      try {
-        const configRes = await apiClient.get('/config/model-choice/');
-        if (configRes.data.model_choice) setModelSource(configRes.data.model_choice);
-      } catch (e) { console.warn('Could not fetch model config', e); }
     } catch (err) {
       if (err.response?.status === 401) {
         localStorage.removeItem('authToken');
@@ -124,16 +119,6 @@ export default function DashboardPage() {
     }
   };
 
-  const handleToggleModel = async () => {
-    const newSource = modelSource === 'local' ? 'aws' : 'local';
-    try {
-      await apiClient.post('/config/model-choice/', { model_choice: newSource });
-      setModelSource(newSource);
-      setSuccess(`Switched to ${newSource === 'aws' ? 'AWS Bedrock' : 'Local'}`);
-    } catch {
-      setError('Failed to update model configuration');
-    }
-  };
 
   const toggleSelectPaper = (id) => {
     setSelectedPapers(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
@@ -188,9 +173,9 @@ export default function DashboardPage() {
       {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} />}
       {error && <ErrorAlert message={error} onClose={() => setError(null)} />}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="space-y-6">
         {/* Papers table */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="space-y-6">
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-900">Recent Papers</h2>
@@ -268,13 +253,22 @@ export default function DashboardPage() {
                         )}
                       </td>
                       <td className="px-5 py-4 text-right">
-                        <div className="flex items-center justify-end gap-0.5">
+                        <div className="flex items-center justify-end gap-1">
+                          {paper.status === 'done' && (
+                            <Link
+                              href={`/papers/${paper.id}/edit`}
+                              className="p-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors"
+                              title="Edit paper"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </Link>
+                          )}
                           {paper.file && (
                             <a
                               href={paper.file}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                              className="p-1.5 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
                               title="Download"
                             >
                               <Download className="w-4 h-4" />
@@ -284,7 +278,7 @@ export default function DashboardPage() {
                             <button
                               onClick={() => handleRerender(paper.id)}
                               disabled={rerenderingId === paper.id}
-                              className="p-1.5 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="p-1.5 text-violet-600 bg-violet-50 hover:bg-violet-100 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Re-render DOCX"
                             >
                               {rerenderingId === paper.id
@@ -296,7 +290,7 @@ export default function DashboardPage() {
                           {paper.status === 'failed' && (
                             <button
                               onClick={() => handleRetry(paper.id)}
-                              className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
+                              className="p-1.5 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors"
                               title="Retry"
                             >
                               <RefreshCw className="w-4 h-4" />
@@ -304,7 +298,7 @@ export default function DashboardPage() {
                           )}
                           <button
                             onClick={() => handleDelete(paper.id)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                            className="p-1.5 text-red-500 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
                             title="Delete"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -348,34 +342,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Right panel */}
-        <div className="space-y-4">
-          {/* AI Configuration */}
-          <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-slate-900 mb-4">AI Configuration</h3>
-            <div className="flex items-center justify-between py-3 border-t border-slate-100">
-              <div>
-                <p className="text-sm font-medium text-slate-700">Inference</p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {modelSource === 'aws' ? 'AWS Bedrock' : 'Local model'}
-                </p>
-              </div>
-              <button
-                onClick={handleToggleModel}
-                className={`relative w-11 h-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                  modelSource === 'aws' ? 'bg-blue-600' : 'bg-slate-200'
-                }`}
-              >
-                <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all duration-200 ${
-                  modelSource === 'aws' ? 'left-5' : 'left-0.5'
-                }`} />
-              </button>
-            </div>
-            <p className="text-xs text-slate-400 mt-3 leading-relaxed">
-              Toggle between local model and AWS Bedrock for question generation.
-            </p>
-          </div>
-        </div>
       </div>
     </div>
   );
