@@ -22,6 +22,7 @@ from typing import Optional
 
 from . import embeddings, mantle_client
 from .data.cbse_patterns import UNIT_MARKS_WEIGHTS
+from .data.science_split import classify_chapter   # Science chapter → Physics/Chemistry/Biology
 
 GEN_MODEL = mantle_client.GEN_MODEL   # deepseek.v3.2
 MAX_PARALLEL_SECTIONS = 3
@@ -38,6 +39,23 @@ _AR_STANDARD_OPTIONS = {
 # Lowercase-only: uppercase (A)-(D) appear legitimately in AR options ("A is true but R is false")
 # and must NOT be stripped.
 _OPT_PREFIX_RE = re.compile(r'^\([a-d]\)\s*')
+
+
+def _as_int(val, default=0):
+    """Coerce an LLM-provided value to int. Handles ints, '1', 'Q1', '  3 '; falls back."""
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        m = re.findall(r"-?\d+", str(val))
+        return int(m[0]) if m else default
+
+
+def _as_float(val, default=0.0):
+    """Coerce an LLM-provided value to float; falls back on non-numeric input."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
 
 # 4.3 — Per-question-type generation parameters (temperature + token budget)
 TYPE_PARAMS = {
@@ -87,25 +105,51 @@ class SectionWorkOrder:
 # Token budget
 # ─────────────────────────────────────────────
 
+def _per_q_tokens(marks) -> int:
+    """Approx output tokens one question of this marks-value needs (incl. answer_explanation)."""
+    marks = _as_float(marks, 1.0)   # tolerate non-numeric ("varies") values defensively
+    if marks >= 5:
+        return 550   # LA + or_alternative
+    if marks >= 4:
+        return 500   # CBQ stem + 3 sub-questions + explanations (source_text added separately)
+    if marks >= 3:
+        return 350   # SA
+    if marks >= 2:
+        return 250   # VSA
+    return 180        # MCQ / Assertion-Reason: 4 options + explanation
+
+
 def estimate_token_budget(wo: SectionWorkOrder) -> int:
     base = 500
-    mpq = wo.marks_per_question or 1
-    # Token cost scales with question complexity (marks value)
-    # LA (5m) with or_alternative needs ~450 tokens each; MCQ (1m) ~150 tokens
-    if mpq >= 5:
-        per_q = 450
-    elif mpq >= 4:
-        per_q = 350
-    elif mpq >= 3:
-        per_q = 280
-    elif mpq >= 2:
-        per_q = 200
-    else:
-        per_q = 150
-    passage = 900 if wo.passage_instruction else 0
-    extract = 700 if wo.extract_instruction else 0
-    raw = base + wo.questions_count * per_q + passage + extract
-    # Floor of 3000 ensures even small sections with complex question types don't get truncated
+
+    # Mixed-marks sections (e.g. 7 MCQ + 2 AR + 3 VSA + 2 SA + CBQ + LA) MUST be sized by
+    # summing per-TYPE costs. Using the section average (mpq) drastically undersizes the
+    # budget — a 16-question section averaging 1.9m looks like 16×150 but actually contains
+    # 5m LA / 4m CBQ questions, so the JSON gets truncated mid-output and fails to parse.
+    raw = base
+    counted = False
+    for qt in (wo.question_types or []):
+        if isinstance(qt, dict) and "marks_each" in qt:
+            cnt = _as_int(qt.get("count", 1), 1)
+            m = _as_float(qt.get("marks_each", 1), 1.0)
+            pq = _per_q_tokens(m)
+            tstr = _type_str(qt)
+            if "cbq" in tstr or "source" in tstr or "case" in tstr or qt.get("sub_questions"):
+                pq += 400  # source_text passage (150-250 words) lives on the question
+            raw += cnt * pq
+            counted = True
+
+    if not counted:
+        # Uniform-marks section (or no per-type detail): scale by the section average.
+        per_q = _per_q_tokens(wo.marks_per_question or 1)
+        raw += wo.questions_count * per_q
+
+    if wo.passage_instruction:
+        raw += 900
+    if wo.extract_instruction:
+        raw += 700
+
+    # Floor 3000 (small sections), ceiling 8192 (model output cap).
     return min(8192, max(3000, raw))
 
 
@@ -184,7 +228,7 @@ def _needs_image(wo: SectionWorkOrder) -> bool:
 def _qt_marks(qt) -> float:
     """Extract marks_each from a question_type entry (dict or string)."""
     if isinstance(qt, dict):
-        return float(qt.get("marks_each", 1))
+        return _as_float(qt.get("marks_each", 1), 1.0)
     return 1.0
 
 
@@ -514,7 +558,7 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
             "\nIMAGE-BASED QUESTION RULE:\n"
             "- For any question that is image/diagram/picture based, add an \"image_prompt\" field.\n"
             "- The \"image_prompt\" value must be a self-contained visual description (20-40 words) that an AI image model can render.\n"
-            "- The question \"text\" must reference the image (e.g. 'Study the diagram below and answer:').\n"
+            "- The question \"text\" must reference the image (e.g. 'Study the diagram above and answer:'). The image is rendered ABOVE the question.\n"
             "- Only add \"image_prompt\" to the specific questions that need an image — not all questions.\n"
         )
 
@@ -716,6 +760,65 @@ STRICT RULES:
 # JSON extraction
 # ─────────────────────────────────────────────
 
+def _salvage_truncated_section_json(clean: str) -> dict | None:
+    """
+    Best-effort recovery when a section's JSON is truncated (model hit the output cap mid-array).
+    Pulls the section header fields and every COMPLETE question object that parsed before the
+    cut-off, so the section ships partial instead of failing hard. Returns None if unusable.
+    """
+    qstart = re.search(r'"questions"\s*:\s*\[', clean)
+    if not qstart:
+        return None
+
+    questions = []
+    depth = 0
+    obj_start = None
+    in_str = False
+    esc = False
+    i = qstart.end()
+    while i < len(clean):
+        ch = clean[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and obj_start is not None:
+                try:
+                    questions.append(json.loads(clean[obj_start:i + 1]))
+                except json.JSONDecodeError:
+                    pass
+                obj_start = None
+        elif ch == "]" and depth == 0:
+            break
+        i += 1
+
+    if not questions:
+        return None
+
+    data: dict = {"questions": questions}
+    sid = re.search(r'"section_id"\s*:\s*"([^"]*)"', clean)
+    sname = re.search(r'"section_name"\s*:\s*"([^"]*)"', clean)
+    passage = re.search(r'"passage"\s*:\s*"((?:[^"\\]|\\.)*)"', clean)
+    if sid:
+        data["section_id"] = sid.group(1)
+    if sname:
+        data["section_name"] = sname.group(1)
+    if passage:
+        data["passage"] = passage.group(1)
+    return data
+
+
 def extract_section_json(raw: str) -> dict:
     clean = re.sub(r"^```[a-zA-Z]*\n?", "", raw.strip(), flags=re.MULTILINE)
     clean = re.sub(r"\n?```$", "", clean.strip())
@@ -729,6 +832,12 @@ def extract_section_json(raw: str) -> dict:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             pass
+    # Last resort: salvage complete question objects from truncated output
+    salvaged = _salvage_truncated_section_json(clean)
+    if salvaged and salvaged.get("questions"):
+        print(f"[JSON-Salvage] Recovered {len(salvaged['questions'])} complete "
+              f"question(s) from truncated output ({len(raw)} chars)")
+        return salvaged
     raise ValueError(f"Could not extract JSON from LLM output ({len(raw)} chars)")
 
 
@@ -862,10 +971,10 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
                         f"Q{n} [CBQ/{subtype}]: sub-question {si + 1} has empty 'text'"
                     )
             sq_sum = sum(
-                float(sq.get("marks", 0)) if isinstance(sq, dict) else 0.0
+                _as_float(sq.get("marks", 0), 0.0) if isinstance(sq, dict) else 0.0
                 for sq in sqs
             )
-            expected = float(q.get("marks", wo.marks_per_question))
+            expected = _as_float(q.get("marks", wo.marks_per_question), wo.marks_per_question)
             if abs(sq_sum - expected) > 0.1:
                 errors.append(
                     f"Q{n} [CBQ/{subtype}]: sub_question marks sum={sq_sum} "
@@ -902,12 +1011,12 @@ def _blueprint_type_at(n: int, wo: SectionWorkOrder) -> tuple[str, float] | None
     pos = 1
     for qt in wo.question_types:
         if isinstance(qt, dict):
-            count = int(qt.get("count", 1))
-            marks = float(qt.get("marks_each", wo.marks_per_question))
+            count = _as_int(qt.get("count", 1), 1)
+            marks = _as_float(qt.get("marks_each", wo.marks_per_question), wo.marks_per_question)
             t = qt.get("type", "")
         else:
             count = 1
-            marks = float(wo.marks_per_question)
+            marks = _as_float(wo.marks_per_question, 1.0)
             t = str(qt)
         if pos <= n < pos + count:
             return (t, marks)
@@ -1031,7 +1140,7 @@ def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
                     f"('{bp_type_str}') but got '{q.get('type', '')}'. {hint}"
                 )
             # Also check marks match blueprint when section uses mixed marks
-            if wo.mixed_marks and abs(float(q.get("marks", bp_marks)) - bp_marks) > 0.1:
+            if wo.mixed_marks and abs(_as_float(q.get("marks", bp_marks), bp_marks) - bp_marks) > 0.1:
                 errors.append(
                     f"Q{n}: marks mismatch — blueprint expects {bp_marks}m "
                     f"but got {q.get('marks', '?')}m"
@@ -1068,10 +1177,17 @@ def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
                 )
 
     # ── Section marks total ──────────────────────────────────────────────────────
-    if section_marks_total > 0 and wo.marks > 0:
-        if abs(section_marks_total - wo.marks) > 1.0:
+    # For attempt-N-of-M sections we GENERATE the larger 'provided' set, so the summed
+    # marks legitimately exceed wo.marks (which budgets the ATTEMPTED subset). Scale the
+    # expected total up to the provided set; otherwise the check fires every time and the
+    # section ships partial. (e.g. provide 7×1m but section budgets 5m attempted.)
+    expected_total = wo.marks
+    if wo.provided_count and wo.attempt_count and wo.attempt_count > 0 and wo.provided_count > wo.attempt_count:
+        expected_total = wo.marks * (wo.provided_count / wo.attempt_count)
+    if section_marks_total > 0 and expected_total > 0:
+        if abs(section_marks_total - expected_total) > 1.0:
             errors.append(
-                f"Section marks total={section_marks_total:.1f} expected {wo.marks}. "
+                f"Section marks total={section_marks_total:.1f} expected {expected_total:.1f}. "
                 "Check individual question marks."
             )
 
@@ -1108,6 +1224,29 @@ def _concept_overlap(t1: str, t2: str) -> float:
     return len(s1 & s2) / min(len(s1), len(s2))
 
 
+def _comparable_text(q: dict) -> str:
+    """
+    Build the text used for duplicate detection. For CBQ/source-based questions the 'text'
+    field is just a boilerplate stem ("Read the source above and answer the following:"),
+    so comparing it makes every CBQ look identical. Include the actual content —
+    source_text/passage and the sub-question texts — so dedup reflects real overlap.
+    """
+    if not isinstance(q, dict):
+        return str(q)
+    parts = [str(q.get("text", ""))]
+    src = q.get("source_text") or q.get("passage")
+    if src:
+        parts.append(str(src))
+    sqs = q.get("sub_questions")
+    if isinstance(sqs, list):
+        for sq in sqs:
+            if isinstance(sq, dict):
+                parts.append(str(sq.get("text", "")))
+            else:
+                parts.append(str(sq))
+    return " ".join(p for p in parts if p).strip()
+
+
 def validate_uniqueness(questions: list) -> list:
     """
     V5 Layer 1 — detect duplicate or near-duplicate questions within a section.
@@ -1116,8 +1255,8 @@ def validate_uniqueness(questions: list) -> list:
     warnings = []
     for i in range(len(questions)):
         for j in range(i + 1, len(questions)):
-            t1 = str(questions[i].get("text", ""))
-            t2 = str(questions[j].get("text", ""))
+            t1 = _comparable_text(questions[i])
+            t2 = _comparable_text(questions[j])
             score = _concept_overlap(t1, t2)
             if score > 0.50:
                 warnings.append(
@@ -1158,7 +1297,10 @@ def verify_and_fix_semantic_duplicates(
         return questions, l1_warnings
 
     # Build quality score lookup {q_idx: avg_score} from V2 flags (lower = worse)
-    quality_score = {f.get("qnum", 0) - 1: f.get("avg_score", 3.0) for f in (quality_flags or [])}
+    quality_score = {
+        _as_int(f.get("qnum", 0), 0) - 1: _as_float(f.get("avg_score", 3.0), 3.0)
+        for f in (quality_flags or []) if isinstance(f, dict)
+    }
 
     remaining_warnings = list(l1_warnings)
     updated_questions = list(questions)
@@ -1217,7 +1359,7 @@ def verify_and_fix_semantic_duplicates(
             f"{wo.context_text[:2500]}\n\n"
             "Output JSON only (single question object):\n"
             '{"qnum": ' + str(replace_idx + 1) + ', "type": "SA", "text": "...", '
-            '"marks": ' + str(int(updated_questions[replace_idx].get("marks", wo.marks_per_question))) + ', '
+            '"marks": ' + str(_as_int(updated_questions[replace_idx].get("marks", wo.marks_per_question), 1)) + ', '
             '"answer_explanation": "...", "chapter_tag": "...", "competency_type": "constructed"}'
         )
         try:
@@ -1296,16 +1438,19 @@ def run_content_quality_critic(questions: list, class_name: str, subject: str, d
 
     flagged = []
     for r in ratings:
+        if not isinstance(r, dict):
+            continue
+        # LLM may return scores as strings ("4") — coerce so sum()/avg never crash
         scores = [
-            r.get("clarity", 5),
-            r.get("ncert_alignment", 5),
-            r.get("difficulty_match", 5),
-            r.get("pedagogical_value", 5),
+            _as_float(r.get("clarity", 5), 5.0),
+            _as_float(r.get("ncert_alignment", 5), 5.0),
+            _as_float(r.get("difficulty_match", 5), 5.0),
+            _as_float(r.get("pedagogical_value", 5), 5.0),
         ]
         avg = sum(scores) / len(scores)
         if avg < 3.0:
             flagged.append({
-                "qnum": r.get("q"),
+                "qnum": _as_int(r.get("q"), 0),
                 "avg_score": round(avg, 1),
                 "scores": {
                     "clarity": r.get("clarity"),
@@ -1379,7 +1524,11 @@ def verify_mcq_answers(questions: list, class_name: str, subject: str) -> list:
 
         for idx, (orig_idx, q) in enumerate(batch):
             stored = str(q.get("answer", "")).lower().strip()
-            llm_entry = next((x for x in llm_answers if x.get("q") == idx + 1), {})
+            llm_entry = next(
+                (x for x in llm_answers
+                 if isinstance(x, dict) and _as_int(x.get("q"), -1) == idx + 1),
+                {},
+            )
             llm_ans = str(llm_entry.get("answer", "")).lower().strip()
             confidence = llm_entry.get("confidence", "unknown")
             suspect = bool(llm_ans and llm_ans != stored and confidence in ("high", "medium"))
@@ -1489,8 +1638,11 @@ def check_ncert_grounding(questions: list, context_text: str, class_name: str, s
 
     ungrounded = []
     for r in results:
+        if not isinstance(r, dict):
+            continue
         if not r.get("grounded", True):
-            q_idx = r.get("q", 1) - 1
+            # 'q' may arrive as int, "1", or "Q1" — coerce defensively
+            q_idx = _as_int(r.get("q", 1), 1) - 1
             if 0 <= q_idx < len(sa_la_qs):
                 orig_idx, q = sa_la_qs[q_idx]
                 ungrounded.append({
@@ -2306,6 +2458,104 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
     return context[:max_chars]
 
 
+# Keyword fallback for classifying a chapter into a sub-subject when its name isn't an exact
+# catalog match (custom/renamed chapters). Mirrors generator.py's single-prompt classifier.
+_SUBJECT_CHAPTER_KEYWORDS = {
+    "history":           ["nationalism", "global world", "globalworld", "industriali",
+                          "print culture", "rise of", "making of", "age of", "work life",
+                          "indo-china", "indo china"],
+    "geography":         ["resource", "agriculture", "water", "forest", "wildlife",
+                          "mineral", "manufacturing", "lifeline", "land", "soil", "energy",
+                          "crops", "irrigation"],
+    "political science": ["power sharing", "federali", "democracy", "gender", "religion",
+                          "political part", "struggle", "outcome", "challenge", "caste"],
+    "civics":            ["power sharing", "federali", "democracy", "gender", "religion",
+                          "political part", "struggle", "outcome", "challenge", "caste"],
+    "economics":         ["development", "sector", "money", "credit", "globalisa",
+                          "globaliza", "consumer", "income", "poverty", "employment"],
+}
+
+
+# Compound papers whose sections are named after their component sub-subjects.
+_COMPOUND_COMPONENTS = {
+    "science":        {"physics", "chemistry", "biology"},
+    "social science": {"history", "geography", "political science", "civics", "economics"},
+}
+
+
+def _resolve_section_subject(parent_subject: str, section_name: str, explicit: str = "") -> str:
+    """Resolve a section's sub-subject for compound papers.
+
+    Uses the pattern's explicit ``section_subject`` when present; otherwise infers it
+    from the section NAME when the parent is a compound subject and the section is named
+    after one of its components (e.g. the "Biology" section of a Science paper). Returns
+    "" for ordinary single-subject papers, so they are never scoped.
+
+    Without this, compound patterns that omit ``section_subject`` (most of them) fall
+    through to the "no sub-subject → use every chapter" path, which is why a Biology
+    section ended up full of Chemistry and Physics questions.
+    """
+    if explicit:
+        return explicit
+    comps = _COMPOUND_COMPONENTS.get(str(parent_subject or "").strip().lower(), set())
+    if section_name and section_name.strip().lower() in comps:
+        return section_name.strip()
+    return ""
+
+
+def _chapters_for_subject(section_subject: str, parent_subject: str, all_chapters: list) -> list:
+    """
+    For COMPOUND papers, return only the chapters that belong to a section's sub-subject
+    (e.g. the History section of a Social Science paper keeps History chapters only).
+
+    SAFETY — single-subject papers are never touched. The full list is returned unchanged when:
+      • section_subject is empty, or
+      • section_subject equals the parent subject (not a compound paper), or
+      • nothing matches the sub-subject (don't starve the section).
+
+    Mapping is hybrid: exact/substring match against the CBSE UNIT_MARKS_WEIGHTS catalog first,
+    then a keyword fallback for custom/renamed chapters.
+    """
+    if not section_subject or not all_chapters:
+        return list(all_chapters)
+    subj_lower = section_subject.strip().lower()
+    if subj_lower == str(parent_subject or "").strip().lower():
+        return list(all_chapters)  # single-subject paper — leave every chapter in place
+
+    # 0) Science sub-subjects (Physics/Chemistry/Biology). The UNIT_MARKS_WEIGHTS catalog only
+    # lists senior-secondary chapters and there is no keyword set for them, so the generic
+    # logic below can't route a class 9-10 Science paper. Use the dedicated chapter classifier
+    # (shared with the split_science command) to keep only this sub-subject's chapters.
+    if subj_lower in ("physics", "chemistry", "biology"):
+        matched = [c for c in all_chapters if (classify_chapter(c)[0] or "").lower() == subj_lower]
+        return matched or list(all_chapters)
+
+    # 1) Catalog chapters for this sub-subject (keys may be "History", "Economics Class 10", …)
+    catalog_names = []
+    for cat_key, chap_map in UNIT_MARKS_WEIGHTS.items():
+        ck = cat_key.lower()
+        if ck == subj_lower or ck.startswith(subj_lower) or subj_lower in ck:
+            catalog_names = [c.lower() for c in chap_map.keys()]
+            break
+
+    # 2) Keyword set for this sub-subject (resolve by substring so "economics class 10" → economics)
+    kw_set = []
+    for ksub, kws in _SUBJECT_CHAPTER_KEYWORDS.items():
+        if ksub in subj_lower or subj_lower in ksub:
+            kw_set = kws
+            break
+
+    def _belongs(chapter: str) -> bool:
+        cl = chapter.lower().strip()
+        for cn in catalog_names:
+            if cl in cn or cn in cl:
+                return True
+        return any(kw in cl for kw in kw_set)
+
+    matched = [c for c in all_chapters if _belongs(c)]
+    return matched or list(all_chapters)
+
+
 def get_section_context_map(class_name: str, subject: str, chapters: list, blueprint: dict, question_types_all: list, school_id=None) -> dict:
     """Return {section_name: context_text} for every section in blueprint.
 
@@ -2321,21 +2571,28 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
 
     for sec_name, sec_data in blueprint.items():
         sec_types = sec_data.get("question_types") or question_types_all
-        effective_subject = sec_data.get("section_subject") or subject
+        section_subject = _resolve_section_subject(subject, sec_name, sec_data.get("section_subject", ""))
+        effective_subject = section_subject or subject
         q_count = sec_data.get("questions_count") or sec_data.get("questions") or 0
+        # Compound papers: retrieve context only for chapters belonging to this sub-subject.
+        # Single-subject papers get the full list back unchanged (see _chapters_for_subject).
+        sec_chapters = _chapters_for_subject(section_subject, subject, chapters)
+        if sec_chapters != list(chapters or []):
+            print(f"[Section-Chapters] '{sec_name}' ({effective_subject}): "
+                  f"{len(sec_chapters)}/{len(chapters or [])} chapters → {sec_chapters}")
         hints = _query_hints_for_types(sec_types, effective_subject)
-        ctx = get_section_context(class_name, effective_subject, chapters, hints, school_id=school_id)
+        ctx = get_section_context(class_name, effective_subject, sec_chapters, hints, school_id=school_id)
 
         # If subsection store is empty (e.g. 10_history not ingested), retry with parent subject
         if not ctx and effective_subject != subject:
             print(f"[Section-Context] '{sec_name}' subsection store empty, retrying with parent subject '{subject}'")
             hints = _query_hints_for_types(sec_types, subject)
-            ctx = get_section_context(class_name, subject, chapters, hints, school_id=school_id)
+            ctx = get_section_context(class_name, subject, sec_chapters, hints, school_id=school_id)
 
         # 3.3 — Context quality pre-check with fallback
         if not _validate_context_quality(ctx, sec_name, q_count, effective_subject, class_name, sec_types):
             print(f"[Context-QC] '{sec_name}': retrying with broader query (no chapter filter)")
-            broad_hints = [f"{effective_subject} {ch}" for ch in (chapters or [])] + hints
+            broad_hints = [f"{effective_subject} {ch}" for ch in (sec_chapters or [])] + hints
             ctx_broad = get_section_context(class_name, effective_subject, [], broad_hints, school_id=school_id)
             if len(ctx_broad) > len(ctx):
                 ctx = ctx_broad
@@ -2351,7 +2608,7 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
             if any(type_key in _type_str(t) for t in sec_types):
                 type_hints = [f"{effective_subject} {' '.join(profile['extra_hints'])}"] + hints[:2]
                 tctx = get_section_context(
-                    class_name, effective_subject, chapters,
+                    class_name, effective_subject, sec_chapters,
                     type_hints, max_chars=profile["max_chars"], school_id=school_id
                 )
                 if tctx:
@@ -2380,6 +2637,49 @@ def _section_id_from_name(sec_name: str, idx: int = 0) -> str:
     return chr(65 + idx)   # A, B, C ...
 
 
+def _qt_dicts_from_subsections(subsections: list, section_mpq: float) -> list:
+    """Build per-type question dicts ({type, count, marks_each, range}) from a compound
+    section's subsections.
+
+    Compound CBSE sections (Science = Biology/Chemistry/Physics, each split into
+    MCQ/AR/VSA/SA/CBQ/LA subsections) carry their REAL per-type marks only in
+    ``subsections``. The section's own ``question_types`` is just a flat list of type
+    names and its ``marks_per_question`` is the literal string "varies". Normalising the
+    subsections into type dicts lets the rest of the pipeline (token budget, mixed-marks
+    detection, the per-position prompt blueprint) treat it like any other mixed section
+    instead of crashing on the "varies" string or undersizing the budget.
+    """
+    out, pos = [], 1
+    for ss in subsections or []:
+        if not isinstance(ss, dict):
+            continue
+        cnt = _as_int(ss.get("questions_count") or ss.get("questions") or ss.get("count"), 1) or 1
+        ss_marks = _as_float(ss.get("marks"), 0.0)
+        mke = _as_float(ss.get("marks_per_question"), 0.0) or (round(ss_marks / cnt, 2) if cnt else section_mpq)
+        qts = ss.get("question_types")
+        typ = (qts[0] if isinstance(qts, list) and qts else None) or ss.get("name") or "SA"
+        rng = f"Q{pos}" if cnt == 1 else f"Q{pos}-{pos + cnt - 1}"
+        out.append({"type": typ, "count": cnt, "marks_each": mke, "range": rng})
+        pos += cnt
+    return out
+
+
+def _typical_marks_for_types(types_list) -> float:
+    """Typical CBSE per-question marks for a section's question type(s) — used to derive a
+    sensible question count when the pattern left marks_per_question / questions_count blank."""
+    text = " ".join(_type_str(t) for t in (types_list or []))
+    if "long answer" in text or text.strip() == "la":
+        return 5.0
+    if "very short" in text or "vsa" in text:
+        return 2.0
+    if "short answer" in text or text.strip() == "sa":
+        return 3.0
+    if "case" in text or "source" in text or "cbq" in text:
+        return 4.0
+    # MCQ / Assertion-Reason / objective / true-false / fill-in / 1-mark types
+    return 1.0
+
+
 def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list) -> list:
     pattern_section_map: dict = {}
     if pattern and hasattr(pattern, "sections") and pattern.sections:
@@ -2393,10 +2693,23 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
     work_orders = []
     for idx, (sec_name, sec_data) in enumerate(blueprint.items()):
         ps = pattern_section_map.get(sec_name, {})
+        # Coerce ALL numeric section fields up front — pattern/blueprint data is authored by
+        # the AI generator, the frontend, and CBSE seed scripts, so any of these may arrive as
+        # strings ("30") or non-numeric sentinels ("varies"). Normalising here once guarantees
+        # the entire downstream pipeline only ever sees numbers (the "varies" crash, and the
+        # string-vs-int family of bugs, originate from skipping this).
         # Support both field names: blueprint uses 'questions_count', CBSE seed uses 'questions'
-        q_count = sec_data.get("questions_count") or sec_data.get("questions") or 0
-        marks = sec_data.get("marks", 0)
-        mpq = sec_data.get("marks_per_question") or (round(marks / q_count, 1) if q_count else 1.0)
+        q_count = _as_int(sec_data.get("questions_count") or sec_data.get("questions"), 0)
+        marks = _as_int(sec_data.get("marks"), 0)
+        mpq = _as_float(sec_data.get("marks_per_question"), 0.0)
+        # Derive any missing per-question marks / question count so a section NEVER asks for
+        # 0 questions. AI-generated patterns sometimes leave questions_count/marks_per_question
+        # null with only the section marks set (e.g. VSA 12m, SA 18m, LA 30m) — without this,
+        # those sections generate nothing and come out empty.
+        if mpq <= 0:
+            mpq = round(marks / q_count, 1) if q_count else _typical_marks_for_types(sec_data.get("question_types"))
+        if q_count <= 0:
+            q_count = max(1, round(marks / mpq)) if (marks and mpq) else 1
 
         # Use the pattern section's explicit 'id' first, then blueprint's id, then derive from name
         section_id = (
@@ -2405,12 +2718,17 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             or _section_id_from_name(sec_name, idx)
         )
 
-        # C-01: sub-subject routing for compound papers
-        section_subject = sec_data.get("section_subject", "")
+        # C-01: sub-subject routing for compound papers (infer from section name when the
+        # pattern didn't set section_subject — e.g. a "Biology" section of a Science paper).
+        section_subject = _resolve_section_subject(subject, sec_name, sec_data.get("section_subject", ""))
+        # Scope chapters to this section's sub-subject (compound papers only; single-subject
+        # papers get the full list back unchanged — see _chapters_for_subject).
+        section_chapters = _chapters_for_subject(section_subject, subject, chapters)
 
         # MO-01: attempt-N-of-M support — 'attempt' = students answer, 'count'/'provided' = questions generated
-        attempt_count = sec_data.get("attempt_count") or ps.get("attempt")
-        provided_count = sec_data.get("provided_count") or sec_data.get("questions_count") or sec_data.get("questions") or 0
+        # (coerced to int — these feed a division in the section marks-total check).
+        attempt_count = _as_int(sec_data.get("attempt_count") or ps.get("attempt"), 0) or None
+        provided_count = _as_int(sec_data.get("provided_count") or sec_data.get("questions_count") or sec_data.get("questions"), 0)
         if attempt_count and provided_count and attempt_count < provided_count:
             # Generate the larger 'provided' set; students pick from it
             generate_count = provided_count
@@ -2419,12 +2737,25 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             attempt_count = None
             provided_count = None
 
-        # M-04: detect map-work question type
+        # M-04: detect map-work question type.
+        # Compound sections express their real per-type marks in `subsections` (the
+        # section's own question_types is a flat name list + marks_per_question="varies").
+        # Normalise those subsections into {type,count,marks_each} dicts so the budget,
+        # mixed-marks and prompt-blueprint paths all work instead of crashing/undersizing.
         types_list = sec_data.get("question_types", [])
+        subsecs = sec_data.get("subsections") or ps.get("subsections", [])
+        if subsecs and not any(isinstance(t, dict) for t in types_list):
+            synth = _qt_dicts_from_subsections(subsecs, mpq)
+            if synth:
+                types_list = synth
         is_map = any("map" in _type_str(t) for t in types_list)
 
         # M-01: detect mixed-marks sections (compound sections have multiple marks values)
-        qt_dicts = sec_data.get("question_type_details", [])  # from CBSE pattern question_types list
+        # Fall back to 'question_types' (what the rest of the pipeline reads) when the
+        # separate 'question_type_details' field isn't populated — otherwise mixed_marks
+        # would be False for a genuinely mixed section, sending it down the uniform-marks
+        # path where every question fails the "marks=X expected <avg>" check → partial section.
+        qt_dicts = sec_data.get("question_type_details") or types_list
         marks_values = set()
         if qt_dicts:
             for qt in qt_dicts:
@@ -2446,7 +2777,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             difficulty=difficulty,
             subject=subject,
             class_name=class_name,
-            chapters=list(chapters),
+            chapters=section_chapters,
             section_subject=section_subject,
             provided_count=provided_count,
             attempt_count=attempt_count,
@@ -2454,7 +2785,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             mixed_marks=mixed_marks,
             passage_instruction=ps.get("passage_instruction"),
             extract_instruction=ps.get("extract_instruction"),
-            subsections=sec_data.get("subsections", []),
+            subsections=subsecs,
             context_by_type=context_by_type_all.get(sec_name, {}),  # 3.2
         )
         work_orders.append(wo)
@@ -2482,7 +2813,7 @@ def cross_section_validate(paper_data: dict, blueprint: dict) -> dict:
     all_qs = []
     for sec_name, sec_data in paper_data.items():
         for q_idx, q in enumerate(sec_data.get("questions", [])):
-            text = q.get("text", "")
+            text = _comparable_text(q)
             if text:
                 all_qs.append((sec_name, q_idx, q.get("qnum", 0), text))
 
@@ -2916,4 +3247,54 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
     for sec_data in paper_data.values():
         sec_data["_final_audit"] = final_audit
 
+    # ── DEBUG: dump the fully-assembled question JSON for inspection ──────────────
+    # Writes temp_questions.json (latest run) in the project root. Gitignored via temp_*.
+    # Never let a dump error break generation.
+    _dump_questions_debug(
+        paper_data, class_name, subject, difficulty, chapters,
+        total_input_tokens, total_output_tokens, final_audit, coherence_report,
+    )
+
     return paper_data, total_input_tokens, total_output_tokens
+
+
+def _dump_questions_debug(paper_data, class_name, subject, difficulty, chapters,
+                          in_tok, out_tok, final_audit, coherence_report) -> None:
+    """
+    Write a human-readable JSON of every generated question + its validation flags to
+    temp_questions.json (project root). Debug aid only — failures are swallowed.
+    """
+    try:
+        debug_payload = {
+            "meta": {
+                "class": class_name,
+                "subject": subject,
+                "difficulty": difficulty,
+                "chapters": list(chapters or []),
+                "total_questions": sum(len(v.get("questions", [])) for v in paper_data.values()),
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+            },
+            "sections": {
+                sec: {
+                    "title": data.get("title"),
+                    "section_subject": data.get("section_subject", ""),
+                    "marks": data.get("marks"),
+                    "partial": data.get("_partial", False),
+                    "errors": data.get("_errors", []),
+                    "grounding_issues": data.get("_grounding_issues", []),
+                    "quality_flags": data.get("_quality_flags", []),
+                    "mcq_answer_warnings": data.get("_mcq_answer_warnings", []),
+                    "uniqueness_warnings": data.get("_uniqueness_warnings", []),
+                    "questions": data.get("questions", []),
+                }
+                for sec, data in paper_data.items()
+            },
+            "coherence_report": coherence_report,
+            "final_audit": final_audit,
+        }
+        with open("temp_questions.json", "w", encoding="utf-8") as f:
+            json.dump(debug_payload, f, indent=2, ensure_ascii=False, default=str)
+        print("[Debug] Question JSON written to temp_questions.json")
+    except Exception as e:
+        print(f"[Debug] Could not write temp_questions.json: {e}")

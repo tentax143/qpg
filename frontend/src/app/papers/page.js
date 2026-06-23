@@ -7,7 +7,7 @@ import {
   Search, Filter, FileText, Calendar, Layers,
   ChevronRight, ExternalLink, Clock, CheckCircle, 
   AlertCircle, Edit, MoreVertical, FileDown, 
-  RotateCcw, Ban, CreditCard, ArrowRight
+  RotateCcw, RotateCw, Ban, CreditCard, ArrowRight
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -21,6 +21,7 @@ export default function PapersPage() {
   const [filters, setFilters] = useState({ class_name: '', subject: '' });
   const [selectedPapers, setSelectedPapers] = useState([]);
   const [rerenderingId, setRerenderingId] = useState(null);
+  const [regeneratingId, setRegeneratingId] = useState(null);
 
   useEffect(() => {
     fetchPapers();
@@ -82,6 +83,21 @@ export default function PapersPage() {
       setError(err?.response?.data?.error || 'Re-render failed');
     } finally {
       setRerenderingId(null);
+    }
+  };
+
+  // Regenerate fresh questions using the paper's existing config (pattern/class/subject/chapters).
+  const handleRegenerate = async (id) => {
+    if (!confirm('Regenerate this paper from its pattern? This creates fresh questions and replaces the current content.')) return;
+    setRegeneratingId(id);
+    try {
+      await apiClient.post(`/papers/${id}/regenerate/`);
+      setSuccess('Regenerating — refresh in a minute to see the new paper');
+      fetchPapers(false);
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Could not start regeneration');
+    } finally {
+      setRegeneratingId(null);
     }
   };
 
@@ -258,6 +274,16 @@ export default function PapersPage() {
                               ? <RefreshCw size={18} className="animate-spin" />
                               : <Zap size={18} />
                             }
+                          </button>
+                        )}
+                        {paper.status === 'done' && (
+                          <button
+                            onClick={() => handleRegenerate(paper.id)}
+                            disabled={regeneratingId === paper.id}
+                            className="p-2.5 bg-amber-500 text-white rounded-xl shadow-lg shadow-amber-200 hover:scale-110 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
+                            title="Regenerate fresh questions (same pattern, class, subject & chapters)"
+                          >
+                            <RotateCw size={18} className={regeneratingId === paper.id ? 'animate-spin' : ''} />
                           </button>
                         )}
                         {paper.status === 'failed' && (

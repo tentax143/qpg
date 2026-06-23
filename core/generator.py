@@ -42,6 +42,43 @@ def _qt_str(qt) -> str:
 # Lowercase-only: uppercase (A)-(D) in AR options ("A is true but R is false") must NOT be stripped.
 _STRIP_OPT_PREFIX = re.compile(r'^\([a-d]\)\s*')
 
+# Inline option list embedded in question text, e.g. "What is X? (a) foo (b) bar (c) baz".
+# LOWERCASE-only and requires whitespace + content after the marker, so it can NEVER match
+# the "(A):"/"(R):" markers inside Assertion-Reason statements (which are uppercase + colon).
+_INLINE_OPTS_RE = re.compile(r'\s*\([a-d]\)\s+\S.*$', re.DOTALL)
+
+
+def _is_ar_question(q, options) -> bool:
+    """True if this question is Assertion-Reason — by declared subtype or AR option content."""
+    if str(q.get("subtype", "")).strip().lower() == "assertion_reason":
+        return True
+    if isinstance(options, dict):
+        blob = " ".join(str(v).lower() for v in options.values())
+    elif isinstance(options, (list, tuple)):
+        blob = " ".join(str(v).lower() for v in options)
+    else:
+        blob = ""
+    return (
+        "both a and r" in blob
+        or ("a is true" in blob and "r is false" in blob)
+        or ("a is false" in blob and "r is true" in blob)
+    )
+
+
+def _strip_inline_options(text, options, q):
+    """
+    Remove an option list embedded in the question text when options also exist separately.
+
+    Skips Assertion-Reason questions entirely: their text legitimately contains "(A):" and
+    "(R):", which the old IGNORECASE [a-dA-D] regex (with DOTALL .*$) matched and deleted —
+    turning a full "Assertion (A): … Reason (R): …" into the bare word "Assertion".
+    """
+    if not (isinstance(options, list) and options and text):
+        return text
+    if _is_ar_question(q, options):
+        return text
+    return _INLINE_OPTS_RE.sub('', text).strip()
+
 
 # ------------------------------
 # Mantle helper (replaces call_bedrock)
@@ -718,6 +755,170 @@ def draw_wrapped(can, text, x, y, max_width, font="Helvetica", size=11, line_hei
 # ------------------------------
 # Flexible renderer for English
 # ------------------------------
+# ── Type-grouped rendering ────────────────────────────────────────────────────
+# CBSE papers list questions grouped by type (all MCQs first, then VSA, SA, …), each
+# group under its own "I. / II. / III." sub-heading. The generator (especially the
+# single-prompt fallback) can emit questions out of type order and stamp the section
+# AVERAGE marks (e.g. 1.9) on every question. The helpers below regroup a section's
+# questions into canonical type order and restore the correct per-type marks from the
+# blueprint's subsections — so an SA never renders inside the MCQ block and a 1-mark
+# MCQ never shows "1.9 marks".
+_TYPE_GROUP_ORDER = [
+    ("mcq", "Multiple Choice Questions"),
+    ("ar",  "Assertion–Reason Questions"),
+    ("vsa", "Very Short Answer Questions"),
+    ("sa",  "Short Answer Questions"),
+    ("cbq", "Case-Based / Source-Based Questions"),
+    ("la",  "Long Answer Questions"),
+]
+_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"]
+
+
+def _coerce_float(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _question_category(q):
+    """Bucket a question dict into a canonical type category (mcq/ar/vsa/sa/cbq/la)."""
+    t = str(q.get("type", "")).lower()
+    st = str(q.get("subtype", "")).lower()
+    if "assertion" in st or "assertion" in t:
+        return "ar"
+    if st in ("source_based", "case_based", "image_based") or "cbq" in t or "case" in t or "source" in t:
+        return "cbq"
+    if "vsa" in t or "very short" in t:
+        return "vsa"
+    if t == "la" or "long" in t:
+        return "la"
+    if "mcq" in t or "multiple" in t or "objective" in t:
+        return "mcq"
+    if t == "sa" or "short" in t:
+        return "sa"
+    return "sa"
+
+
+def _section_type_marks(sec_info):
+    """{category: marks_each} from a blueprint section's subsections (compound papers)."""
+    out = {}
+    if not isinstance(sec_info, dict):
+        return out
+    for ss in (sec_info.get("subsections") or []):
+        if not isinstance(ss, dict):
+            continue
+        qts = ss.get("question_types") or [ss.get("name", "")]
+        cat = _question_category({"type": qts[0] if qts else ss.get("name", ""),
+                                  "subtype": ss.get("name", "")})
+        cnt = _coerce_float(ss.get("questions_count") or ss.get("questions"), 1) or 1
+        me = ss.get("marks_per_question")
+        if me in (None, "", "varies"):
+            me = _coerce_float(ss.get("marks"), 0) / cnt
+        me = _coerce_float(me, 0)
+        if me > 0:
+            out[cat] = me
+    return out
+
+
+def _exact_distribution_spec(blueprint_dict):
+    """Human-readable, per-section per-type count+marks spec for the fallback prompt.
+
+    The single-prompt fallback otherwise under-delivers (e.g. 4 MCQs when 7 are required),
+    so we spell out the exact distribution it must produce.
+    """
+    lines = []
+    for sec_name, sec in blueprint_dict.items():
+        if not isinstance(sec, dict):
+            continue
+        marks = sec.get("marks", 0)
+        subs = sec.get("subsections") or []
+        if subs:
+            total_q = sum(int(_coerce_float(s.get("questions_count") or s.get("questions"), 0))
+                          for s in subs if isinstance(s, dict))
+            lines.append(f"SECTION {sec_name} ({marks} marks) — generate EXACTLY {total_q} questions:")
+            for s in subs:
+                if not isinstance(s, dict):
+                    continue
+                qts = s.get("question_types") or [s.get("name", "")]
+                typ = qts[0] if qts else s.get("name", "")
+                cnt = int(_coerce_float(s.get("questions_count") or s.get("questions"), 1) or 1)
+                me = s.get("marks_per_question")
+                if me in (None, "", "varies"):
+                    me = _coerce_float(s.get("marks"), 0) / (cnt or 1)
+                me = _coerce_float(me, 0)
+                mestr = str(int(me)) if float(me).is_integer() else str(me)
+                lines.append(f"   - {cnt} × {typ} @ {mestr} mark{'s' if me != 1 else ''} each")
+        else:
+            qc = int(_coerce_float(sec.get("questions_count") or sec.get("questions"), 0))
+            qts = sec.get("question_types") or []
+            tnames = ", ".join(qt.get("type", str(qt)) if isinstance(qt, dict) else str(qt) for qt in qts)
+            lines.append(f"SECTION {sec_name} ({marks} marks) — {qc} questions; types: {tnames}")
+    return "\n".join(lines)
+
+
+def _regroup_section(questions_list, sec_info):
+    """Reorder questions into canonical type groups and fix per-type marks.
+
+    Returns a list of (group_label_or_None, [questions]). Group labels are only emitted
+    when the section genuinely mixes types, so single-type sections (and ordinary papers)
+    render exactly as before.
+    """
+    if not isinstance(questions_list, list):
+        return [(None, questions_list or [])]
+
+    type_marks = _section_type_marks(sec_info)
+    buckets, order_seen = {}, []
+    for q in questions_list:
+        cat = _question_category(q) if isinstance(q, dict) else "_str"
+        if isinstance(q, dict) and type_marks.get(cat):
+            m = type_marks[cat]
+            q["marks"] = int(m) if float(m).is_integer() else round(m, 2)
+        if cat not in buckets:
+            buckets[cat] = []
+            order_seen.append(cat)
+        buckets[cat].append(q)
+
+    multi = len([c for c in buckets if c != "_str"]) > 1
+    groups, roman_i, used = [], 0, set()
+    for cat, lbl in _TYPE_GROUP_ORDER:
+        if cat in buckets:
+            used.add(cat)
+            label = None
+            if multi:
+                note = " (answer all questions)" if cat in ("mcq", "ar", "vsa") else ""
+                label = f"{_ROMAN[roman_i]}. {lbl}{note}"
+                roman_i += 1
+            groups.append((label, buckets[cat]))
+    for cat in order_seen:               # any uncategorised / string questions, in place
+        if cat not in used:
+            groups.append((None, buckets[cat]))
+    return groups
+
+
+def _emit_section_questions(all_questions, questions_list, sec_info, q_counter,
+                            class_name=None, subject=None, chapters=None, paper_id=None):
+    """Render a section's questions grouped by type with correct per-type marks."""
+    for label, qs in _regroup_section(questions_list, sec_info):
+        if label:
+            all_questions.append(("subheader", label))
+        for q in qs:
+            if isinstance(q, dict):
+                q["qnum"] = q_counter
+                q_counter = process_question(all_questions, q, q_counter,
+                                             class_name, subject, chapters, paper_id)
+            else:
+                all_questions.append(("q", f"{q_counter}. {str(q)}"))
+                if class_name and subject:
+                    try:
+                        save_generated_question(str(q), class_name, subject,
+                                                chapters[0] if chapters else None, "", 1, paper_id)
+                    except Exception as e:
+                        print(f"[Variation] Error saving question: {e}")
+                q_counter += 1
+    return q_counter
+
+
 def render_section_questions(all_questions, data, blueprint, class_name=None, subject=None, chapters=None, paper_id=None):
     q_counter = 1
 
@@ -941,42 +1142,16 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                     questions_list = section_data['questions']
                     print(f"[DEBUG] Found questions list with {len(questions_list) if isinstance(questions_list, list) else 'N/A'} items")
                     if isinstance(questions_list, list):
-                        for q in questions_list:
-                            if isinstance(q, dict):
-                                q_counter = process_question(all_questions, q, q_counter, class_name, subject, chapters, paper_id)
-                            else:
-                                # Handle string questions
-                                all_questions.append(("q", f"{q_counter}. {str(q)}"))
-                                
-                                # Save question if metadata available
-                                if class_name and subject:
-                                    try:
-                                        chapter = chapters[0] if chapters else None
-                                        save_generated_question(str(q), class_name, subject, chapter, "", 1, paper_id)
-                                    except Exception as e:
-                                        print(f"[Variation] Error saving question: {e}")
-                                
-                                q_counter += 1
-                    else:
-                        pass
+                        # Regroup by type (MCQ → VSA → SA → CBQ → LA) with sub-headings and
+                        # restore per-type marks from the section blueprint.
+                        q_counter = _emit_section_questions(
+                            all_questions, questions_list, sec_info, q_counter,
+                            class_name, subject, chapters, paper_id)
                 elif isinstance(section_data, list):
                     # section_data is directly a list of questions
-                    for q in section_data:
-                        if isinstance(q, dict):
-                            q_counter = process_question(all_questions, q, q_counter, class_name, subject, chapters, paper_id)
-                        else:
-                            # Handle string questions
-                            all_questions.append(("q", f"{q_counter}. {str(q)}"))
-                            
-                            # Save question if metadata available
-                            if class_name and subject:
-                                try:
-                                    chapter = chapters[0] if chapters else None
-                                    save_generated_question(str(q), class_name, subject, chapter, "", 1, paper_id)
-                                except Exception as e:
-                                    print(f"[Variation] Error saving question: {e}")
-                            
-                            q_counter += 1
+                    q_counter = _emit_section_questions(
+                        all_questions, section_data, sec_info, q_counter,
+                        class_name, subject, chapters, paper_id)
                 else:
                     pass
         else:
@@ -1142,10 +1317,9 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         else:
             options = _raw_opts
 
-        # If options exist separately, strip inline options from question text
-        if isinstance(options, list) and options and text_content:
-            inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE | re.DOTALL)
-            text_content = inline_pattern.sub('', text_content).strip()
+        # If options exist separately, strip inline options from question text.
+        # AR questions are skipped — their "(A):"/"(R):" markers are part of the statements.
+        text_content = _strip_inline_options(text_content, options, q)
 
         # CBQ source passage lives on the question itself (NOT at section level), so it
         # renders immediately before this question and is scoped to it alone.
@@ -1153,6 +1327,11 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         if _src_text:
             all_questions.append(("instruction", "Read the source/case and answer the questions that follow:"))
             all_questions.append(("passage", _src_text))
+
+        # Image-based questions: render the diagram ABOVE the question text.
+        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
+        if _img_p and len(_img_p) > 10:
+            all_questions.append(('image_gen', _img_p))
 
         if text_content:
             marks_raw = q.get("marks")
@@ -1190,9 +1369,6 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
                 label = chr(96 + i)  # a, b, c, d
                 labeled.append(f"({label}) {str(opt).strip()}")
             all_questions.append(("opts_block", labeled))
-        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
-        if _img_p and len(_img_p) > 10:
-            all_questions.append(('image_gen', _img_p))
 
         # M-04: map work note — trigger on type, q_type field, OR subtype
         map_note = str(q.get('map_note', '') or '').strip()
@@ -1229,17 +1405,18 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         else:
             options = _raw_opts
 
-        # If options exist separately, strip inline options from question text
-        if isinstance(options, list) and options and question_text:
-            inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE | re.DOTALL)
-            question_text = inline_pattern.sub('', question_text).strip()
+        # If options exist separately, strip inline options from question text.
+        # AR questions are skipped — their "(A):"/"(R):" markers are part of the statements.
+        question_text = _strip_inline_options(question_text, options, q)
+
+        # Image-based questions: render the diagram ABOVE the question text.
+        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
+        if _img_p and len(_img_p) > 10:
+            all_questions.append(('image_gen', _img_p))
 
         if question_text:
             marks_suffix = _marks_suffix(q.get("marks"))
             all_questions.append(("q", f"{qnum}. {question_text}{marks_suffix}"))
-        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
-        if _img_p and len(_img_p) > 10:
-            all_questions.append(('image_gen', _img_p))
 
         # Handle options for MCQ style
         if isinstance(options, list) and options:
@@ -2074,12 +2251,21 @@ def _parse_edited_text(text):
     ROMAN_RE    = re.compile(r'^\([ivxlIVXL]+\)\s+\S')
     OPTION_RE   = re.compile(r'^\([a-dA-D]\)\s+\S')
     OR_RE       = re.compile(r'^OR$', re.IGNORECASE)
+    IMGFILE_RE  = re.compile(r'\[IMG_FILE:\s*([^\]]+?)\]', re.IGNORECASE)
 
     result = []
     for raw_line in text.split('\n'):
         line = raw_line.strip()
         if not line:
             continue
+        # Image-file markers (from the editor round-trip) → ('image', path), kept in place
+        # so a diagram still renders above its question. Strip them, then classify the rest.
+        if IMGFILE_RE.search(line):
+            for _path in IMGFILE_RE.findall(line):
+                result.append(('image', _path.strip()))
+            line = IMGFILE_RE.sub('', line).strip()
+            if not line:
+                continue
         if OR_RE.match(line):
             result.append(('or', line))
         elif SECTION_RE.match(line):
@@ -2270,7 +2456,11 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
         elif typ == "image":
             try:
                 img_path = os.path.join(settings.MEDIA_ROOT, text_str) if not os.path.isabs(text_str) else text_str
-                doc.add_paragraph().add_run().add_picture(img_path, width=Inches(5.5))
+                # Smaller display width (source PNG is full-res, so quality is unchanged —
+                # a smaller box just raises the effective DPI). Centered above the question.
+                p = doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p.add_run().add_picture(img_path, width=Inches(3.0))
             except Exception as e:
                 print(f"[DOCX] Image insert failed: {e}")
 
@@ -2288,10 +2478,93 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
 # ------------------------------
 # Image generation helpers
 # ------------------------------
+def _openai_image_size(width: int, height: int) -> str:
+    """Map requested dimensions to a gpt-image-1 supported size string."""
+    if width > height:
+        return "1536x1024"
+    if height > width:
+        return "1024x1536"
+    return "1024x1024"
+
+
+# Number of OpenAI attempts before falling back to Together AI → Pollinations.
+IMAGE_OPENAI_ATTEMPTS = int(os.environ.get("IMAGE_OPENAI_ATTEMPTS", "2"))
+
+
+def _decode_image_item(item, _requests):
+    """Pull image bytes from a Together/OpenAI 'data' item (b64 or url)."""
+    b64 = item.get("b64_json") or item.get("b64")
+    if b64:
+        import base64
+        return base64.b64decode(b64)
+    if item.get("url"):
+        return _requests.get(item["url"], timeout=60).content
+    return None
+
+
+def _openai_image_bytes(prompt: str, size: str, _requests) -> bytes:
+    api_key = os.environ.get('OPENAI_API_KEY') or getattr(settings, 'OPENAI_API_KEY', '')
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set in environment")
+    model_id = getattr(settings, 'OPENAI_IMAGE_MODEL', 'gpt-image-1')
+    resp = _requests.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model_id, "prompt": prompt, "n": 1, "size": size},
+        timeout=180,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"OpenAI image HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json().get("data") or []
+    if not data:
+        raise RuntimeError("No data in OpenAI image response")
+    img = _decode_image_item(data[0], _requests)
+    if img is None:
+        raise RuntimeError("No image data in OpenAI response item")
+    return img
+
+
+def _together_image_bytes(prompt: str, width: int, height: int, _requests) -> bytes:
+    key = os.environ.get('TOGETHER_API_KEY') or getattr(settings, 'TOGETHER_API_KEY', '')
+    if not key:
+        raise RuntimeError("TOGETHER_API_KEY not set in environment")
+    model_id = getattr(settings, 'TOGETHER_IMAGE_MODEL', 'google/flash-image-2.5')
+    resp = _requests.post(
+        "https://api.together.ai/v1/images/generations",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"model": model_id, "prompt": prompt, "n": 1, "width": width, "height": height},
+        timeout=120,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Together AI HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json().get("data") or []
+    if not data:
+        raise RuntimeError("No data in Together AI response")
+    img = _decode_image_item(data[0], _requests)
+    if img is None:
+        raise RuntimeError("No image data in Together AI response item")
+    return img
+
+
+def _pollinations_image_bytes(prompt: str, _requests) -> bytes:
+    import urllib.parse
+    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
+    params = {"width": 1024, "height": 1024, "nologo": "true", "private": "true"}
+    pk = os.environ.get("POLLINATIONS_API_KEY", "").strip()
+    if pk:
+        params["token"] = pk
+    resp = _requests.get(url, params=params, timeout=120)
+    resp.raise_for_status()
+    return resp.content
+
+
 def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_scale: float = 8.0) -> str:
-    """Generate an image via Together AI (google/flash-image-2.5) and save under MEDIA_ROOT/generated_images.
-    Returns relative media path."""
-    import base64, hashlib, requests as _requests
+    """Generate an image and save under MEDIA_ROOT/generated_images. Returns relative media path.
+
+    Provider chain: OpenAI gpt-image-1 (primary, IMAGE_OPENAI_ATTEMPTS tries) →
+    Together AI → Pollinations (fallbacks, only after OpenAI exhausts its retries).
+    (cfg_scale kept for signature compatibility; unused.)"""
+    import hashlib, requests as _requests
     output_dir = getattr(settings, 'IMAGE_OUTPUT_DIR', os.path.join(settings.MEDIA_ROOT, 'generated_images'))
     os.makedirs(output_dir, exist_ok=True)
     if not prompt or not str(prompt).strip():
@@ -2302,41 +2575,42 @@ def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_sc
     if os.path.exists(abs_path):
         return rel_path
 
-    together_api_key = os.environ.get('TOGETHER_API_KEY') or getattr(settings, 'TOGETHER_API_KEY', '')
-    if not together_api_key:
-        raise RuntimeError("TOGETHER_API_KEY not set in environment")
+    size = _openai_image_size(width, height)
+    img_bytes = None
+    last_err = None
 
-    model_id = getattr(settings, 'TOGETHER_IMAGE_MODEL', 'google/flash-image-2.5')
-    key_preview = together_api_key[:8] + "..." if len(together_api_key) > 8 else "(too short)"
-    print(f"[ImageGen] Calling Together AI {model_id} | key={key_preview} | prompt={prompt[:80]}... | size={width}x{height}")
+    # ── Primary: OpenAI gpt-image-1, with retries ───────────────────────────────
+    for attempt in range(1, IMAGE_OPENAI_ATTEMPTS + 1):
+        try:
+            print(f"[ImageGen] OpenAI gpt-image-1 attempt {attempt}/{IMAGE_OPENAI_ATTEMPTS} | "
+                  f"prompt={prompt[:70]}... | size={size}")
+            img_bytes = _openai_image_bytes(prompt, size, _requests)
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[ImageGen] OpenAI attempt {attempt} failed: {e}")
 
-    resp = _requests.post(
-        "https://api.together.ai/v1/images/generations",
-        headers={"Authorization": f"Bearer {together_api_key}"},
-        json={"model": model_id, "prompt": prompt, "n": 1, "width": width, "height": height},
-        timeout=120,
-    )
-    if not resp.ok:
-        raise RuntimeError(f"Together AI HTTP {resp.status_code}: {resp.text[:300]}")
+    # ── Fallback 1: Together AI ──────────────────────────────────────────────────
+    if img_bytes is None:
+        try:
+            print("[ImageGen] OpenAI exhausted — falling back to Together AI")
+            img_bytes = _together_image_bytes(prompt, width, height, _requests)
+        except Exception as e:
+            print(f"[ImageGen] Together AI fallback failed: {e}")
 
-    result = resp.json()
-    data = result.get("data") or []
-    if not data:
-        raise RuntimeError(f"No data in Together AI response: {list(result.keys())}")
+    # ── Fallback 2: Pollinations ─────────────────────────────────────────────────
+    if img_bytes is None:
+        try:
+            print("[ImageGen] Together unavailable — falling back to Pollinations")
+            img_bytes = _pollinations_image_bytes(prompt, _requests)
+        except Exception as e:
+            print(f"[ImageGen] Pollinations fallback failed: {e}")
 
-    first = data[0]
-    b64 = first.get("b64_json") or first.get("b64")
-    if not b64 and first.get("url"):
-        img_bytes = _requests.get(first["url"], timeout=60).content
-        with open(abs_path, 'wb') as f:
-            f.write(img_bytes)
-        return rel_path
-
-    if not b64:
-        raise RuntimeError(f"No image data in Together AI response item: {list(first.keys())}")
+    if img_bytes is None:
+        raise RuntimeError(f"All image providers failed (last OpenAI error: {last_err})")
 
     with open(abs_path, 'wb') as f:
-        f.write(base64.b64decode(b64))
+        f.write(img_bytes)
     return rel_path
 
 
@@ -2904,6 +3178,22 @@ Aim for roughly equal representation: ~{max(1, round((blueprint and sum(v.get('m
 QUESTION PAPER STRUCTURE:
 {sections_spec}
 
+EXACT QUESTION DISTRIBUTION (MANDATORY — match these counts and marks precisely):
+{_exact_distribution_spec(blueprint_dict)}
+RULES FOR THE DISTRIBUTION ABOVE:
+- Generate EXACTLY the number of each question type shown — do not merge, drop, add, or re-balance types.
+- Each question's "marks" MUST equal the per-type marks shown (NEVER the section average).
+- Each question MUST include a "type" field (one of: MCQ, VSA, SA, LA, CBQ) AND a "subtype" field:
+  use "assertion_reason" for Assertion-Reason questions, "source_based" for case/source-based,
+  "image_based" for diagram questions, otherwise "standard".
+- The per-type marks across each section MUST sum to that section's total marks.
+
+IMAGE-BASED QUESTIONS:
+- When the distribution/instructions call for an image- or diagram-based question, add an
+  "image_prompt" field to that question: a self-contained visual description (20-40 words)
+  an AI image model can render. The image is placed ABOVE the question, so phrase the text
+  like "Study the diagram above and answer:". Only add "image_prompt" to questions that need it.
+
 BLUEPRINT SCHEMA (Follow this exact structure):
 {blueprint_schema}
 
@@ -2946,7 +3236,7 @@ CRITICAL JSON OUTPUT INSTRUCTIONS:
 4. For sections with extracts: Include "extract" key with extract text BEFORE questions
 5. Each section MUST have ONLY these keys: "marks", "questions_count", "question_types", "instructions", "constraints", "passage" (if applicable), "extract" (if applicable), "questions"
 6. NO other keys allowed - do not add LIT_EXTRACT_SR, LIT_EXTRACT_PM or any other nested keys
-7. Each question must have: {{"qnum": (number or string), "text": "question text", "marks": marks_value}}
+7. Each question must have: {{"qnum": (number or string), "type": "MCQ|VSA|SA|LA|CBQ", "subtype": "standard|assertion_reason|source_based|image_based", "text": "question text", "marks": marks_value}}
 8. Flatten ALL questions into the "questions" array - no subsections, no nested structures
 9. Do NOT include markdown, explanations, or any text - ONLY JSON
 

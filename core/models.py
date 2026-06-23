@@ -92,23 +92,36 @@ class ExamPattern(models.Model):
         return f"{self.name} - {self.class_name} {self.subject}"
 
     def get_total_marks(self):
-        """Calculate total marks from sections"""
+        """Calculate total marks from sections.
+
+        A section's own 'marks' is its FULL total — for compound papers
+        (e.g. Science = Biology + Chemistry + Physics) the subsections are a
+        breakdown that already sums to the section's marks. So we count the
+        section marks when present and only fall back to summing subsections
+        when the section has no marks of its own. (Adding both double-counts:
+        the old code reported 160 for an 80-mark paper.)
+        """
         total = 0
         for section in self.sections:
-            total += section.get('marks', 0)
-            # Handle subsections
-            for subsec in section.get('subsections', []):
-                total += subsec.get('marks', 0)
+            sec_marks = section.get('marks') or 0
+            if sec_marks:
+                total += sec_marks
+            else:
+                total += sum(subsec.get('marks', 0) for subsec in section.get('subsections', []))
         return total
 
     def get_total_questions(self):
-        """Calculate total questions from sections"""
+        """Calculate total questions from sections (see get_total_marks for the
+        section-vs-subsection double-count rationale)."""
         total = 0
         for section in self.sections:
             # Support both 'questions_count' (new) and 'questions' (legacy CBSE seed data)
-            total += section.get('questions_count') or section.get('questions', 0)
-            for subsec in section.get('subsections', []):
-                total += subsec.get('questions_count') or subsec.get('questions', 0)
+            sec_q = section.get('questions_count') or section.get('questions') or 0
+            if sec_q:
+                total += sec_q
+            else:
+                total += sum((subsec.get('questions_count') or subsec.get('questions', 0))
+                             for subsec in section.get('subsections', []))
         return total
 
     def save(self, *args, **kwargs):

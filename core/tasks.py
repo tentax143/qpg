@@ -5,6 +5,46 @@ from django.conf import settings
 from django.db.models import F
 import os
 
+
+def _fill_section_counts(sections):
+    """Fill questions_count / marks_per_question for any section that has marks but left
+    them blank — the AI pattern generator sometimes omits them, which would otherwise make
+    the section generate zero questions. Compound sections (with subsections) are left alone."""
+    def typical(types):
+        text = " ".join(str(t).lower() for t in (types or []))
+        if "long answer" in text:
+            return 5.0
+        if "very short" in text:
+            return 2.0
+        if "short answer" in text:
+            return 3.0
+        if any(k in text for k in ("case", "source", "cbq")):
+            return 4.0
+        return 1.0
+
+    def _num(v, default=0):
+        try:
+            return type(default)(v) if v not in (None, "", "varies") else default
+        except (TypeError, ValueError):
+            return default
+
+    for s in sections or []:
+        if not isinstance(s, dict) or s.get("subsections"):
+            continue
+        marks = _num(s.get("marks"), 0)
+        qc = _num(s.get("questions_count") or s.get("questions"), 0)
+        mpq = _num(s.get("marks_per_question"), 0.0)
+        if mpq <= 0:
+            mpq = round(marks / qc, 1) if qc else typical(s.get("question_types"))
+        if qc <= 0 and marks and mpq:
+            qc = max(1, round(marks / mpq))
+        if qc:
+            s["questions_count"] = qc
+        if mpq:
+            s["marks_per_question"] = mpq
+    return sections
+
+
 @shared_task(bind=True, max_retries=2, default_retry_delay=60)
 def generate_pattern_task(self, pattern_id):
     """Parse teacher's text prompt into structured pattern sections via AI. Runs in Celery worker."""
@@ -28,7 +68,7 @@ def generate_pattern_task(self, pattern_id):
             subject=pattern.subject,
             exam_name=pattern.name,
         )
-        pattern.sections       = pattern_data.get('sections', [])
+        pattern.sections       = _fill_section_counts(pattern_data.get('sections', []))
         pattern.total_marks    = pattern_data.get('total_marks', 0)
         pattern.total_questions = pattern_data.get('total_questions', 0)
         pattern.status = 'done'
@@ -116,10 +156,14 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         if "-" in class_name:
             class_name, section = class_name.split("-", 1)
         
-        # Resolve school for vector store routing
+        # Resolve school for vector store routing + paper header.
         school_id = None
+        school_name = ""
         try:
-            school_id = paper.created_by.profile.school.id
+            _school = paper.created_by.profile.school
+            if _school:
+                school_id = _school.id
+                school_name = _school.name or ""
         except Exception:
             pass
 
@@ -131,6 +175,12 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
             extra_meta = _json.loads(additional_context) if additional_context else {}
         except Exception:
             pass
+
+        # Always stamp the paper's school on the header. The create-flow meta can arrive empty
+        # (e.g. session quirks) and the header would otherwise render with no school name.
+        if school_name and not extra_meta.get("school_name"):
+            extra_meta["school_name"] = school_name
+            additional_context = _json.dumps(extra_meta)
 
         if pattern_obj and pattern_obj.pattern_source == 'one_mark_test':
             n = int(extra_meta.get('num_one_mark_questions') or 20)

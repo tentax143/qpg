@@ -519,17 +519,75 @@ def _evaluate_wikimedia_candidates(candidates: list[dict]) -> list[dict]:
 
 # ─── Pollinations image generation ────────────────────────────────────────────
 
-def _generate_pollinations(prompt: str) -> tuple[bytes, str]:
-    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
-    params = {"model": POLLINATIONS_MODEL, "width": 1024, "height": 1024,
-              "nologo": "true", "private": "true"}
+OPENAI_IMAGE_MODEL    = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-1")
+# OpenAI attempts before falling back to Pollinations for CBQ diagrams.
+OPENAI_IMAGE_ATTEMPTS = int(os.environ.get("IMAGE_OPENAI_ATTEMPTS", "2"))
+
+
+def _generate_openai_images(prompt: str, n: int = 1) -> list[tuple[bytes, str]]:
+    """
+    Generate up to n images with OpenAI gpt-image-1. Returns a list of (png_bytes, mime).
+    Raises on hard failure so callers can fall back.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set in environment")
+    logger.info("[ImageFinder] OpenAI %s generating %d image(s)...", OPENAI_IMAGE_MODEL, n)
+    resp = requests.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "n": max(1, n), "size": "1024x1024"},
+        timeout=180,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"OpenAI image HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json().get("data") or []
+    out = []
+    for item in data:
+        b64 = item.get("b64_json") or item.get("b64")
+        if b64:
+            out.append((base64.b64decode(b64), "image/png"))
+        elif item.get("url"):
+            r = requests.get(item["url"], timeout=60)
+            r.raise_for_status()
+            out.append((r.content, r.headers.get("Content-Type", "image/png").split(";")[0].strip()))
+    if not out:
+        raise RuntimeError("OpenAI image response contained no image data")
+    return out
+
+
+def _generate_pollinations_raw(prompt: str, n: int = 1) -> list[tuple[bytes, str]]:
+    """Fallback generator — Pollinations (Ideogram). Returns list of (bytes, mime)."""
+    base_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
+    base_params = {"model": POLLINATIONS_MODEL, "width": 1024, "height": 1024,
+                   "nologo": "true", "private": "true"}
     if POLLINATIONS_KEY:
-        params["token"] = POLLINATIONS_KEY
-    logger.info("[ImageFinder] Pollinations generating image...")
-    resp = requests.get(url, params=params, timeout=120)
-    resp.raise_for_status()
-    mime = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-    return resp.content, mime
+        base_params["token"] = POLLINATIONS_KEY
+    out = []
+    for i in range(max(1, n)):
+        try:
+            params = dict(base_params, seed=str(42 + i * 17))
+            resp = requests.get(base_url, params=params, timeout=120)
+            resp.raise_for_status()
+            mime = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+            out.append((resp.content, mime))
+        except Exception as exc:
+            logger.warning("[ImageFinder] Pollinations candidate %d failed: %s", i + 1, exc)
+    if not out:
+        raise RuntimeError("All Pollinations candidates failed")
+    return out
+
+
+def _generate_pollinations(prompt: str) -> tuple[bytes, str]:
+    """Single image — OpenAI primary, Pollinations fallback. (Name kept for compatibility.)"""
+    for attempt in range(1, OPENAI_IMAGE_ATTEMPTS + 1):
+        try:
+            return _generate_openai_images(prompt, n=1)[0]
+        except Exception as exc:
+            logger.warning("[ImageFinder] OpenAI attempt %d/%d failed: %s",
+                           attempt, OPENAI_IMAGE_ATTEMPTS, exc)
+    logger.info("[ImageFinder] OpenAI exhausted — falling back to Pollinations")
+    return _generate_pollinations_raw(prompt, n=1)[0]
 
 
 # ─── V9.1 — Multi-image generation + Kimi ranking ─────────────────────────────
@@ -611,31 +669,30 @@ def _generate_pollinations_multi(
     # Always enforce scientific diagram style regardless of what the prompt says
     if not prompt.startswith(_DIAGRAM_STYLE_PREFIX):
         prompt = _DIAGRAM_STYLE_PREFIX + prompt
-    base_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
-    base_params = {
-        "model": POLLINATIONS_MODEL,
-        "width": 1024,
-        "height": 1024,
-        "nologo": "true",
-        "private": "true",
-    }
-    if POLLINATIONS_KEY:
-        base_params["token"] = POLLINATIONS_KEY
 
+    # Primary: OpenAI gpt-image-1 (retried). Fallback: Pollinations — only after OpenAI
+    # exhausts its attempts. Best of N is then chosen by Kimi.
     candidates = []
-    for i in range(n):
+    for attempt in range(1, OPENAI_IMAGE_ATTEMPTS + 1):
         try:
-            params = dict(base_params, seed=str(42 + i * 17))
-            resp = requests.get(base_url, params=params, timeout=120)
-            resp.raise_for_status()
-            mime = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-            candidates.append((resp.content, mime))
-            logger.info("[V9.1-Multi] Generated Pollinations candidate %d/%d", i + 1, n)
+            candidates = _generate_openai_images(prompt, n=n)
+            logger.info("[V9.1-Multi] Generated %d OpenAI candidate(s)", len(candidates))
+            break
         except Exception as exc:
-            logger.warning("[V9.1-Multi] Pollinations candidate %d failed: %s", i + 1, exc)
+            logger.warning("[V9.1-Multi] OpenAI attempt %d/%d failed: %s",
+                           attempt, OPENAI_IMAGE_ATTEMPTS, exc)
 
     if not candidates:
-        raise RuntimeError("All Pollinations candidates failed")
+        logger.info("[V9.1-Multi] OpenAI exhausted — falling back to Pollinations")
+        try:
+            candidates = _generate_pollinations_raw(prompt, n=n)
+            logger.info("[V9.1-Multi] Generated %d Pollinations candidate(s)", len(candidates))
+        except Exception as exc:
+            logger.warning("[V9.1-Multi] Pollinations fallback failed: %s", exc)
+            candidates = []
+
+    if not candidates:
+        raise RuntimeError("All image providers (OpenAI + Pollinations) failed")
 
     return _rank_images_with_kimi(question_text, sub_questions, candidates)
 

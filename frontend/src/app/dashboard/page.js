@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Plus, FileText, Download, CheckCircle,
-  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil
+  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil, RotateCw
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -25,6 +25,7 @@ export default function DashboardPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [rerenderingId, setRerenderingId] = useState(null);
+  const [regeneratingId, setRegeneratingId] = useState(null);
   const pollingIntervalRef = useRef(null);
 
   useEffect(() => {
@@ -116,6 +117,21 @@ export default function DashboardPage() {
       setError(err?.response?.data?.error || 'Re-render failed');
     } finally {
       setRerenderingId(null);
+    }
+  };
+
+  // Regenerate fresh questions using the paper's existing config (pattern/class/subject/chapters).
+  const handleRegenerate = async (id) => {
+    if (!confirm('Regenerate this paper from its pattern? This creates fresh questions and replaces the current content.')) return;
+    setRegeneratingId(id);
+    try {
+      await apiClient.post(`/papers/${id}/regenerate/`);
+      setSuccess('Regenerating — refresh in a minute to see the new paper');
+      fetchDashboardData();   // status flips to generating; the list shows the spinner
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Could not start regeneration');
+    } finally {
+      setRegeneratingId(null);
     }
   };
 
@@ -285,6 +301,16 @@ export default function DashboardPage() {
                                 ? <RefreshCw className="w-4 h-4 animate-spin" />
                                 : <Zap className="w-4 h-4" />
                               }
+                            </button>
+                          )}
+                          {paper.status === 'done' && (
+                            <button
+                              onClick={() => handleRegenerate(paper.id)}
+                              disabled={regeneratingId === paper.id}
+                              className="p-1.5 text-amber-600 bg-amber-50 hover:bg-amber-100 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Regenerate fresh questions (same pattern, class, subject & chapters)"
+                            >
+                              <RotateCw className={`w-4 h-4 ${regeneratingId === paper.id ? 'animate-spin' : ''}`} />
                             </button>
                           )}
                           {paper.status === 'failed' && (

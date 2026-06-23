@@ -51,7 +51,7 @@ const EXAM_HINTS = {
   half_yearly: '80 marks · 3 hr · first-half syllabus · board-style sections',
   pre_board:   '80 marks · 3 hr · full syllabus · board paper practice',
   annual:      '80 marks · 3 hr · full syllabus · school final exam',
-  board:       'Official CBSE 2024-25 board paper — auto-loaded from research data',
+  board:       'Official CBSE 2025-26 board paper — auto-loaded from research data',
   custom:      'Type your own pattern name',
 };
 
@@ -271,8 +271,9 @@ export default function CreatePatternPage() {
   const [sections, setSections]           = useState([]);
   const [aiPrompt, setAiPrompt]           = useState('');
   const [loadingPattern, setLoadingPattern] = useState(false);
-  const [loadedFrom, setLoadedFrom]         = useState(null); // 'cbse_official' | 'pt_default' | null
+  const [loadedFrom, setLoadedFrom]         = useState(null); // 'superadmin_template' | 'pt_default' | null
   const [loadError, setLoadError]           = useState(null);
+  const [selectedTemplateId, setSelectedTemplateId] = useState(null); // superadmin pattern to clone
 
   // AI generation polling
   const [generating, setGenerating]   = useState(false);  // true while Celery task is running
@@ -291,46 +292,42 @@ export default function CreatePatternPage() {
   async function loadPattern(key, subj, cls) {
     setLoadError(null);
     setLoadedFrom(null);
+    setSelectedTemplateId(null);
 
-    // PT / unit-test — use built-in 20-mark defaults
-    if (!BOARD_PATTERN_TYPES.has(key)) {
-      // Manual tab: fill section cards
-      setSections(PT_DEFAULT_RAW.map((s, i) => rawToEditorSection(s, i)));
-      // AI tab: fill textarea with readable text
-      setAiPrompt(ptDefaultToText(key, subj, cls));
-      setLoadedFrom('pt_default');
-      return;
-    }
-
-    // Board-style — fetch official CBSE pattern
+    // 1) Prefer a premade pattern curated by the superadmin (the only source of premade
+    //    patterns). Selecting class + subject + exam type fetches the matching one.
+    let foundTemplate = false;
     try {
       setLoadingPattern(true);
       const res = await apiClient.get(
-        `/cbse/pattern/?subject=${encodeURIComponent(subj)}&class=${encodeURIComponent(cls)}`
+        `/patterns/templates/?class=${encodeURIComponent(cls)}&subject=${encodeURIComponent(subj)}&exam_type=${encodeURIComponent(key)}`
       );
-      const rawPat      = res.data?.pattern || {};
-      const rawSections = rawPat.sections   || [];
-      if (rawSections.length === 0) {
-        setLoadError(`No official CBSE pattern found for ${subj} Class ${cls}. Add sections manually.`);
-        setSections([]);
-        setAiPrompt('');
-      } else {
-        // Manual tab: fill section cards
-        setSections(rawSections.map((s, i) => rawToEditorSection(s, i)));
-        // AI tab: fill textarea with readable text
-        setAiPrompt(patternToText(rawPat, key, subj, cls));
-        setLoadedFrom('cbse_official');
+      const matches = res.data || [];
+      if (matches.length > 0) {
+        const tpl = matches[0];
+        setSections((tpl.sections || []).map((s, i) => rawToEditorSection(s, i)));
+        setAiPrompt(patternToText(tpl, key, subj, cls));
+        setSelectedTemplateId(tpl.id);
+        setLoadedFrom('superadmin_template');
+        foundTemplate = true;
       }
     } catch (err) {
-      if (err.response?.status === 404) {
-        setLoadError(`No official CBSE pattern found for ${subj} Class ${cls}. Add sections manually.`);
-      } else {
-        setLoadError('Could not load pattern. Check your connection.');
-      }
-      setSections([]);
-      setAiPrompt('');
+      // fall through to manual fallback below
     } finally {
       setLoadingPattern(false);
+    }
+    if (foundTemplate) return;
+
+    // 2) No superadmin pattern available — fall back to manual build.
+    if (!BOARD_PATTERN_TYPES.has(key)) {
+      // PT / unit-test: pre-fill the 20-mark default as a manual starting point.
+      setSections(PT_DEFAULT_RAW.map((s, i) => rawToEditorSection(s, i)));
+      setAiPrompt(ptDefaultToText(key, subj, cls));
+      setLoadedFrom('pt_default');
+    } else {
+      setLoadError(`No superadmin pattern found for ${subj} Class ${cls}. Build the sections manually below.`);
+      setSections([]);
+      setAiPrompt('');
     }
   }
 
@@ -339,11 +336,13 @@ export default function CreatePatternPage() {
     setLoadedFrom(null);
     setLoadError(null);
     setSections([]);
+    setSelectedTemplateId(null);
     if (val !== 'custom') setCustomName('');
   }
 
   // Section editor helpers
   function addSection() {
+    setSelectedTemplateId(null);  // manual edit → no longer a verbatim template clone
     const id = String.fromCharCode(65 + sections.length);
     setSections(prev => [...prev, {
       id,
@@ -357,6 +356,7 @@ export default function CreatePatternPage() {
   }
 
   function updateSection(idx, field, value) {
+    setSelectedTemplateId(null);  // manual edit → save edited version, not the verbatim template
     setSections(prev => {
       const next = prev.map((s, i) => i === idx ? { ...s, [field]: value } : s);
       if (field === 'questions_count' || field === 'marks_per_question') {
@@ -369,6 +369,7 @@ export default function CreatePatternPage() {
   }
 
   function removeSection(idx) {
+    setSelectedTemplateId(null);  // manual edit → save edited version, not the verbatim template
     setSections(prev => prev.filter((_, i) => i !== idx));
   }
 
@@ -422,14 +423,23 @@ export default function CreatePatternPage() {
     try {
       if (activeTab === 'manual') {
         if (sections.length === 0) throw new Error('Add at least one section');
-        const payload = {
-          name: finalName, class_name: className, subject, description,
-          sections,
-          total_marks:     sections.reduce((s, r) => s + (r.marks || 0), 0),
-          total_questions: sections.reduce((s, r) => s + (parseInt(r.questions_count) || 0), 0),
-          pattern_source:  'manual',
-        };
-        await apiClient.post('/patterns/', payload);
+        if (selectedTemplateId) {
+          // Unedited superadmin template → clone it verbatim (preserves the full
+          // compound question_types/sub_questions structure the editor would flatten).
+          await apiClient.post('/patterns/clone-template/', {
+            template_id: selectedTemplateId,
+            name: finalName, class_name: className, subject, description,
+          });
+        } else {
+          const payload = {
+            name: finalName, class_name: className, subject, description,
+            sections,
+            total_marks:     sections.reduce((s, r) => s + (r.marks || 0), 0),
+            total_questions: sections.reduce((s, r) => s + (parseInt(r.questions_count) || 0), 0),
+            pattern_source:  'manual',
+          };
+          await apiClient.post('/patterns/', payload);
+        }
         setSuccess('Pattern created successfully!');
         setTimeout(() => router.push('/patterns'), 1500);
       } else {
@@ -627,18 +637,18 @@ export default function CreatePatternPage() {
                 </div>
               )}
 
-              {!loadingPattern && loadedFrom === 'cbse_official' && (
+              {!loadingPattern && loadedFrom === 'superadmin_template' && (
                 <div className="mb-6 flex items-center gap-3 p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
                   <Sparkles size={16} className="text-emerald-500" />
                   <div className="flex-1">
                     <span className="text-xs font-black text-emerald-700 uppercase tracking-wide">
-                      Loaded from official CBSE 2024-25 board pattern
+                      Loaded from superadmin pattern — click Create to make your copy
                     </span>
-                    <span className="text-[10px] text-emerald-600 font-bold ml-2">— edit sections as needed</span>
+                    <span className="text-[10px] text-emerald-600 font-bold ml-2">— or edit sections to customise</span>
                   </div>
                   <button
                     type="button"
-                    onClick={() => { setSections([]); setLoadedFrom(null); }}
+                    onClick={() => { setSections([]); setLoadedFrom(null); setSelectedTemplateId(null); }}
                     className="text-[10px] font-black text-emerald-600 hover:text-emerald-800 uppercase tracking-wide"
                   >
                     Clear
@@ -834,16 +844,16 @@ export default function CreatePatternPage() {
               )}
 
               {/* Loaded banner */}
-              {!loadingPattern && loadedFrom === 'cbse_official' && (
+              {!loadingPattern && loadedFrom === 'superadmin_template' && (
                 <div className="mb-4 flex items-center gap-3 p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
                   <Sparkles size={16} className="text-emerald-500" />
                   <div className="flex-1">
                     <span className="text-xs font-black text-emerald-700 uppercase tracking-wide">
-                      Official CBSE 2024-25 pattern loaded
+                      Superadmin pattern loaded
                     </span>
                     <span className="text-[10px] text-emerald-600 font-bold ml-2">— edit the text below to customise</span>
                   </div>
-                  <button type="button" onClick={() => { setAiPrompt(''); setLoadedFrom(null); }}
+                  <button type="button" onClick={() => { setAiPrompt(''); setLoadedFrom(null); setSelectedTemplateId(null); }}
                     className="text-[10px] font-black text-emerald-600 hover:text-emerald-800 uppercase tracking-wide">
                     Clear
                   </button>
