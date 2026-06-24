@@ -339,6 +339,202 @@ class SectionTypeEnforcementTest(TestCase):
         self.assertEqual(len(out["Section B"]["questions"]), 1)        # CBQ kept despite subtype
 
 
+class MarksReconcileAndTopUpLoopTest(TestCase):
+    """Uniform sections must end up at the right marks AND the right count — the two shapes
+    behind the recurring 'Marks check' audit warnings (9/10 marks; 18/20 questions)."""
+
+    def _wo(self, mixed=False, mpq=2.0, count=5, types=None, name="Section B"):
+        from core import section_generator as sg
+        return sg.SectionWorkOrder(
+            section_name=name, section_id="B", title="VSA", marks=int(count * mpq),
+            questions_count=count, marks_per_question=mpq, question_types=types or ["VSA"],
+            instructions=[], constraints={}, context_text="ctx", difficulty="medium",
+            subject="Science", class_name="10", chapters=["Light"], mixed_marks=mixed)
+
+    def test_reconcile_clamps_drifted_uniform_marks(self):
+        from core import section_generator as sg
+        wo = self._wo(mpq=2.0, count=5)
+        qs = [{"type": "VSA", "text": f"q{i}", "marks": 2} for i in range(4)]
+        qs.append({"type": "VSA", "text": "drift", "marks": 1})          # one drifted to 1m
+        pd = {"Section B": {"section_name": "Section B", "questions": qs}}
+        sg.reconcile_uniform_marks(pd, [wo])
+        self.assertEqual(sum(q["marks"] for q in pd["Section B"]["questions"]), 10)
+
+    def test_reconcile_fixes_non_numeric_marks(self):
+        from core import section_generator as sg
+        wo = self._wo(mpq=3.0, count=2, types=["SA"])
+        pd = {"Section B": {"section_name": "Section B", "questions": [
+            {"type": "SA", "text": "a", "marks": 3},
+            {"type": "SA", "text": "b", "marks": "varies"}]}}
+        sg.reconcile_uniform_marks(pd, [wo])
+        self.assertEqual([q["marks"] for q in pd["Section B"]["questions"]], [3.0, 3.0])
+
+    def test_reconcile_leaves_mixed_marks_untouched(self):
+        from core import section_generator as sg
+        wo = self._wo(mixed=True, mpq=2.0, count=3)
+        qs = [{"type": "MCQ", "text": "a", "marks": 1},
+              {"type": "SA", "text": "b", "marks": 3},
+              {"type": "VSA", "text": "c", "marks": 2}]
+        pd = {"Section B": {"section_name": "Section B", "questions": qs}}
+        sg.reconcile_uniform_marks(pd, [wo])
+        self.assertEqual([q["marks"] for q in pd["Section B"]["questions"]], [1, 3, 2])
+
+    def test_reconcile_skips_cbq_subquestions(self):
+        from core import section_generator as sg
+        wo = self._wo(mpq=4.0, count=1, types=["CBQ"])
+        pd = {"Section B": {"section_name": "Section B", "questions": [
+            {"type": "CBQ", "text": "x", "marks": 4,
+             "sub_questions": [{"text": "a", "marks": 2}, {"text": "b", "marks": 2}]}]}}
+        sg.reconcile_uniform_marks(pd, [wo])
+        self.assertEqual(pd["Section B"]["questions"][0]["marks"], 4)
+
+    def test_distributes_marks_when_count_times_mpq_below_total(self):
+        # The exact log case: Section B declared 10m but 3 SA × 3m = 9. Distribute to 4,3,3.
+        from core import section_generator as sg
+        wo = self._wo(mpq=3.0, count=3, types=["Short Answer I (SA-I)"])
+        wo.marks = 10                                          # pattern says 10m, 3×3 can't reach it
+        qs = [{"type": "SA", "text": f"q{i}", "marks": 3} for i in range(3)]
+        pd = {"Section B": {"section_name": "Section B", "questions": qs}}
+        sg.reconcile_uniform_marks(pd, [wo])
+        marks = sorted(q["marks"] for q in pd["Section B"]["questions"])
+        self.assertEqual(sum(marks), 10)                       # section now totals exactly 10
+        self.assertEqual(marks, [3, 3, 4])
+
+    def test_objective_section_not_inflated_when_short(self):
+        # A short MCQ section must NOT have its marks inflated to hide the count shortfall.
+        from core import section_generator as sg
+        wo = self._wo(mpq=1.0, count=20, types=["MCQ", "Assertion-Reason"])
+        wo.marks = 20
+        qs = [{"type": "MCQ", "text": f"q{i}", "marks": 1} for i in range(18)]  # 18/20 short
+        pd = {"Section A": {"section_name": "Section A", "questions": qs}}
+        # work order name must match the dict key
+        wo.section_name = "Section A"
+        sg.reconcile_uniform_marks(pd, [wo])
+        self.assertTrue(all(q["marks"] == 1 for q in pd["Section A"]["questions"]))
+        self.assertEqual(sum(q["marks"] for q in pd["Section A"]["questions"]), 18)  # stays 18, not 20
+
+    def test_fill_loop_recovers_full_count_over_rounds(self):
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(mpq=1.0, count=20, types=["MCQ"], name="Section A")
+        sec = {"section_name": "Section A",
+               "questions": [{"type": "MCQ", "text": f"q{i}", "marks": 1} for i in range(18)]}
+        seq = {"n": 0}
+
+        def fake_topup(section_data, w):
+            # Simulate the model recovering only ONE of the missing questions per call —
+            # the exact behaviour that left single-shot top-up stuck at 19/20.
+            cur = len(section_data["questions"])
+            if cur < w.questions_count:
+                section_data["questions"].append(
+                    {"type": "MCQ", "text": f"new{seq['n']}", "marks": 1})
+                seq["n"] += 1
+                return 1, 1
+            return 0, 0
+
+        with mock.patch.object(sg, "_top_up_short_section", side_effect=fake_topup):
+            sg._fill_short_section(sec, wo, max_rounds=5)
+        self.assertEqual(len(sec["questions"]), 20)        # filled, not stuck at 19
+        self.assertEqual(sec.get("_topped_up"), 2)         # cumulative across rounds
+
+    def test_fill_loop_stops_when_a_round_adds_nothing(self):
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(mpq=1.0, count=20, types=["MCQ"], name="Section A")
+        sec = {"section_name": "Section A",
+               "questions": [{"type": "MCQ", "text": f"q{i}", "marks": 1} for i in range(18)]}
+        calls = {"n": 0}
+
+        def stuck_topup(section_data, w):
+            calls["n"] += 1                                 # spends a call but adds nothing
+            return 1, 1
+
+        with mock.patch.object(sg, "_top_up_short_section", side_effect=stuck_topup):
+            sg._fill_short_section(sec, wo, max_rounds=5)
+        self.assertEqual(calls["n"], 1)                     # bails after the first no-progress round
+        self.assertEqual(len(sec["questions"]), 18)
+
+
+class V5L2DuplicateReplacementTypeTest(TestCase):
+    """A duplicate-replacement must keep the original question's TYPE. A type-drifted
+    replacement (an SA where the original was an MCQ) is stripped by the type-enforcer and
+    drops the section below count — the proven cause of 'Section A: 18/20 questions'."""
+
+    def _wo(self, types, count=20, mpq=1.0):
+        from core import section_generator as sg
+        return sg.SectionWorkOrder(
+            section_name="Section A — Objective Type", section_id="A", title="Objective",
+            marks=int(count * mpq), questions_count=count, marks_per_question=mpq,
+            question_types=types, instructions=[], constraints={}, context_text="ctx",
+            difficulty="medium", subject="Computer Science", class_name="11",
+            chapters=["Encoding Schemes and Number System"])
+
+    def _mcq(self, n, text):
+        return {"qnum": n, "type": "MCQ", "subtype": "standard", "text": text,
+                "options": {"a": "1", "b": "2", "c": "3", "d": "4"}, "answer": "a",
+                "marks": 1, "answer_explanation": "because a", "chapter_tag": "X",
+                "competency_type": "application"}
+
+    def test_skeleton_preserves_mcq_type(self):
+        from core import section_generator as sg
+        instr, skel = sg._regen_question_skeleton({"type": "MCQ", "subtype": "standard"}, 5, 1)
+        self.assertIn('"type": "MCQ"', skel)
+        self.assertIn('"options"', skel)
+        self.assertIn("MCQ", instr)
+
+    def test_skeleton_preserves_la_type(self):
+        from core import section_generator as sg
+        instr, skel = sg._regen_question_skeleton({"type": "LA", "subtype": "standard"}, 31, 5)
+        self.assertIn('"type": "LA"', skel)
+        self.assertIn('"or_alternative"', skel)
+        self.assertNotIn('"options"', skel)
+
+    def test_drifted_sa_replacement_is_rejected_for_mcq(self):
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(["MCQ", "True/False", "Fill in the Blanks"])
+        questions = [self._mcq(1, "What is binary grouping?"),
+                     self._mcq(2, "What is binary grouping for octal?")]
+        warnings = ["Q1 and Q2 overlap 70% — likely duplicate concept"]
+
+        def fake_converse(**kw):
+            if kw.get("model_id") == sg.mantle_client.VAL_MODEL:
+                return ('{"same_concept": true, "reason": "dup"}', 0, 0)   # confirm dup
+            # regen returns an SA (the old hardcoded-SA behaviour) — must be rejected
+            return ('{"qnum": 2, "type": "SA", "text": "Explain binary.", "marks": 1, '
+                    '"answer_explanation": "pts", "chapter_tag": "X", '
+                    '"competency_type": "constructed"}', 0, 0)
+
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=fake_converse):
+            out, remaining = sg.verify_and_fix_semantic_duplicates(questions, warnings, wo, [])
+        self.assertEqual(out[1]["type"], "MCQ")              # original MCQ kept, not SA
+        self.assertIn("options", out[1])
+        self.assertEqual(len(out), 2)                         # count preserved
+
+    def test_valid_mcq_replacement_is_applied(self):
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(["MCQ"])
+        questions = [self._mcq(1, "What is binary grouping?"),
+                     self._mcq(2, "What is binary grouping for octal?")]
+        warnings = ["Q1 and Q2 overlap 70% — likely duplicate concept"]
+
+        def fake_converse(**kw):
+            if kw.get("model_id") == sg.mantle_client.VAL_MODEL:
+                return ('{"same_concept": true, "reason": "dup"}', 0, 0)
+            return ('{"qnum": 2, "type": "MCQ", "subtype": "standard", '
+                    '"text": "Which radix does hexadecimal use?", '
+                    '"options": {"a": "8", "b": "10", "c": "16", "d": "2"}, "answer": "c", '
+                    '"answer_explanation": "hex is base 16", "chapter_tag": "X", '
+                    '"competency_type": "application"}', 0, 0)
+
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=fake_converse):
+            out, remaining = sg.verify_and_fix_semantic_duplicates(questions, warnings, wo, [])
+        self.assertEqual(out[1]["type"], "MCQ")
+        self.assertIn("radix", out[1]["text"])               # replacement applied
+        self.assertEqual(remaining, [])                       # warning resolved
+
+
 class ChapterAllocationTest(TestCase):
     """Deterministic, CBSE-weighted, coverage-balanced chapter allocation."""
 
@@ -521,6 +717,132 @@ class SectionTopUpTest(TestCase):
         section_data = {"questions": self._existing(2)}
         self.assertEqual(sg._top_up_short_section(section_data, wo), (0, 0))
         self.assertNotIn("_topped_up", section_data)
+
+
+class LanguageSupportTest(TestCase):
+    """Tamil & Hindi: the right complex-script font is applied at render, and the generation
+    prompt instructs the model to write in the target language/script."""
+
+    def test_script_font_picker(self):
+        from core.generator import _pick_script_font
+        self.assertEqual(_pick_script_font("Hindi Core", []), "Nirmala UI")
+        self.assertEqual(_pick_script_font("Sanskrit", []), "Nirmala UI")
+        self.assertEqual(_pick_script_font("Tamil", []), "Latha")
+        self.assertIsNone(_pick_script_font("Science", [("q", "What is photosynthesis?")]))
+        # Detected from the text even when the subject name is non-obvious.
+        self.assertEqual(_pick_script_font("X", [("q", "जल का सूत्र?")]), "Nirmala UI")
+        self.assertEqual(_pick_script_font("X", [("q", "இது ஒரு வினா")]), "Latha")
+
+    def test_devanagari_run_gets_complex_script_font(self):
+        import re
+        from docx import Document
+        from docx.oxml.ns import qn
+        from core.generator import _add_question_with_marks
+        doc = Document()
+        _add_question_with_marks(doc, "1. जल का रासायनिक सूत्र क्या है? [1 marks]",
+                                 re.compile(r"\s*\[(\d+)\s*marks?\]", re.I), None, "Nirmala UI")
+        run = doc.paragraphs[-1].runs[-1]
+        rFonts = run._element.get_or_add_rPr().find(qn("w:rFonts"))
+        self.assertIsNotNone(rFonts)
+        self.assertEqual(rFonts.get(qn("w:cs")), "Nirmala UI")
+
+    def test_language_directive_for_language_subjects(self):
+        from core.section_generator import _language_directive
+        self.assertIn("Devanagari", _language_directive("Hindi Course B"))
+        self.assertIn("Tamil", _language_directive("Tamil"))
+        self.assertEqual(_language_directive("Science"), "")
+        self.assertEqual(_language_directive("Mathematics"), "")
+
+    def test_language_directive_injected_into_section_prompt(self):
+        from core.section_generator import build_section_prompt, SectionWorkOrder
+        wo = SectionWorkOrder(
+            section_name="Section A", section_id="A", title="MCQ", marks=5, questions_count=5,
+            marks_per_question=1, question_types=["MCQ"], instructions=[], constraints={},
+            context_text="", difficulty="medium", subject="Hindi", class_name="10",
+            chapters=["कविता"],
+        )
+        prompt = build_section_prompt(wo)
+        self.assertIn("LANGUAGE — MANDATORY", prompt)
+        self.assertIn("Devanagari", prompt)
+
+
+class MaterialIntelTest(TestCase):
+    """Intelligent ingestion: chapter-name cleaning, catalog snapping, book page-range splitting,
+    and LLM-based unit naming."""
+
+    def test_clean_name_strips_chapter_prefix(self):
+        from core.material_intel import _clean_name
+        self.assertEqual(_clean_name("Chapter 4 - Chemical Bonding"), "Chemical Bonding")
+        self.assertEqual(_clean_name("UNIT 2: Structure of Atom"), "Structure of Atom")
+        self.assertEqual(_clean_name("  Thermodynamics  "), "Thermodynamics")
+
+    def test_snap_to_catalog(self):
+        from core.material_intel import _snap_to_catalog
+        # Physics has a catalog → a close/substring name snaps to the official one.
+        self.assertEqual(_snap_to_catalog("current electricity", "Physics"), "Current Electricity")
+        # No catalog for the subject → returned unchanged.
+        self.assertEqual(_snap_to_catalog("My Custom Topic", "Hindi"), "My Custom Topic")
+
+    def test_ranges_from_starts(self):
+        from core.material_intel import _ranges_from_starts
+        chapters = _ranges_from_starts([("Intro", 0), ("Atoms", 5), ("Bonds", 12)], 20)
+        self.assertEqual(len(chapters), 3)
+        self.assertEqual((chapters[0]["start_page"], chapters[0]["end_page"]), (0, 5))
+        self.assertEqual((chapters[2]["start_page"], chapters[2]["end_page"]), (12, 20))
+        self.assertEqual(chapters[1]["unit"], "Atoms")
+
+    def test_detect_unit_name_snaps_to_catalog(self):
+        from unittest import mock
+        from core import material_intel as mi
+        with mock.patch.object(mi.mantle_client, "converse",
+                               return_value=('{"chapter": "current electricity"}', 1, 1)):
+            name = mi.detect_unit_name(None, "12", "Physics", sample_text="...physics text...")
+        self.assertEqual(name, "Current Electricity")
+
+    def test_detect_unit_name_empty_sample_returns_none(self):
+        from core import material_intel as mi
+        self.assertIsNone(mi.detect_unit_name(None, "12", "Physics", sample_text="   "))
+
+    def test_extract_html_chapters_by_heading(self):
+        from core.material_intel import extract_html_chapters
+        html = (
+            "<html><body><h1>Book Title</h1>"
+            "<h2>இயல் ஒன்று</h2>"
+            "<p>தமிழ் உரை ஒன்று. இது முதல் பாடத்தின் முழுமையான உரை ஆகும் இங்கே.</p>"
+            "<h2>இயல் இரண்டு</h2>"
+            "<p>இரண்டாம் பாடத்தின் உரை. போதுமான நீளம் கொண்ட உரை இங்கே உள்ளது.</p>"
+            "</body></html>"
+        )
+        chs = extract_html_chapters(html, "Tamil")
+        units = [c["unit"] for c in chs]
+        self.assertIn("இயல் ஒன்று", units)
+        self.assertIn("இயல் இரண்டு", units)
+        # Body text is captured; the <h1> book title before the first chapter is excluded.
+        self.assertTrue(all(c["text"] and "Book Title" not in c["text"] for c in chs))
+
+    def test_extract_html_single_chapter_when_no_headings(self):
+        from core.material_intel import extract_html_chapters
+        html = "<html><body><p>" + ("உரை " * 40) + "</p></body></html>"
+        chs = extract_html_chapters(html, "Tamil")
+        self.assertEqual(len(chs), 1)
+        self.assertIsNone(chs[0]["unit"])   # caller will name it
+
+    def test_preview_url_endpoint_returns_chapters_without_ingesting(self):
+        from unittest import mock
+        from rest_framework.test import APIClient
+        u = User.objects.create_user("previewer", "p@x.com", "pw")
+        api = APIClient()
+        api.force_authenticate(u)
+        html = ("<html><body>"
+                "<h2>இயல் ஒன்று</h2><p>" + ("உரை " * 30) + "</p>"
+                "<h2>இயல் இரண்டு</h2><p>" + ("உரை " * 30) + "</p></body></html>")
+        with mock.patch("core.material_intel.fetch_url", return_value=html):
+            r = api.post('/api/materials/preview-url/',
+                         {'url': 'https://example.com/book.html', 'subject': 'Tamil'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body['count'], 2)
+        self.assertIn("இயல் ஒன்று", [c['unit'] for c in body['chapters']])
 
 
 class ImageStemGuardTest(TestCase):

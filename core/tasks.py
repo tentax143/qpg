@@ -83,9 +83,29 @@ def generate_pattern_task(self, pattern_id):
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def ingest_material_task(self, class_name, subject, materials, material_type="textbook", provider="local", school_id=None):
-    """Ingest PDFs into ChromaDB. Textbooks go to shared + school store; private materials go to school store only."""
+def ingest_material_task(self, class_name, subject, materials, material_type="textbook", provider="local", school_id=None, auto_name=False):
+    """Ingest PDFs into ChromaDB. Textbooks go to shared + school store; private materials go to school store only.
+
+    auto_name=True: before ingesting, detect each PDF's chapter name from its content (snapping
+    to the CBSE catalog) and update both the unit used for ingestion and the Material row — so a
+    file with a random name still gets a clean, consistent unit. Best-effort per file."""
     try:
+        if auto_name:
+            from .models import Material
+            from . import material_intel
+            for m in materials:
+                try:
+                    detected = material_intel.detect_unit_name(m["file_path"], class_name, subject)
+                    if detected:
+                        old = m.get("unit")
+                        m["unit"] = detected
+                        if m.get("material_id"):
+                            Material.objects.filter(id=m["material_id"]).update(unit=detected, title=detected)
+                        print(f"[ingest_material_task] auto-named '{os.path.basename(m['file_path'])}': "
+                              f"'{old}' → '{detected}'")
+                except Exception as e:
+                    print(f"[ingest_material_task] auto-name failed for '{m.get('file_path')}': {e}")
+
         if material_type == "textbook":
             # Textbooks go to the shared namespace (source of truth for copying)
             embeddings.ingest_bulk(class_name, subject, materials, material_type=material_type, provider=provider, school_id=None)
@@ -102,6 +122,126 @@ def ingest_material_task(self, class_name, subject, materials, material_type="te
     except Exception as exc:
         print(f"[ingest_material_task] Error: {exc}")
         raise self.retry(exc=exc)
+
+
+@shared_task(bind=True)
+def split_book_task(self, class_name, subject, file_path, material_type="textbook",
+                    provider="local", school_id=None, uploaded_by_id=None, base_material_id=None):
+    """Split a whole-textbook PDF into per-chapter units: detect chapter page ranges, create one
+    Material row per chapter (all referencing the same uploaded file) and ingest each chapter's
+    pages as its own unit. The placeholder 'source book' Material (base_material_id) is reused as
+    the first chapter so the uploaded file is never orphaned. Falls back to a single unit if the
+    book can't be split into 2+ chapters."""
+    from .models import Material
+    from . import material_intel
+
+    chapters = material_intel.detect_book_chapters(file_path, class_name, subject)
+    if not chapters:
+        # Couldn't split — treat the whole file as one auto-named unit.
+        name = material_intel.detect_unit_name(file_path, class_name, subject) or \
+            os.path.splitext(os.path.basename(file_path))[0]
+        chapters = [{"unit": name, "start_page": 0, "end_page": material_intel.page_count(file_path)}]
+    print(f"[split_book_task] '{os.path.basename(file_path)}' → {len(chapters)} chapter(s)")
+
+    base = Material.objects.filter(id=base_material_id).first() if base_material_id else None
+    file_name = base.file.name if base else None
+
+    def _ingest(unit, pr):
+        if material_type == "textbook":
+            embeddings.ingest_pdf(class_name, subject, unit, file_path, title=unit,
+                                  material_type=material_type, provider=provider, school_id=None, page_range=pr)
+            if school_id:
+                embeddings.ingest_pdf(class_name, subject, unit, file_path, title=unit,
+                                      material_type=material_type, provider=provider, school_id=school_id, page_range=pr)
+        else:
+            embeddings.ingest_pdf(class_name, subject, unit, file_path, title=unit,
+                                  material_type=material_type, provider=provider, school_id=school_id, page_range=pr)
+
+    created = 0
+    for idx, ch in enumerate(chapters):
+        unit = ch["unit"]
+        pr = (ch["start_page"], ch["end_page"])
+        meta = {"auto_split": True, "pages": [ch["start_page"], ch["end_page"]]}
+        try:
+            if idx == 0 and base is not None:
+                # Reuse the placeholder row as chapter 1 (keeps the uploaded file owned).
+                base.unit = unit
+                base.title = unit
+                base.metadata = meta
+                base.save(update_fields=["unit", "title", "metadata"])
+            else:
+                Material.objects.create(
+                    class_name=class_name, subject=subject, unit=unit, title=unit,
+                    type=material_type, file=file_name, school_id=school_id,
+                    uploaded_by_id=uploaded_by_id, metadata=meta,
+                )
+            _ingest(unit, pr)
+            created += 1
+        except Exception as e:
+            print(f"[split_book_task] chapter '{unit}' failed: {e}")
+
+    print(f"[split_book_task] Done — created/ingested {created}/{len(chapters)} chapter unit(s)")
+    return {"chapters": created, "school_id": school_id}
+
+
+@shared_task(bind=True)
+def ingest_url_task(self, class_name, subject, url, material_type="textbook",
+                    provider="local", school_id=None, uploaded_by_id=None):
+    """Import a whole-book HTML page (e.g. a TN-schools textbook URL): fetch it, split into
+    per-chapter units by heading tags, save the source HTML once, create one Material row per
+    chapter (all referencing that file) and ingest each chapter's text as its own unit. Clean
+    Unicode text — works for Tamil/Hindi where PDF extraction fails."""
+    import re as _re
+    from django.core.files.base import ContentFile
+    from .models import Material
+    from . import material_intel
+
+    html = material_intel.fetch_url(url)
+    chapters = material_intel.extract_html_chapters(html, subject)
+    if not chapters:
+        print(f"[ingest_url_task] no usable text extracted from {url}")
+        return {"chapters": 0}
+    if len(chapters) == 1 and not chapters[0].get("unit"):
+        chapters[0]["unit"] = material_intel.detect_unit_name(
+            None, class_name, subject, sample_text=chapters[0]["text"][:2500]) or "Imported Material"
+    print(f"[ingest_url_task] {url} → {len(chapters)} chapter(s)")
+
+    slug = _re.sub(r'[^a-zA-Z0-9]+', '_', f"{class_name}_{subject}_book")[:60] or "book"
+    saved_name = None
+    created = 0
+
+    def _ingest(unit, text):
+        if material_type == "textbook":
+            embeddings.ingest_text(class_name, subject, unit, text, title=unit,
+                                   material_type=material_type, provider=provider, school_id=None)
+            if school_id:
+                embeddings.ingest_text(class_name, subject, unit, text, title=unit,
+                                       material_type=material_type, provider=provider, school_id=school_id)
+        else:
+            embeddings.ingest_text(class_name, subject, unit, text, title=unit,
+                                   material_type=material_type, provider=provider, school_id=school_id)
+
+    for ch in chapters:
+        unit = ch.get("unit")
+        if not unit:
+            continue
+        try:
+            mat = Material(class_name=class_name, subject=subject, unit=unit, title=unit,
+                           type=material_type, school_id=school_id, uploaded_by_id=uploaded_by_id,
+                           metadata={"source_url": url, "imported_html": True})
+            if saved_name is None:
+                mat.file.save(f"{slug}.html", ContentFile(html.encode("utf-8")), save=False)
+                saved_name = mat.file.name
+            else:
+                mat.file = saved_name
+            mat.save()
+            _ingest(unit, ch["text"])
+            created += 1
+        except Exception as e:
+            print(f"[ingest_url_task] chapter '{unit}' failed: {e}")
+
+    print(f"[ingest_url_task] Done — created/ingested {created}/{len(chapters)} chapter unit(s) from {url}")
+    return {"chapters": created, "school_id": school_id}
 
 
 @shared_task(bind=True)

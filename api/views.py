@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Subject
 from core import embeddings
-from core.tasks import generate_paper_task, ingest_material_task
+from core.tasks import generate_paper_task, ingest_material_task, split_book_task, ingest_url_task
 from core.views import extract_text_from_pdf, extract_text_from_docx, extract_docx_text_with_images
 from core.media_access import signed_file_url
 import os
@@ -1232,8 +1232,9 @@ class MaterialViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """Custom create to handle bulk and multi-chapter uploads with embeddings"""
-        # Handle standard single file upload via DRF (no bulk/multi-chapter fields)
-        if "bulk_upload" not in request.data and "chapter_count" not in request.data:
+        # Handle standard single file upload via DRF (no bulk/multi-chapter/url fields)
+        if ("bulk_upload" not in request.data and "chapter_count" not in request.data
+                and "import_url" not in request.data):
             return super().create(request, *args, **kwargs)
 
         class_name = request.data.get("class_name")
@@ -1248,9 +1249,13 @@ class MaterialViewSet(viewsets.ModelViewSet):
         embedding_provider = request.data.get("embedding_provider", "local")
         if embedding_provider not in ("local", "openrouter"):
             embedding_provider = "local"
-        
+
+        # Intelligent-ingest opt-ins (default OFF → behaviour is unchanged unless requested).
+        auto_detect_units = str(request.data.get("auto_detect_units")).lower() == "true"
+        split_book = str(request.data.get("split_book")).lower() == "true"
+
         if not all([class_name, subject, material_type]):
-            return Response({"error": "Missing required fields: class_name, subject, type"}, 
+            return Response({"error": "Missing required fields: class_name, subject, type"},
                             status=status.HTTP_400_BAD_REQUEST)
 
         materials_to_ingest = []
@@ -1258,7 +1263,47 @@ class MaterialViewSet(viewsets.ModelViewSet):
         school = _get_school(user) if user else None
         school_id = school.id if school else None
 
+        import_url = (request.data.get("import_url") or "").strip()
+
         try:
+            # ── Import a whole-book HTML page by URL → per-chapter units (async) ──
+            if import_url:
+                if not import_url.lower().startswith(("http://", "https://")):
+                    return Response({"error": "import_url must be an http(s) URL"}, status=status.HTTP_400_BAD_REQUEST)
+                task = ingest_url_task.apply_async(
+                    args=[class_name, subject, import_url, material_type],
+                    kwargs={"provider": embedding_provider, "school_id": school_id,
+                            "uploaded_by_id": user.id if user else None},
+                )
+                return Response({
+                    "message": f"Importing book from URL and splitting into chapters ({embedding_provider}).",
+                    "task_id": task.id, "provider": embedding_provider,
+                }, status=status.HTTP_202_ACCEPTED)
+
+            # ── Whole-book split: one PDF → many per-chapter units (async detection) ──
+            if split_book:
+                book = (request.FILES.getlist("bulk_files") or [None])[0] or request.FILES.get("file_0")
+                if not book:
+                    return Response({"error": "No file provided to split"}, status=status.HTTP_400_BAD_REQUEST)
+                ext = os.path.splitext(book.name)[1].lower()
+                if ext not in ALLOWED_MATERIAL_EXTENSIONS:
+                    return Response({"error": f"'{book.name}' has an unsupported type. Allowed: PDF, DOCX, DOC, TXT"},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                base = Material.objects.create(
+                    class_name=class_name, subject=subject, unit="(splitting…)",
+                    title=os.path.splitext(book.name)[0], type=material_type, file=book,
+                    school=school, uploaded_by=user, metadata={"source_book": True},
+                )
+                task = split_book_task.apply_async(
+                    args=[class_name, subject, base.file.path, material_type],
+                    kwargs={"provider": embedding_provider, "school_id": school_id,
+                            "uploaded_by_id": user.id if user else None, "base_material_id": base.id},
+                )
+                return Response({
+                    "message": f"Uploaded '{book.name}'. Splitting into chapters and ingesting ({embedding_provider}).",
+                    "task_id": task.id, "provider": embedding_provider,
+                }, status=status.HTTP_202_ACCEPTED)
+
             # Handle bulk upload
             if bulk_upload:
                 files = request.FILES.getlist("bulk_files")
@@ -1291,6 +1336,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         "unit": material.unit,
                         "title": material.title,
                         "file_path": material.file.path,
+                        "material_id": material.id,
                     })
 
             else:
@@ -1327,13 +1373,14 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         "unit": unit,
                         "title": title,
                         "file_path": material.file.path,
+                        "material_id": material.id,
                     })
 
             # Queue embedding ingestion via Celery
             if materials_to_ingest:
-                task = ingest_material_task.apply_async(args=[class_name, subject, materials_to_ingest, material_type], kwargs={'provider': embedding_provider, 'school_id': school_id})
+                task = ingest_material_task.apply_async(args=[class_name, subject, materials_to_ingest, material_type], kwargs={'provider': embedding_provider, 'school_id': school_id, 'auto_name': auto_detect_units})
                 return Response({
-                    "message": f"Uploaded {len(materials_to_ingest)} material(s). Embedding ingestion queued ({embedding_provider}).",
+                    "message": f"Uploaded {len(materials_to_ingest)} material(s). Embedding ingestion queued ({embedding_provider}{', auto-naming chapters' if auto_detect_units else ''}).",
                     "count": len(materials_to_ingest),
                     "task_id": task.id,
                     "provider": embedding_provider,
@@ -1343,6 +1390,26 @@ class MaterialViewSet(viewsets.ModelViewSet):
 
         except Exception as e:
             return Response({"error": f"Upload failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], url_path='preview-url')
+    def preview_url(self, request):
+        """Fetch an HTML book URL and return its detected chapters (names + sizes) WITHOUT
+        ingesting — powers the live preview shown when a URL is pasted on the upload page."""
+        from core import material_intel
+        url = (request.data.get('url') or '').strip()
+        subject = request.data.get('subject') or ''
+        if not url.lower().startswith(('http://', 'https://')):
+            return Response({'error': 'Enter a valid http(s) URL'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            html = material_intel.fetch_url(url, timeout=25)
+        except Exception as e:
+            return Response({'error': f'Could not fetch that URL: {str(e)[:160]}'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            chapters = material_intel.extract_html_chapters(html, subject)
+        except Exception as e:
+            return Response({'error': f'Could not parse that page: {str(e)[:160]}'}, status=status.HTTP_400_BAD_REQUEST)
+        out = [{'unit': c.get('unit') or '(unnamed)', 'chars': len(c.get('text') or '')} for c in chapters]
+        return Response({'count': len(out), 'chapters': out, 'bytes': len(html)})
 
     @action(detail=False, methods=['post'], url_path='bulk-delete')
     def bulk_delete(self, request):

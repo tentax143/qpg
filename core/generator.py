@@ -2098,10 +2098,15 @@ def render_pdf(class_name, subject, chapters, all_questions, summary, header_met
 # DOCX renderer (default)
 # ------------------------------
 TAMIL_DEFAULT_FONT = 'Latha'
+# Nirmala UI ships on Windows 8+ and renders Devanagari (Hindi/Sanskrit) cleanly. Used the same
+# way as the Tamil font — set on the run's ascii/hAnsi/cs/eastAsia so Word doesn't fall back to
+# a Latin font (which has no Devanagari glyphs → boxes).
+DEVANAGARI_DEFAULT_FONT = 'Nirmala UI'
 
 
 def set_tamil_font(run, font_name: str = TAMIL_DEFAULT_FONT):
-    """Set Tamil-compatible font for a text run"""
+    """Set a complex-script font on a text run (Tamil 'Latha', Devanagari 'Nirmala UI', …).
+    Name kept for back-compat; works for any font passed in."""
     if run is None:
         return
     
@@ -2126,6 +2131,30 @@ def has_tamil_text(text):
     if not isinstance(text, str):
         return False
     return any('\u0B80' <= char <= '\u0BFF' for char in text)
+
+
+def has_devanagari_text(text):
+    """Check if text contains Devanagari characters (Hindi/Sanskrit)."""
+    if not isinstance(text, str):
+        return False
+    return any('\u0900' <= char <= '\u097F' for char in text)
+
+
+def _pick_script_font(subject, all_questions):
+    """Pick the complex-script font this paper needs: Tamil \u2192 Latha, Hindi/Sanskrit \u2192 Nirmala UI.
+    Decided by the subject name first, then by scanning the generated text for either script.
+    Returns the font name, or None for ordinary Latin-script papers."""
+    s = (subject or "").lower()
+    if "tamil" in s or "\u0BA4\u0BAE\u0BBF\u0BB4" in s:
+        return TAMIL_DEFAULT_FONT
+    if "hindi" in s or "sanskrit" in s or "\u0939\u093F\u0902\u0926" in s or "\u0939\u093F\u0928\u094D\u0926" in s or "\u0938\u0902\u0938\u094D\u0915\u0943\u0924" in s:
+        return DEVANAGARI_DEFAULT_FONT
+    for _typ, text in all_questions:
+        if has_tamil_text(text):
+            return TAMIL_DEFAULT_FONT
+        if has_devanagari_text(text):
+            return DEVANAGARI_DEFAULT_FONT
+    return None
 
 
 def clear_paragraph(paragraph):
@@ -2209,7 +2238,7 @@ def _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, 
         t_el.text = txt
 
 
-def _add_passage_box(doc, text, is_tamil=False):
+def _add_passage_box(doc, text, script_font=None):
     """Render a passage in a bordered, shaded single-cell table."""
     tbl = doc.add_table(rows=1, cols=1)
     tbl.style = 'Table Grid'
@@ -2218,10 +2247,10 @@ def _add_passage_box(doc, text, is_tamil=False):
     para = cell.paragraphs[0]
     run = para.add_run(text)
     run.font.size = Pt(10.5)
-    if not is_tamil:
+    if script_font:
+        set_tamil_font(run, script_font)
+    else:
         run.font.name = 'Times New Roman'
-    if is_tamil:
-        set_tamil_font(run)
     para.paragraph_format.space_after = Pt(6)
     para.paragraph_format.space_before = Pt(6)
     para.paragraph_format.left_indent = Inches(0.1)
@@ -2258,7 +2287,7 @@ def _add_or_separator(doc):
     pPr.append(pBdr)
 
 
-def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, is_tamil=False):
+def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, script_font=None):
     """Add a question paragraph with marks right-aligned if present."""
     match = marks_pattern.search(text)
     marks_str = f"[{match.group(1)}]" if match else ""
@@ -2272,8 +2301,8 @@ def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, is_tami
 
     def _qrun(run):
         run.font.size = Pt(11)
-        if is_tamil:
-            set_tamil_font(run)
+        if script_font:
+            set_tamil_font(run, script_font)
         else:
             run.font.name = 'Times New Roman'
 
@@ -2369,18 +2398,14 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
     else:
         doc = Document()
     
-    # Check if subject is Tamil or if any questions contain Tamil text
-    is_tamil = subject.lower() in ['tamil', 'தமிழ்']
-    if not is_tamil:
-        # Check if any question text contains Tamil
-        for typ, text in all_questions:
-            if has_tamil_text(text):
-                is_tamil = True
-                break
-    
-    if is_tamil:
-        print(f"[DOCX-Tamil] Tamil text detected - applying Tamil-compatible fonts")
-        apply_tamil_document_styles(doc, TAMIL_DEFAULT_FONT)
+    # Pick a complex-script font if this is a Tamil/Hindi/Sanskrit paper (by subject or by
+    # scanning the text). None → ordinary Latin font. `is_tamil` kept as the in-body gate, now
+    # meaning "needs a complex-script font"; `script_font` says which one.
+    script_font = _pick_script_font(subject, all_questions)
+    is_tamil = bool(script_font)
+    if script_font:
+        print(f"[DOCX-Script] complex script detected — applying font '{script_font}'")
+        apply_tamil_document_styles(doc, script_font)
     
     # Set document margins
     section = doc.sections[0]
@@ -2443,7 +2468,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
             if not is_tamil:
                 r.font.name = 'Times New Roman'
             if is_tamil:
-                set_tamil_font(r)
+                set_tamil_font(r, script_font)
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             p.paragraph_format.space_before = Pt(8)
             p.paragraph_format.space_after = Pt(6)
@@ -2464,7 +2489,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
             if not is_tamil:
                 r.font.name = 'Times New Roman'
             if is_tamil:
-                set_tamil_font(r)
+                set_tamil_font(r, script_font)
             p.paragraph_format.space_before = Pt(4)
             p.paragraph_format.space_after = Pt(4)
         elif typ == "instruction":
@@ -2475,11 +2500,11 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
             if not is_tamil:
                 r.font.name = 'Times New Roman'
             if is_tamil:
-                set_tamil_font(r)
+                set_tamil_font(r, script_font)
             p.paragraph_format.space_after = Pt(4)
         elif typ in ("q", "subq"):
             indent = Inches(0.25) if typ == "subq" else None
-            _add_question_with_marks(doc, text_str, marks_pattern, indent, is_tamil)
+            _add_question_with_marks(doc, text_str, marks_pattern, indent, script_font)
         elif typ == "opts":
             p = doc.add_paragraph()
             r = p.add_run(text_str)
@@ -2487,7 +2512,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
             if not is_tamil:
                 r.font.name = 'Times New Roman'
             if is_tamil:
-                set_tamil_font(r)
+                set_tamil_font(r, script_font)
             p.paragraph_format.left_indent = Inches(0.25)
             p.paragraph_format.space_after = Pt(4)
         elif typ == "opts_block":
@@ -2516,7 +2541,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
                     if not is_tamil:
                         r1.font.name = 'Times New Roman'
                     if is_tamil:
-                        set_tamil_font(r1)
+                        set_tamil_font(r1, script_font)
                     if two_col and row_start + 1 < len(opts):
                         opt2 = opts[row_start + 1]
                         r2 = p.add_run(f"\t{opt2}")
@@ -2524,12 +2549,12 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
                         if not is_tamil:
                             r2.font.name = 'Times New Roman'
                         if is_tamil:
-                            set_tamil_font(r2)
+                            set_tamil_font(r2, script_font)
                 doc.add_paragraph("")
             except Exception as e:
                 print(f"[DOCX] opts_block failed: {e}")
         elif typ == "passage":
-            _add_passage_box(doc, text_str, is_tamil)
+            _add_passage_box(doc, text_str, script_font)
         elif typ == "or":
             _add_or_separator(doc)
         elif typ == "image":
@@ -3258,9 +3283,14 @@ Example with extract:
     # Get variation instructions
     variation_hints = get_variation_instructions()
     variation_instructions = "\n".join([f"- {hint}" for hint in variation_hints])
-    
-    prompt = f"""You are an expert question paper generator for CBSE {class_name} {subject} examinations.
 
+    # Language papers (Hindi/Tamil/Sanskrit) must be written in that language/script even on
+    # this single-prompt fallback path.
+    from .section_generator import _language_directive
+    language_block = _language_directive(subject)
+
+    prompt = f"""You are an expert question paper generator for CBSE {class_name} {subject} examinations.
+{language_block}
 CONTEXT MATERIAL:
 {combined_context}
 
@@ -3497,8 +3527,9 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
         # recorded (attached as _errors/_partial → visible in paper_data & temp_questions.json),
         # instead of an unvalidated paper silently reaching a teacher.
         try:
-            from .section_generator import build_work_orders, validate_section_output
-            for _wo in build_work_orders(blueprint, pattern, {}, difficulty, class_name, subject, chapters):
+            from .section_generator import build_work_orders, validate_section_output, reconcile_uniform_marks
+            _work_orders = build_work_orders(blueprint, pattern, {}, difficulty, class_name, subject, chapters)
+            for _wo in _work_orders:
                 _sec = direct_data.get(_wo.section_name)
                 if isinstance(_sec, dict) and isinstance(_sec.get("questions"), list) and _sec["questions"]:
                     _errs = validate_section_output({"questions": _sec["questions"]}, _wo)
@@ -3506,6 +3537,9 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
                         _sec["_errors"] = _errs
                         _sec["_partial"] = True
                         print(f"[Fallback-Validate] '{_wo.section_name}': {len(_errs)} issue(s) — {_errs[:3]}")
+            # Deterministically fix per-question marks (drift + inconsistent-pattern distribution)
+            # AFTER validation, so the marks audit (run later in tasks.py) doesn't fire on a slip.
+            reconcile_uniform_marks(direct_data, _work_orders)
         except Exception as _ve:
             print(f"[Fallback-Validate] skipped ({_ve})")
 

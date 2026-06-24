@@ -533,6 +533,32 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
     )
 
 
+# Language-subject papers must be written IN that language/script, not in English. Matched by
+# substring against the subject name (covers "Hindi Core", "Hindi Course B", "Tamil", etc.).
+_LANGUAGE_SUBJECTS = {
+    "hindi":    "Hindi (हिन्दी), in Devanagari script",
+    "tamil":    "Tamil (தமிழ்), in Tamil script",
+    "sanskrit": "Sanskrit (संस्कृतम्), in Devanagari script",
+}
+
+
+def _language_directive(subject: str) -> str:
+    """If the subject is a language paper (Hindi/Tamil/Sanskrit), return a MANDATORY block
+    instructing the model to write the entire paper in that language/script. Empty otherwise."""
+    s = (subject or "").lower()
+    for key, desc in _LANGUAGE_SUBJECTS.items():
+        if key in s:
+            return (
+                "LANGUAGE — MANDATORY (read FIRST):\n"
+                f"This is a {desc} paper. Write the ENTIRE output — every question, all four "
+                f"options, every passage, sub-question and answer_explanation — in {desc}. "
+                "Do NOT write any question or option in English. Only the JSON keys "
+                '("text", "options", "marks", "type", …) stay in English; every human-readable '
+                "VALUE must be in the target language and script.\n"
+            )
+    return ""
+
+
 def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: str = "", image_vision: dict | None = None) -> str:
     types_str = ", ".join(_type_str(t) for t in wo.question_types) if wo.question_types else "Mixed"
     instructions_str = "\n".join(f"- {i}" for i in wo.instructions) if wo.instructions else "- Follow CBSE guidelines"
@@ -801,9 +827,12 @@ MATHEMATICAL NOTATION (strictly follow):
             + "\n".join(f"- {t[:130]}" for t in _recent[:30]) + "\n"
         )
 
+    language_directive = _language_directive(effective_subject)
+
     return f"""You are a CBSE Class {wo.class_name} {effective_subject} question paper author.
 Generate ONLY the questions for {wo.section_name} of the exam.
 
+{language_directive}
 SECTION SPECIFICATION:
 - Section: {wo.section_name} ({wo.title})
 - Questions required: {generate_count}
@@ -1409,6 +1438,44 @@ def validate_uniqueness(questions: list) -> list:
     return warnings
 
 
+def _regen_question_skeleton(orig_q: dict, qnum: int, marks) -> tuple:
+    """Build a (type_instruction, JSON_skeleton) pair for regenerating ONE question to replace a
+    confirmed duplicate. The skeleton MUST match the ORIGINAL question's type — a generic SA
+    skeleton turns an MCQ replacement into an SA, which enforce_section_question_types then
+    strips, shrinking the section below its required count (the '18/20 questions' cause)."""
+    cat = _fine_category(orig_q.get("type", ""), str(orig_q.get("subtype", "")))
+    m = _as_int(marks, 1)
+    if cat == "ar":
+        instr = ("Type: Assertion-Reason MCQ. 'text' must contain full 'Assertion (A): ...' and "
+                 "'Reason (R): ...' statements; use the 4 standard AR options.")
+        skel = ('{"qnum": %d, "type": "MCQ", "subtype": "assertion_reason", '
+                '"text": "Assertion (A): ...\\nReason (R): ...", '
+                '"options": {"a": "Both A and R are true and R is the correct explanation of A", '
+                '"b": "Both A and R are true but R is NOT the correct explanation of A", '
+                '"c": "A is true but R is false", "d": "A is false but R is true"}, '
+                '"answer": "a", "answer_explanation": "...", "marks": %d, '
+                '"chapter_tag": "...", "competency_type": "application"}' % (qnum, m))
+    elif cat == "mcq":
+        instr = "Type: MCQ with EXACTLY 4 options (a/b/c/d) and the correct answer letter."
+        skel = ('{"qnum": %d, "type": "MCQ", "subtype": "standard", "text": "...", '
+                '"options": {"a": "...", "b": "...", "c": "...", "d": "..."}, "answer": "a", '
+                '"answer_explanation": "why the correct option is right", "marks": %d, '
+                '"chapter_tag": "...", "competency_type": "application"}' % (qnum, m))
+    elif cat == "la":
+        instr = "Type: Long Answer (NO options). Include an 'or_alternative' on a DIFFERENT concept."
+        skel = ('{"qnum": %d, "type": "LA", "subtype": "standard", "text": "...", '
+                '"answer_explanation": "4-6 model-answer key points", '
+                '"or_alternative": "alternate LA question on a different concept (%dm)", '
+                '"marks": %d, "chapter_tag": "...", "competency_type": "constructed"}' % (qnum, m, m))
+    else:   # vsa / sa / other written-answer
+        qtype = (str(orig_q.get("type", "SA")).upper() or "SA")
+        instr = f"Type: {qtype} (written answer, NO options)."
+        skel = ('{"qnum": %d, "type": "%s", "subtype": "standard", "text": "...", '
+                '"answer_explanation": "model answer key points", "marks": %d, '
+                '"chapter_tag": "...", "competency_type": "constructed"}' % (qnum, qtype, m))
+    return instr, skel
+
+
 def verify_and_fix_semantic_duplicates(
     questions: list,
     l1_warnings: list,
@@ -1491,10 +1558,20 @@ def verify_and_fix_semantic_duplicates(
 
         print(f"[V5L2] Confirmed duplicate Q{i+1} ↔ Q{j+1} — regenerating Q{replace_idx+1}")
 
+        orig_q = updated_questions[replace_idx]
+        orig_cat = _fine_category(orig_q.get("type", ""), str(orig_q.get("subtype", "")))
+        if orig_cat in ("cbq", "map"):
+            # Structurally heavy (sub-questions / map locations) — a single-shot regen can't
+            # reproduce them safely. Keep the original near-duplicate (valid + right type).
+            print(f"[V5L2] Q{replace_idx+1} is {orig_cat.upper()} — skipping regen, keeping original")
+            continue
+
+        type_instr, skel = _regen_question_skeleton(
+            orig_q, replace_idx + 1, orig_q.get("marks", wo.marks_per_question))
         regen_prompt = (
             f"Generate ONE CBSE Class {wo.class_name} {wo.subject} question.\n"
-            f"Type: {updated_questions[replace_idx].get('type', 'SA')}\n"
-            f"Marks: {updated_questions[replace_idx].get('marks', wo.marks_per_question)}\n"
+            f"{type_instr}\n"
+            f"Marks: {orig_q.get('marks', wo.marks_per_question)}\n"
             f"Difficulty: {wo.difficulty}\n"
             f"Chapters: {', '.join(str(c) for c in wo.chapters)}\n\n"
             "IMPORTANT: The following concept is ALREADY covered — do NOT repeat it:\n"
@@ -1502,9 +1579,7 @@ def verify_and_fix_semantic_duplicates(
             "Context:\n"
             f"{wo.context_text[:2500]}\n\n"
             "Output JSON only (single question object):\n"
-            '{"qnum": ' + str(replace_idx + 1) + ', "type": "SA", "text": "...", '
-            '"marks": ' + str(_as_int(updated_questions[replace_idx].get("marks", wo.marks_per_question), 1)) + ', '
-            '"answer_explanation": "...", "chapter_tag": "...", "competency_type": "constructed"}'
+            f"{skel}"
         )
         try:
             rraw, _, _ = mantle_client.converse(
@@ -1514,14 +1589,26 @@ def verify_and_fix_semantic_duplicates(
                 temperature=0.85,
             )
             new_q = extract_single_question_json(rraw, replace_idx, wo.marks_per_question)
+            new_q.setdefault("subtype", orig_q.get("subtype", "standard"))
             # Preserve original qnum and marks
-            new_q["qnum"] = updated_questions[replace_idx].get("qnum", replace_idx + 1)
-            new_q["marks"] = updated_questions[replace_idx].get("marks", wo.marks_per_question)
-            updated_questions[replace_idx] = new_q
-            print(f"[V5L2] Q{replace_idx+1} replaced — chapter='{new_q.get('chapter_tag', '?')}'")
-            # Remove the now-resolved warning
-            remaining_warnings = [w for w in remaining_warnings
-                                  if f"Q{i+1} and Q{j+1}" not in w and f"Q{j+1} and Q{i+1}" not in w]
+            new_q["qnum"] = orig_q.get("qnum", replace_idx + 1)
+            new_q["marks"] = orig_q.get("marks", wo.marks_per_question)
+            # Guard: the replacement MUST be the SAME coarse type as the original AND structurally
+            # valid. A type-drifted replacement (e.g. an SA where the original was an MCQ) is later
+            # stripped by enforce_section_question_types, silently shrinking the section below its
+            # required count. When the regen drifts or is invalid, keep the original near-duplicate —
+            # a flagged near-dup beats a missing question.
+            new_cat = _fine_category(new_q.get("type", ""), str(new_q.get("subtype", "")))
+            regen_errs = _validate_by_subtype(new_q, replace_idx + 1, wo)
+            if new_cat != orig_cat or regen_errs:
+                print(f"[V5L2] Q{replace_idx+1} regen drifted ({orig_cat}→{new_cat}) or invalid "
+                      f"({regen_errs[:1]}) — keeping original near-duplicate")
+            else:
+                updated_questions[replace_idx] = new_q
+                print(f"[V5L2] Q{replace_idx+1} replaced — chapter='{new_q.get('chapter_tag', '?')}'")
+                # Remove the now-resolved warning
+                remaining_warnings = [w for w in remaining_warnings
+                                      if f"Q{i+1} and Q{j+1}" not in w and f"Q{j+1} and Q{i+1}" not in w]
         except Exception as e:
             print(f"[V5L2] Regen failed for Q{replace_idx+1}: {e}")
 
@@ -1990,8 +2077,11 @@ def build_single_question_prompt(wo: SectionWorkOrder, qtype_str: str, q_index: 
             '}'
         )
 
+    language_directive = _language_directive(wo.section_subject or wo.subject)
+
     return (
         f"Generate exactly ONE CBSE Class {wo.class_name} {wo.subject} {qtype_str} question.\n"
+        f"{language_directive}"
         f"Chapters: {', '.join(str(c) for c in wo.chapters)}\n"
         f"Difficulty: {wo.difficulty}\n"
         f"Marks: {mpq}\n"
@@ -2406,6 +2496,103 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
     return in_tok, out_tok
 
 
+def _fill_short_section(section_data: dict, wo: SectionWorkOrder, max_rounds: int = 3) -> tuple:
+    """Top up a short section REPEATEDLY until it reaches its expected count or a round adds
+    nothing. ``_top_up_short_section`` makes ONE follow-up call and keeps only questions that
+    are the right type, right marks and not duplicates — so a single call routinely recovers
+    fewer than the shortfall (a 20-MCQ section comes back 18, the top-up adds 1, still 19/20).
+    One call is not enough on its own; loop it, recomputing the shortfall each round, so a
+    section that is merely short on count is reliably filled instead of shipping partial.
+
+    Stops early when a round makes no progress (the model can't produce more usable,
+    non-duplicate questions) so it never burns the full budget needlessly. Sets a cumulative
+    ``_topped_up`` so the caller re-validates. Returns accumulated (in_tokens, out_tokens)."""
+    def _count():
+        return len([q for q in section_data.get("questions", []) if isinstance(q, dict)])
+
+    expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
+    initial = _count()
+    total_in = total_out = 0
+    for _round in range(max_rounds):
+        if expected and _count() >= expected:
+            break
+        before = _count()
+        in_tok, out_tok = _top_up_short_section(section_data, wo)
+        total_in += in_tok
+        total_out += out_tok
+        if in_tok == 0 and out_tok == 0:
+            break               # top-up doesn't apply to this section type — stop immediately
+        if _count() <= before:
+            break               # round added nothing usable — retrying won't help
+    final = _count()
+    if final > initial:
+        section_data["_topped_up"] = final - initial   # cumulative across rounds
+    return total_in, total_out
+
+
+def reconcile_uniform_marks(paper_data: dict, work_orders: list) -> dict:
+    """Make every uniform-marks section sum to the marks its pattern declares. Two behaviours:
+
+    • CLAMP — objective sections (MCQ/Assertion-Reason), and any written-answer section whose
+      arithmetic is already consistent (count × marks_per_question == section marks): set each
+      question to ``marks_per_question``. Kills the 'one 2-mark VSA written as 1 mark' drift
+      that surfaces as 'Section B: 9/10 marks (-1)'. Objective marks are FIXED here — a 1-mark
+      MCQ is never inflated, so a count shortfall stays visible instead of being masked.
+
+    • DISTRIBUTE — written-answer sections whose pattern is internally inconsistent, where
+      count × marks_per_question can NEVER equal the declared marks (e.g. 3 SA questions × 3m
+      but the section is declared 10m): spread the declared marks across the questions as evenly
+      as possible (10 over 3 → 4,3,3) so the section — and the paper total — match the pattern
+      exactly, instead of shipping a mark short forever.
+
+    Skips mixed-marks sections (legitimately varied) and CBQ questions (marks = Σ sub-questions)."""
+    wo_by_name = {wo.section_name: wo for wo in (work_orders or [])}
+    for sec_name, sec_data in paper_data.items():
+        if not isinstance(sec_data, dict):
+            continue
+        wo = wo_by_name.get(sec_name)
+        if not wo or wo.mixed_marks or not wo.marks_per_question:
+            continue
+
+        mpq = wo.marks_per_question
+        # CBQ marks come from sub-questions — never override those; only written-answer /
+        # objective questions are reconciled.
+        targets = [q for q in sec_data.get("questions", [])
+                   if isinstance(q, dict) and not q.get("sub_questions")]
+        if not targets:
+            continue
+
+        has_objective = any(
+            _fine_category(t if isinstance(t, str) else t.get("type", "")) in ("mcq", "ar")
+            for t in (wo.question_types or [])
+        )
+        expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
+        consistent = (not expected) or abs(expected * mpq - wo.marks) <= 0.5
+
+        # DISTRIBUTE only for an inconsistent written-answer section with a sane marks budget.
+        n = len(targets)
+        base, rem = divmod(int(wo.marks), n) if wo.marks else (0, 0)
+        if has_objective or consistent or not wo.marks or base < 1:
+            fixed = 0
+            for q in targets:
+                cur = _as_float(q.get("marks"), None) if q.get("marks") is not None else None
+                if cur is None or abs(cur - mpq) > 0.01:
+                    q["marks"] = mpq
+                    fixed += 1
+            if fixed:
+                print(f"[Marks-Reconcile] '{sec_name}': set {fixed} question(s) to {mpq}m (uniform section)")
+            continue
+
+        plan = [base + 1 if k < rem else base for k in range(n)]
+        changed = any(_as_float(q.get("marks"), None) != float(m) for q, m in zip(targets, plan))
+        for q, m in zip(targets, plan):
+            q["marks"] = m
+        if changed:
+            print(f"[Marks-Reconcile] '{sec_name}': distributed {wo.marks}m across {n} question(s) "
+                  f"as {plan} (pattern {expected}×{mpq} = {expected * mpq if expected else '?'} ≠ {wo.marks})")
+    return paper_data
+
+
 def generate_section(wo: SectionWorkOrder):
     """
     Generate questions for one section. Retries up to MAX_SECTION_RETRIES times on validation
@@ -2584,9 +2771,9 @@ def generate_section(wo: SectionWorkOrder):
             section_data["title"] = wo.title
             section_data["marks"] = wo.marks
             # Before giving up: if the section is merely SHORT on count (right types/marks,
-            # too few questions), make one focused top-up call for the missing questions
+            # too few questions), make focused top-up calls for the missing questions
             # instead of shipping a half-empty section. Strictly additive — see helper.
-            tu_in, tu_out = _top_up_short_section(section_data, wo)
+            tu_in, tu_out = _fill_short_section(section_data, wo)
             total_in_tok += tu_in
             total_out_tok += tu_out
             remaining = validate_section_output(section_data, wo) if section_data.get("_topped_up") else errors
@@ -3612,9 +3799,14 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
         expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
         if expected and len(sec_data.get("questions", [])) < expected:
             print(f"[Refill] '{sec_name}': {len(sec_data.get('questions', []))}/{expected} after enforce — topping up")
-            tu_in, tu_out = _top_up_short_section(sec_data, wo)
+            tu_in, tu_out = _fill_short_section(sec_data, wo)
             total_input_tokens += tu_in
             total_output_tokens += tu_out
+
+    # Deterministic marks fix: every question in a uniform-marks section must equal its
+    # marks_per_question. Runs after top-up (so newly added questions are covered too) and
+    # before the audit, killing the 'Section B: 9/10 marks (-1)' single-question drift.
+    paper_data = reconcile_uniform_marks(paper_data, work_orders)
 
     paper_data = cross_section_validate(paper_data, blueprint)
     total_q = sum(len(v.get("questions", [])) for v in paper_data.values())

@@ -162,7 +162,9 @@ def copy_shared_to_school(school_id):
 
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
-def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook", provider='local', school_id=None):
+def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook", provider='local', school_id=None, page_range=None):
+    """Ingest a PDF (or a page range of it) as `unit`. page_range=(start, end) ingests only
+    pages [start, end) — used to ingest one chapter out of a whole-book PDF."""
     class_name = normalize_label(class_name)
     subject    = normalize_label(subject)
     unit       = normalize_label(unit)
@@ -176,6 +178,8 @@ def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="t
     text = ""
     pages_skipped = 0
     for page_num, page in enumerate(reader.pages):
+        if page_range and not (page_range[0] <= page_num < page_range[1]):
+            continue
         try:
             text += page.extract_text() or ""
         except Exception as e:
@@ -228,6 +232,39 @@ def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="t
             collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
         else:
             raise Exception(f"DB error for '{pdf_filename}': {e}")
+    return len(ids)
+
+
+def ingest_text(class_name, subject, unit, text, title=None, material_type="textbook", provider='local', school_id=None):
+    """Ingest a raw text blob as `unit` (e.g. one chapter extracted from an HTML book).
+    Same chunk → embed → add path as ingest_pdf, minus the PDF reading. Returns chunk count."""
+    class_name = normalize_label(class_name)
+    subject    = normalize_label(subject)
+    unit       = normalize_label(unit)
+    if not (text or "").strip():
+        return 0
+
+    chunks = [(i, c) for i, c in enumerate(text[j:j+800] for j in range(0, len(text), 800)) if c.strip()]
+    if not chunks:
+        return 0
+
+    vectors = get_embeddings_batch([c for _, c in chunks], provider)
+    collection = get_collection(class_name, subject, provider, school_id=school_id)
+    ids, embs, docs, metas = [], [], [], []
+    for (i, chunk), emb in zip(chunks, vectors):
+        ids.append(f"{class_name}_{subject}_{unit}_{i}")
+        embs.append(emb)
+        docs.append(chunk)
+        metas.append({"class": class_name, "subject": subject, "unit": unit,
+                      "title": title or unit, "type": material_type})
+    try:
+        collection.add(ids=ids, embeddings=embs, documents=docs, metadatas=metas)
+    except Exception as e:
+        if "invalid literal for int" in str(e) or "base 16" in str(e):
+            collection = get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
+            collection.add(ids=ids, embeddings=embs, documents=docs, metadatas=metas)
+        else:
+            raise Exception(f"DB error ingesting unit '{unit}': {e}")
     return len(ids)
 
 
