@@ -108,15 +108,30 @@ WSGI_APPLICATION = 'qpg.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        'OPTIONS': {
-            'timeout': 30,  # wait up to 30 s for a lock before raising OperationalError
-        },
+# Use PostgreSQL when POSTGRES_DB is set in the environment; otherwise fall back to SQLite.
+# (Unset POSTGRES_DB in .env to instantly roll back to db.sqlite3.)
+if os.environ.get('POSTGRES_DB'):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ['POSTGRES_DB'],
+            'USER': os.environ.get('POSTGRES_USER', 'postgres'),
+            'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
+            'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
+            'PORT': os.environ.get('POSTGRES_PORT', '5432'),
+            'CONN_MAX_AGE': 60,  # reuse connections (better under Celery + concurrent load)
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+            'OPTIONS': {
+                'timeout': 30,  # wait up to 30 s for a lock before raising OperationalError
+            },
+        }
+    }
 
 
 # Password validation
@@ -178,6 +193,15 @@ SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request
 # Celery settings
 CELERY_BROKER_URL = "redis://127.0.0.1:6380/0"
 CELERY_RESULT_BACKEND = "redis://127.0.0.1:6380/0"
+# Hard ceiling so one hung LLM/image call can't pin a worker indefinitely. A full paper is
+# many LLM calls; 12 min soft (raises SoftTimeLimitExceeded → task can clean up) / 15 min hard
+# (worker kills the task). Prevents a couple of stuck tasks from freezing both schools' queues.
+CELERY_TASK_SOFT_TIME_LIMIT = 12 * 60
+CELERY_TASK_TIME_LIMIT = 15 * 60
+# Run multiple workers so one long paper can't block all others; ack late so a crash re-queues.
+CELERY_WORKER_CONCURRENCY = 4
+CELERY_TASK_ACKS_LATE = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
 
 # Embedding: OpenRouter nvidia/llama-nemotron-embed-vl-1b-v2:free

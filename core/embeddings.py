@@ -250,6 +250,11 @@ def ingest_bulk(class_name, subject, chapters, material_type="textbook", provide
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────
+# Remember which collections we've already warned are dimension-mismatched, so a
+# broken collection produces ONE clear actionable line — not a stack trace per query.
+_DIM_MISMATCH_WARNED = set()
+
+
 def query(class_name, subject, unit, query_text, n_results=5, provider='local', school_id=None):
     class_name = normalize_label(class_name)
     subject    = normalize_label(subject)
@@ -277,6 +282,25 @@ def query(class_name, subject, unit, query_text, n_results=5, provider='local', 
         total = collection.count()
         safe_n = min(n_results, total) if total > 0 else 0
         if safe_n == 0:
+            return empty
+
+        # Guard: the collection must have been built with the same embedding model we
+        # query with, or ChromaDB rejects every query on a dimension mismatch and we'd
+        # silently generate ungrounded papers. Detect it cheaply and surface it ONCE.
+        expected_dim = EMBED_DIMS.get(provider)
+        try:
+            embs = collection.get(limit=1, include=["embeddings"]).get("embeddings")
+            coll_dim = len(embs[0]) if embs is not None and len(embs) > 0 and embs[0] is not None else None
+        except Exception:
+            coll_dim = None
+        if expected_dim and coll_dim and coll_dim != expected_dim:
+            key = (class_name, subject, effective_school_id)
+            if key not in _DIM_MISMATCH_WARNED:
+                _DIM_MISMATCH_WARNED.add(key)
+                print(f"[Embeddings] ⚠️  DIM MISMATCH {class_name}/{subject} "
+                      f"(school_id={effective_school_id}): collection is {coll_dim}-dim but the "
+                      f"'{provider}' model is {expected_dim}-dim. Returning NO context — fix with "
+                      f"`python manage.py fix_embedding_dims --apply`.")
             return empty
 
         return _do_query(collection, safe_n)

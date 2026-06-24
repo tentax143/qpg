@@ -44,3 +44,6 @@ temp_prompt_*.txt
 temp_response_*.txt
 temp_generation_summary_*.txt
 temp_*
+
+# DB migration dump (contains password hashes + all data)
+datadump.json

@@ -7,6 +7,8 @@ from django.conf import settings
 from django.http import HttpResponse, Http404
 from django.views.static import serve
 
+from core.media_access import is_protected, media_path_is_valid
+
 
 def robots_txt(request):
     robots_path = settings.BASE_DIR / "robots.txt"
@@ -23,7 +25,14 @@ def serve_media(request, path):
     When FileField.save() finds a collision it appends _XXXXXXX (7 alphanumeric chars) before
     the extension. Old DB records store the renamed path but the disk file has the original name.
     This view tries the exact path first, then strips the suffix and retries.
+
+    Protected subtrees (question papers, materials) require a valid signed token (?sig=) so
+    they can't be downloaded by guessing the URL or by another school. The API hands signed,
+    expiring URLs to authorized users only (see core.media_access).
     """
+    if is_protected(path) and not media_path_is_valid(path, request.GET.get("sig", "")):
+        raise Http404("Media file not found")
+
     if os.path.exists(os.path.join(settings.MEDIA_ROOT, path)):
         return serve(request, path, document_root=settings.MEDIA_ROOT)
 

@@ -17,7 +17,7 @@ import json
 import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from typing import Optional
 
 from . import embeddings, mantle_client
@@ -56,6 +56,21 @@ def _as_float(val, default=0.0):
         return float(val)
     except (TypeError, ValueError):
         return default
+
+
+def _recent_question_stems(class_name, subject, limit=40):
+    """Texts of questions already generated for this class+subject across past papers, so the
+    prompt can tell the model not to repeat them — prevents two classes getting near-identical
+    papers from the same pattern. Best-effort; returns [] on any error."""
+    try:
+        from .models import GeneratedQuestion
+        rows = (GeneratedQuestion.objects
+                .filter(class_name=str(class_name), subject__iexact=str(subject))
+                .order_by('-created_at')
+                .values_list('question_text', flat=True)[:limit])
+        return [str(t).strip() for t in rows if str(t).strip()]
+    except Exception:
+        return []
 
 # 4.3 — Per-question-type generation parameters (temperature + token budget)
 TYPE_PARAMS = {
@@ -99,6 +114,7 @@ class SectionWorkOrder:
     extract_instruction: Optional[str] = None
     subsections: list = field(default_factory=list)
     context_by_type: dict = field(default_factory=dict)  # 3.2: {type_key: context_str}
+    chapter_plan: list = field(default_factory=list)     # one chapter name per question slot (weighted allocation)
 
 
 # ─────────────────────────────────────────────
@@ -109,14 +125,15 @@ def _per_q_tokens(marks) -> int:
     """Approx output tokens one question of this marks-value needs (incl. answer_explanation)."""
     marks = _as_float(marks, 1.0)   # tolerate non-numeric ("varies") values defensively
     if marks >= 5:
-        return 550   # LA + or_alternative
+        return 600   # LA + or_alternative
     if marks >= 4:
-        return 500   # CBQ stem + 3 sub-questions + explanations (source_text added separately)
+        return 520   # CBQ stem + 3 sub-questions + explanations (source_text added separately)
     if marks >= 3:
-        return 350   # SA
+        return 360   # SA
     if marks >= 2:
-        return 250   # VSA
-    return 180        # MCQ / Assertion-Reason: 4 options + explanation
+        return 300   # VSA
+    return 280        # MCQ / Assertion-Reason: 4 options + explanation (AR options are long;
+                      # 180 truncated 16-MCQ sections at ~12 questions — sized up to fit)
 
 
 def estimate_token_budget(wo: SectionWorkOrder) -> int:
@@ -142,6 +159,12 @@ def estimate_token_budget(wo: SectionWorkOrder) -> int:
     if not counted:
         # Uniform-marks section (or no per-type detail): scale by the section average.
         per_q = _per_q_tokens(wo.marks_per_question or 1)
+        # Assertion-Reason questions carry the full A/R statements + the 4 long standard
+        # options + an explanation — far heavier than a plain MCQ. A 16-question MCQ+AR
+        # Section A at 280/q budgets only 4980 tokens and truncates at ~15 (JSON-Salvage then
+        # recovers 15); size AR sections up so all 16 fit in a single call.
+        if any("assertion" in _type_str(t) for t in (wo.question_types or [])):
+            per_q = max(per_q, 400)
         raw += wo.questions_count * per_q
 
     if wo.passage_instruction:
@@ -580,6 +603,67 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
     chapter_count = len(wo.chapters) if wo.chapters else 1
     per_chapter = max(1, round(wo.questions_count / chapter_count)) if wo.questions_count else 1
 
+    # CHAPTER ASSIGNMENT — use the deterministic, CBSE-weighted plan when present (set by
+    # plan_chapter_allocation): it names exactly how many questions come from each chapter so
+    # coverage is predictable and weighted instead of left to the model. Falls back to the
+    # legacy "spread evenly" instruction when there is no plan (e.g. chapter-less tests).
+    if wo.chapter_plan:
+        from collections import Counter
+        _dist = Counter(wo.chapter_plan)
+        _lines = "\n".join(f'  - "{ch}": {n} question(s)' for ch, n in _dist.items())
+        chapter_block = (
+            "CHAPTER ASSIGNMENT — MANDATORY (counts are weighted by CBSE importance):\n"
+            f"Draw the {wo.questions_count} questions from these chapters in EXACTLY this distribution:\n"
+            f"{_lines}\n"
+            'Set each question\'s "chapter_tag" to the exact chapter it is drawn from. '
+            "Do NOT use any chapter that is not listed above."
+        )
+    else:
+        chapter_block = (
+            f"CHAPTER DISTRIBUTION — MANDATORY:\n"
+            f"Spread questions across ALL {chapter_count} chapter(s): {chapters_str}\n"
+            f"Target ~{per_chapter} question(s) per chapter. Never draw all questions from one chapter."
+        )
+
+    # QUESTION TYPE — MANDATORY. The STRICT RULES below are MCQ-heavy, and uniform non-MCQ
+    # sections otherwise drift into producing MCQs (a "Short Answer" section coming back full
+    # of MCQs). Name the exact allowed type(s) up front and forbid everything else.
+    _CAT_LABEL = {
+        "mcq": "MCQ (4 options a/b/c/d + answer)",
+        "ar":  "Assertion-Reason MCQ (the 4 standard A/R options + answer)",
+        "vsa": "Very Short Answer (VSA) — a written-answer question, NO options",
+        "sa":  "Short Answer (SA) — a written-answer question, NO options",
+        "la":  "Long Answer (LA) — a written-answer question, NO options",
+        "cbq": "Case-Based Question (CBQ) with sub_questions",
+        "map": "Map-work question (type SA, subtype map_based)",
+    }
+    _CAT_JSON = {
+        "mcq": '"type":"MCQ"', "ar": '"type":"MCQ","subtype":"assertion_reason"',
+        "vsa": '"type":"VSA"', "sa": '"type":"SA"', "la": '"type":"LA"',
+        "cbq": '"type":"CBQ"', "map": '"type":"SA","subtype":"map_based"',
+    }
+    _allowed_cats = []
+    for _t in (wo.question_types or []):
+        _c = _fine_category(_t if isinstance(_t, str) else _t.get("type", ""))
+        if _c and _c != "other" and _c not in _allowed_cats:
+            _allowed_cats.append(_c)
+    if _allowed_cats:
+        _labels = "; ".join(_CAT_LABEL.get(c, c.upper()) for c in _allowed_cats)
+        _jsons = " OR ".join(_CAT_JSON[c] for c in _allowed_cats if c in _CAT_JSON)
+        type_directive = (
+            "QUESTION TYPE — MANDATORY (read this first):\n"
+            f"EVERY question in this section MUST be: {_labels}.\n"
+            f"Use exactly {_jsons} in each question's JSON \"type\" field. "
+            "Do NOT generate any other question type."
+        )
+        if all(c in ("vsa", "sa", "la") for c in _allowed_cats):
+            type_directive += (
+                "\n⚠️  These are WRITTEN-ANSWER questions — do NOT include an \"options\" field, "
+                "do NOT make them multiple-choice. Provide \"answer_explanation\" instead."
+            )
+    else:
+        type_directive = ""
+
     math_notation_block = ""
     if any(kw in effective_subject.lower() for kw in ("math", "physics", "chemistry", "science")):
         math_notation_block = """
@@ -707,6 +791,16 @@ MATHEMATICAL NOTATION (strictly follow):
                 + ar_note
             )
 
+    # Avoid repeating questions from earlier papers (so two classes don't get identical papers).
+    _recent = _recent_question_stems(wo.class_name, wo.subject)
+    avoid_block = ""
+    if _recent:
+        avoid_block = (
+            "\nALREADY ASKED IN EARLIER PAPERS — do NOT repeat or lightly reword these; "
+            "write fresh, distinct questions:\n"
+            + "\n".join(f"- {t[:130]}" for t in _recent[:30]) + "\n"
+        )
+
     return f"""You are a CBSE Class {wo.class_name} {effective_subject} question paper author.
 Generate ONLY the questions for {wo.section_name} of the exam.
 
@@ -717,11 +811,11 @@ SECTION SPECIFICATION:
 - Total marks: {wo.marks}
 - Chapters to cover: {chapters_str}
 - Subject focus: {effective_subject}
+
+{type_directive}
 {qpos_block}
-CHAPTER DISTRIBUTION — MANDATORY:
-Spread questions across ALL {chapter_count} chapter(s): {chapters_str}
-Target ~{per_chapter} question(s) per chapter. Never draw all questions from one chapter.
-{diff_block}
+{chapter_block}
+{avoid_block}{diff_block}
 {math_notation_block}
 {ctx_label}:
 ---
@@ -845,6 +939,35 @@ def extract_section_json(raw: str) -> dict:
 # Per-question type+subtype validation
 # ─────────────────────────────────────────────
 
+def _validate_mcq_options(q: dict, n: int, label: str) -> list:
+    """Require EXACTLY 4 non-empty options (keyed a/b/c/d for the dict form) and a valid
+    answer key (a/b/c/d). Catches the student-visible MCQ defects: 3 options, a stray 5th,
+    an empty choice, wrong keys, or no correct answer marked."""
+    errs = []
+    raw = q.get("options")
+    if isinstance(raw, dict):
+        keys = [str(k).lower().strip() for k in raw.keys()]
+        vals = [str(v).strip() for v in raw.values()]
+        if len(vals) == 4 and set(keys) != {"a", "b", "c", "d"}:
+            errs.append(f"Q{n} [{label}]: option keys must be exactly a, b, c, d (got {sorted(keys)}).")
+    elif isinstance(raw, list):
+        vals = [str(v).strip() for v in raw]
+    else:
+        vals = []
+    nonempty = [v for v in vals if v]
+    if len(vals) != 4 or len(nonempty) != 4:
+        errs.append(
+            f"Q{n} [{label}]: must have EXACTLY 4 non-empty options (a/b/c/d) — "
+            f"found {len(nonempty)} non-empty of {len(vals)}."
+        )
+    ans = str(q.get("answer", "")).lower().strip()
+    if not ans:
+        errs.append(f"Q{n} [{label}]: missing 'answer' — give the correct option letter (a/b/c/d).")
+    elif ans not in {"a", "b", "c", "d"}:
+        errs.append(f"Q{n} [{label}]: 'answer' must be a/b/c/d (got {ans!r}).")
+    return errs
+
+
 def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
     """
     Explicit structural validation for every type+subtype combination.
@@ -868,6 +991,9 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
     opts = q.get("options")
     if not isinstance(opts, dict):
         opts = {}
+
+    if not type_lower:
+        errors.append(f"Q{n}: missing 'type' field (must be MCQ / VSA / SA / LA / CBQ)")
 
     # ── MCQ ──────────────────────────────────────────────────────────────────────
     is_mcq = ("mcq" in type_lower or "objective" in type_lower or "multiple" in type_lower)
@@ -897,19 +1023,10 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
                     f"(got: {text[:60]!r}). "
                     'Required: "Assertion (A): [full statement]\\nReason (R): [full statement]"'
                 )
-            if len(opts) < 4:
-                errors.append(
-                    f"Q{n} [MCQ/assertion_reason]: must have 4 standard AR options, "
-                    f"found {len(opts)}. Options must be the standard "
-                    '"Both A and R true/false..." choices.'
-                )
+            errors.extend(_validate_mcq_options(q, n, "MCQ/assertion_reason"))
         else:
             # Standard MCQ
-            if len(opts) < 4:
-                errors.append(
-                    f"Q{n} [MCQ/standard]: must have 4 options (a/b/c/d), found {len(opts)}. "
-                    'Add: "options": {"a": "...", "b": "...", "c": "...", "d": "..."}'
-                )
+            errors.extend(_validate_mcq_options(q, n, "MCQ/standard"))
 
     # ── SA / VSA ─────────────────────────────────────────────────────────────────
     elif qtype in ("SA", "VSA") or "short" in type_lower or "very short" in type_lower:
@@ -1042,6 +1159,20 @@ def _type_category(type_str: str) -> str:
     return "other"
 
 
+def _fine_category(type_str, subtype="") -> str:
+    """Like _type_category but distinguishes Assertion-Reason from plain MCQ (both render as
+    type 'MCQ') and map questions. Used for COUNT-based section validation — we check the
+    section has the right NUMBER of each type, not that each type sits at an exact position
+    (the renderer regroups by type, so position doesn't matter)."""
+    st = str(subtype or "").strip().lower()
+    ts = str(type_str or "").lower()
+    if st == "assertion_reason" or "assertion" in ts:
+        return "ar"
+    if st == "map_based":
+        return "map"
+    return _type_category(str(type_str or ""))
+
+
 # ─────────────────────────────────────────────
 # Per-section validation
 # ─────────────────────────────────────────────
@@ -1068,6 +1199,31 @@ def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
     answer_dist: dict = {}
     section_marks_total = 0.0
 
+    # COUNT-based blueprint check: how many of each type the section should contain, and the
+    # marks for each type. We validate the right NUMBER of each type + per-type marks, NOT the
+    # exact position (the renderer regroups questions by type, so order is handled there).
+    expected_counts: dict = {}
+    type_marks_map: dict = {}
+    for qt in (wo.question_types or []):
+        if isinstance(qt, dict) and "marks_each" in qt:
+            cat = _fine_category(qt.get("type", ""))
+            expected_counts[cat] = expected_counts.get(cat, 0) + _as_int(qt.get("count", 1), 1)
+            type_marks_map[cat] = _as_float(qt.get("marks_each", wo.marks_per_question), wo.marks_per_question)
+    has_blueprint_counts = bool(expected_counts)
+    actual_counts: dict = {}
+
+    # Uniform sections (plain-string question_types, no per-type marks dicts) build no
+    # expected_counts above and so get NO type check — that let MCQs slip into a Short-Answer
+    # section. Collect the ALLOWED categories from the declared types and enforce membership
+    # after the loop (we can't enforce exact per-type counts here, only that no foreign type
+    # appears — e.g. a "Short Answer I" section must be all SA, never MCQ/AR/CBQ).
+    allowed_cats: set = set()
+    if not has_blueprint_counts:
+        for qt in (wo.question_types or []):
+            c = _fine_category(qt if isinstance(qt, str) else qt.get("type", ""))
+            if c and c != "other":
+                allowed_cats.add(c)
+
     for i, q in enumerate(questions):
         n = i + 1
         # ── Text presence (ALL questions, not just first 3) ──────────────────────
@@ -1092,58 +1248,18 @@ def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
         type_lower = _type_str(q.get("type", ""))
         q_subtype = str(q.get("subtype", "")).strip().lower()
 
-        # ── Blueprint type-mismatch: LLM-assigned type vs expected from blueprint ─
-        bp = _blueprint_type_at(n, wo)
-        if bp is not None:
-            bp_type_str, bp_marks = bp
-            expected_cat = _type_category(bp_type_str)
-            # Derive the ACTUAL category honoring subtype:
-            #   • map_based  → rendered as "type":"SA" but is conceptually a MAP question
-            #   • assertion_reason → rendered as "type":"MCQ" (category mcq)
-            # Without this, a correct map question (SA + map_based) is falsely flagged as
-            # "expected MAP but got SA" on every retry, so the section never validates.
-            if q_subtype == "map_based":
-                actual_cat = "map"
-            elif q_subtype == "assertion_reason":
-                actual_cat = "mcq"
-            else:
-                actual_cat = _type_category(q.get("type", ""))
-
-            if expected_cat == "map":
-                # Map position: accept anything categorized as map (SA + map_based).
-                if actual_cat != "map":
-                    errors.append(
-                        f"Q{n}: type mismatch — blueprint expects a MAP WORK question "
-                        f"('{bp_type_str}'). Use \"type\": \"SA\", \"subtype\": \"map_based\" "
-                        "with a 'map_note' field listing places to locate."
-                    )
-            elif actual_cat != "other" and expected_cat != "other" and actual_cat != expected_cat:
-                # Build a short correction hint
-                if expected_cat == "mcq":
-                    if "assertion" in bp_type_str.lower():
-                        hint = ('Change to "type": "MCQ", "subtype": "assertion_reason" with '
-                                '"text": "Assertion (A): ...\\nReason (R): ..." and the 4 standard AR options')
-                    else:
-                        hint = 'Change to "type": "MCQ" and add options {"a":..., "b":..., "c":..., "d":...}'
-                elif expected_cat == "vsa":
-                    hint = 'Change to "type": "VSA" and add "answer_explanation": "..."'
-                elif expected_cat == "sa":
-                    hint = 'Change to "type": "SA" and add "answer_explanation": "..."'
-                elif expected_cat == "la":
-                    hint = 'Change to "type": "LA" and add "answer_explanation" + "or_alternative": "..."'
-                elif expected_cat == "cbq":
-                    hint = 'Change to "type": "CBQ" and add "sub_questions": [...]'
-                else:
-                    hint = f'Change to match blueprint type: {bp_type_str!r}'
+        # ── Count + per-type marks (NOT per-position) ─────────────────────────────
+        # Tally this question's type, and verify its marks match what THAT type should be
+        # (e.g. a VSA must be 2m). Position is intentionally not checked — the renderer groups
+        # by type. The overall per-type counts are validated once after the loop.
+        actual_cat = _fine_category(q.get("type", ""), q_subtype)
+        actual_counts[actual_cat] = actual_counts.get(actual_cat, 0) + 1
+        if wo.mixed_marks and has_blueprint_counts and actual_cat in type_marks_map:
+            exp_m = type_marks_map[actual_cat]
+            if abs(_as_float(q.get("marks", exp_m), exp_m) - exp_m) > 0.1:
                 errors.append(
-                    f"Q{n}: type mismatch — blueprint expects {expected_cat.upper()} "
-                    f"('{bp_type_str}') but got '{q.get('type', '')}'. {hint}"
-                )
-            # Also check marks match blueprint when section uses mixed marks
-            if wo.mixed_marks and abs(_as_float(q.get("marks", bp_marks), bp_marks) - bp_marks) > 0.1:
-                errors.append(
-                    f"Q{n}: marks mismatch — blueprint expects {bp_marks}m "
-                    f"but got {q.get('marks', '?')}m"
+                    f"Q{n}: marks mismatch — a {actual_cat.upper()} question should be {exp_m}m "
+                    f"but got '{q.get('marks', '?')}'"
                 )
 
         # ── Per-type/subtype structural validation (delegates to _validate_by_subtype) ─
@@ -1175,6 +1291,34 @@ def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
                     f"Answer bias: '{letter}' used {count}/{total_mcq} times (>{65}%). "
                     "Distribute answers across a/b/c/d."
                 )
+
+    # ── Section type distribution (counts, not positions) ────────────────────────
+    if has_blueprint_counts:
+        issues = []
+        for cat, exp in expected_counts.items():
+            got = actual_counts.get(cat, 0)
+            if got != exp:
+                issues.append(f"{cat.upper()}: need {exp}, got {got}")
+        for cat, got in actual_counts.items():
+            if cat not in expected_counts and got:
+                issues.append(f"{cat.upper()}: {got} not allowed in this section")
+        if issues:
+            want = ", ".join(f"{c.upper()}×{n}" for c, n in expected_counts.items())
+            errors.append(
+                f"Section type distribution wrong — produce EXACTLY: {want} "
+                f"(order doesn't matter). Fix: {'; '.join(issues)}"
+            )
+
+    # ── Uniform-section type guard: no foreign types allowed ─────────────────────
+    if allowed_cats:
+        bad = {c: n for c, n in actual_counts.items() if c not in allowed_cats and n}
+        if bad:
+            want = "/".join(c.upper() for c in sorted(allowed_cats))
+            got = ", ".join(f"{c.upper()}×{n}" for c, n in sorted(bad.items()))
+            errors.append(
+                f"Wrong question type(s) for this section — only {want} allowed, but got {got}. "
+                f"Regenerate EVERY question as {want} (this is a {want} section, not MCQ)."
+            )
 
     # ── Section marks total ──────────────────────────────────────────────────────
     # For attempt-N-of-M sections we GENERATE the larger 'provided' set, so the summed
@@ -1470,12 +1614,56 @@ def run_content_quality_critic(questions: list, class_name: str, subject: str, d
     return flagged
 
 
+def _blind_answer_mcqs(items: list, class_name: str, subject: str) -> dict:
+    """Blind-answer a list of (orig_idx, question) MCQs with the validation model (no NCERT
+    context — purely tests the answer key). Returns {orig_idx: {"answer","confidence"}}."""
+    out = {}
+    batch_size = 10
+    for start in range(0, len(items), batch_size):
+        batch = items[start:start + batch_size]
+        qs_block = ""
+        for idx, (_, q) in enumerate(batch):
+            opts = q.get("options", {}) or {}
+            qs_block += (
+                f"\nQ{idx + 1}. {q.get('text', '')}\n"
+                f"(a) {opts.get('a', '')}  (b) {opts.get('b', '')}\n"
+                f"(c) {opts.get('c', '')}  (d) {opts.get('d', '')}\n"
+            )
+        prompt = (
+            f"Answer these CBSE Class {class_name} {subject} multiple choice questions.\n"
+            "Choose the single best answer based on your NCERT knowledge. Do NOT explain.\n"
+            f"{qs_block}\n"
+            'Output JSON array only:\n[{"q": 1, "answer": "a", "confidence": "high"}, ...]\n'
+            'confidence: "high" (certain), "medium" (likely), "low" (guessing)'
+        )
+        try:
+            raw, _, _ = mantle_client.converse(
+                model_id=mantle_client.VAL_MODEL, prompt=prompt, max_tokens=300, temperature=0.1)
+            m = re.search(r"\[.*\]", raw.strip(), re.S)
+            llm_answers = json.loads(m.group()) if m else []
+        except Exception as e:
+            print(f"[V4-MCQ-Verify] LLM call failed: {e}")
+            llm_answers = []
+        for idx, (orig_idx, _q) in enumerate(batch):
+            entry = next((x for x in llm_answers
+                          if isinstance(x, dict) and _as_int(x.get("q"), -1) == idx + 1), {})
+            out[orig_idx] = {
+                "answer": str(entry.get("answer", "")).lower().strip(),
+                "confidence": str(entry.get("confidence", "unknown")).lower().strip(),
+            }
+    return out
+
+
 def verify_mcq_answers(questions: list, class_name: str, subject: str) -> list:
     """
-    V4 — Blind LLM answer verification for MCQ questions.
-    Sends each MCQ to the model without context; flags mismatches.
-    Returns list of {qnum, stored, llm_answer, confidence, suspect} dicts.
+    V4 — Blind LLM answer-key verification with confident auto-correction.
+
+    A wrong stored answer key is CORRECTED in place only when TWO independent blind passes
+    both pick the same *different* option with high confidence — so a single model opinion can
+    never flip a correct key to a wrong one. Lesser disagreements are flagged (suspect) but
+    left unchanged. Returns {qnum, stored, llm_answer, confidence, suspect, corrected} dicts.
     """
+    valid = {"a", "b", "c", "d"}
     mcq_qs = [
         (i, q) for i, q in enumerate(questions)
         if str(q.get("type", "")).upper() in ("MCQ", "ASSERTION-REASON", "ASSERTION_REASON")
@@ -1484,66 +1672,36 @@ def verify_mcq_answers(questions: list, class_name: str, subject: str) -> list:
     if not mcq_qs:
         return []
 
+    first = _blind_answer_mcqs(mcq_qs, class_name, subject)
+
+    # Re-verify only the high-confidence disagreements before overwriting any key.
+    candidates = [
+        (i, q) for (i, q) in mcq_qs
+        if first.get(i, {}).get("confidence") == "high"
+        and first[i]["answer"] in valid
+        and first[i]["answer"] != str(q.get("answer", "")).lower().strip()
+    ]
+    second = _blind_answer_mcqs(candidates, class_name, subject) if candidates else {}
+
     results = []
-    # Batch up to 10 per LLM call
-    batch_size = 10
-    for batch_start in range(0, len(mcq_qs), batch_size):
-        batch = mcq_qs[batch_start:batch_start + batch_size]
-        qs_block = ""
-        for idx, (_, q) in enumerate(batch):
-            opts = q.get("options", {})
-            qs_block += (
-                f"\nQ{idx + 1}. {q.get('text', '')}\n"
-                f"(a) {opts.get('a', '')}  (b) {opts.get('b', '')}\n"
-                f"(c) {opts.get('c', '')}  (d) {opts.get('d', '')}\n"
-            )
-
-        prompt = (
-            f"Answer these CBSE Class {class_name} {subject} multiple choice questions.\n"
-            "Choose the single best answer based on your NCERT knowledge. "
-            "Do NOT explain — just pick the option letter.\n"
-            f"{qs_block}\n"
-            "Output JSON array only:\n"
-            '[{"q": 1, "answer": "a", "confidence": "high"}, ...]\n'
-            'confidence: "high" (certain), "medium" (likely), "low" (guessing)'
-        )
-        try:
-            raw, _, _ = mantle_client.converse(
-                model_id=mantle_client.VAL_MODEL,
-                prompt=prompt,
-                max_tokens=300,
-                temperature=0.1,
-            )
-            raw = raw.strip()
-            # extract JSON array
-            m = re.search(r"\[.*\]", raw, re.S)
-            llm_answers = json.loads(m.group()) if m else []
-        except Exception as e:
-            print(f"[V4-MCQ-Verify] LLM call failed: {e}")
-            llm_answers = []
-
-        for idx, (orig_idx, q) in enumerate(batch):
-            stored = str(q.get("answer", "")).lower().strip()
-            llm_entry = next(
-                (x for x in llm_answers
-                 if isinstance(x, dict) and _as_int(x.get("q"), -1) == idx + 1),
-                {},
-            )
-            llm_ans = str(llm_entry.get("answer", "")).lower().strip()
-            confidence = llm_entry.get("confidence", "unknown")
-            suspect = bool(llm_ans and llm_ans != stored and confidence in ("high", "medium"))
-            results.append({
-                "qnum": orig_idx + 1,
-                "stored": stored,
-                "llm_answer": llm_ans,
-                "confidence": confidence,
-                "suspect": suspect,
-            })
-            if suspect:
-                print(
-                    f"[V4-MCQ-Verify] ⚠️  Q{orig_idx + 1}: stored='{stored}' "
-                    f"but LLM says '{llm_ans}' (confidence={confidence})"
-                )
+    for i, q in mcq_qs:
+        stored = str(q.get("answer", "")).lower().strip()
+        f = first.get(i, {})
+        llm_ans, conf = f.get("answer", ""), f.get("confidence", "unknown")
+        corrected = False
+        if (i in second and second[i].get("confidence") == "high"
+                and second[i].get("answer") == llm_ans and llm_ans in valid and llm_ans != stored):
+            q["answer"] = llm_ans          # two high-confidence passes agree → fix the key
+            corrected = True
+            print(f"[V4-MCQ-Verify] ✅ Q{i + 1}: corrected answer key '{stored}' → '{llm_ans}' (confirmed twice)")
+        suspect = bool(llm_ans and llm_ans != stored and conf in ("high", "medium") and not corrected)
+        if suspect:
+            print(f"[V4-MCQ-Verify] ⚠️  Q{i + 1}: stored='{stored}' but LLM says '{llm_ans}' "
+                  f"(confidence={conf}) — flagged, not auto-corrected")
+        results.append({
+            "qnum": i + 1, "stored": stored, "llm_answer": llm_ans,
+            "confidence": conf, "suspect": suspect, "corrected": corrected,
+        })
     return results
 
 
@@ -2144,6 +2302,110 @@ def _post_process_assertion_reason(section_data: dict, wo: SectionWorkOrder) -> 
     return total_in, total_out
 
 
+def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
+    """Last-resort fix for a section that came back SHORT ON COUNT (right types, right
+    marks, just too few questions — e.g. a 16-MCQ Section A where the model emitted 8).
+
+    Makes ONE focused follow-up call for exactly the missing questions, on the chapters
+    still under-covered, forbidding repeats of what already exists. Strictly ADDITIVE:
+    only appends questions that are the correct type, correct marks and not duplicates,
+    and never more than the shortfall — so it can never worsen the section. Returns
+    (in_tokens, out_tokens); a no-op (0, 0) when it doesn't apply or can't help.
+
+    Scoped to UNIFORM-MARKS sections (every question worth the same — e.g. a 16-mark
+    Section A of MCQ + Assertion-Reason, or an all-VSA/SA/LA section) where the missing
+    question's marks are unambiguous and any of the section's declared types is acceptable.
+    Mixed-marks, CBQ, passage/extract and map sections are left to the normal retry path —
+    topping them up blindly is unsafe.
+    """
+    questions = [q for q in section_data.get("questions", []) if isinstance(q, dict)]
+    expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
+    missing = int(expected or 0) - len(questions)
+    if missing <= 0:
+        return 0, 0
+
+    # Collect the section's allowed categories. Multiple are fine (MCQ + Assertion-Reason)
+    # as long as the section is uniform-marks — the missing question is worth wo.marks_per_question
+    # whichever allowed type it is. Bail on mixed-marks or structurally heavy sections.
+    allowed = []
+    for t in (wo.question_types or []):
+        c = _fine_category(t if isinstance(t, str) else t.get("type", ""))
+        if c and c != "other" and c not in allowed:
+            allowed.append(c)
+    if not allowed or wo.mixed_marks or wo.is_map_work or _is_dedicated_cbq_section(wo) \
+            or wo.passage_instruction or wo.extract_instruction or "cbq" in allowed:
+        return 0, 0
+    allowed_set = set(allowed)
+
+    eff_subject = wo.section_subject or wo.subject
+    # Seed coverage from what already exists so the top-up prefers the still-missing chapters.
+    covered: dict = {}
+    for q in questions:
+        tag = str(q.get("chapter_tag") or q.get("chapter") or "").strip().lower()
+        if not tag:
+            continue
+        for ch in (wo.chapters or []):
+            cl = ch.strip().lower()
+            if cl and (cl in tag or tag in cl):
+                covered[(eff_subject, ch)] = covered.get((eff_subject, ch), 0) + 1
+                break
+    topup_plan = _allocate_chapters_to_slots(wo.chapters, missing, eff_subject, covered)
+
+    # Reuse the normal section prompt, but for just the missing count, then forbid repeats.
+    sub_wo = dc_replace(wo, questions_count=missing, provided_count=None,
+                        attempt_count=None, chapter_plan=topup_plan, marks=0)
+    prompt = build_section_prompt(sub_wo, attempt=1, prior_error="")
+    existing = [str(q.get("text", "")).strip() for q in questions if str(q.get("text", "")).strip()]
+    if existing:
+        prompt += (
+            "\n\nALREADY-WRITTEN QUESTIONS — generate COMPLETELY DIFFERENT ones (different "
+            "concepts/chapters, no paraphrases of these):\n"
+            + "\n".join(f"- {t[:160]}" for t in existing)
+        )
+
+    try:
+        raw, in_tok, out_tok = mantle_client.converse(
+            model_id=GEN_MODEL, prompt=prompt,
+            max_tokens=estimate_token_budget(sub_wo), temperature=0.8,
+        )
+        new_data = _repair_section_data(extract_section_json(raw))
+    except Exception as e:
+        print(f"[Top-Up] '{wo.section_name}': follow-up call failed ({e}) — keeping partial")
+        return 0, 0
+
+    seen = {t.lower() for t in existing}
+    kept_texts = list(existing)   # for concept-overlap dedup, grows as we accept
+    added = []
+    for q in new_data.get("questions", []):
+        if len(added) >= missing:
+            break
+        if not isinstance(q, dict) or not str(q.get("text", "")).strip():
+            continue
+        if _fine_category(q.get("type", ""), str(q.get("subtype", "")).strip().lower()) not in allowed_set:
+            continue
+        txt = str(q.get("text", "")).strip()
+        low = txt.lower()
+        if low in seen:
+            continue
+        # Reject a near-duplicate of anything already in the section (the model can echo an
+        # existing question despite the "different concepts" instruction) — the topped-up
+        # questions don't otherwise pass through the V5 dedup chain.
+        if any(_concept_overlap(txt, e) > 0.6 for e in kept_texts):
+            continue
+        # Force the section's per-question marks (the model occasionally drifts on the top-up).
+        q["marks"] = wo.marks_per_question
+        added.append(q)
+        seen.add(low)
+        kept_texts.append(txt)
+
+    if added:
+        section_data["questions"] = questions + added
+        section_data["_topped_up"] = len(added)
+        _types = "/".join(c.upper() for c in allowed)
+        print(f"[Top-Up] '{wo.section_name}': added {len(added)}/{missing} missing {_types} question(s)")
+    return in_tok, out_tok
+
+
 def generate_section(wo: SectionWorkOrder):
     """
     Generate questions for one section. Retries up to MAX_SECTION_RETRIES times on validation
@@ -2203,6 +2465,7 @@ def generate_section(wo: SectionWorkOrder):
                 if remaining_dups:
                     section_data["_uniqueness_warnings"] = remaining_dups
             print(f"[4.3-Individual] '{wo.section_name}' ✓ ({len(section_data.get('questions', []))} questions)")
+            section_data["_chapter_plan"] = list(wo.chapter_plan or [])
             return {wo.section_name: section_data}, in_tok, out_tok
         except Exception as e:
             print(f"[4.3-Individual] Failed for '{wo.section_name}': {e} — falling back to batch generation")
@@ -2295,12 +2558,20 @@ def generate_section(wo: SectionWorkOrder):
                 wo.subject,
             )
             suspect_mcqs = [r for r in mcq_verify_results if r.get("suspect")]
+            corrected_mcqs = [r for r in mcq_verify_results if r.get("corrected")]
             if suspect_mcqs:
                 section_data["_mcq_answer_warnings"] = suspect_mcqs
                 print(
                     f"[Section-Gen] ⚠️  V4 MCQ: {len(suspect_mcqs)} suspect answer(s) in '{wo.section_name}'"
                 )
+            if corrected_mcqs:
+                # The keys were already fixed in place by verify_mcq_answers; record what changed.
+                section_data["_mcq_answer_corrections"] = corrected_mcqs
+                print(
+                    f"[Section-Gen] ✅ V4 MCQ: auto-corrected {len(corrected_mcqs)} answer key(s) in '{wo.section_name}'"
+                )
             print(f"[Section-Gen] '{wo.section_name}' ✓ ({len(section_data.get('questions', []))} questions)")
+            section_data["_chapter_plan"] = list(wo.chapter_plan or [])
             # Post-process: generate image and Kimi-verify sub-questions
             if is_cbq:
                 _post_process_cbq_images(section_data, wo)
@@ -2312,9 +2583,22 @@ def generate_section(wo: SectionWorkOrder):
             section_data.setdefault("questions", [])
             section_data["title"] = wo.title
             section_data["marks"] = wo.marks
-            section_data["_partial"] = True
-            section_data["_errors"] = errors
-            print(f"[Section-Gen] '{wo.section_name}' emitting partial result")
+            # Before giving up: if the section is merely SHORT on count (right types/marks,
+            # too few questions), make one focused top-up call for the missing questions
+            # instead of shipping a half-empty section. Strictly additive — see helper.
+            tu_in, tu_out = _top_up_short_section(section_data, wo)
+            total_in_tok += tu_in
+            total_out_tok += tu_out
+            remaining = validate_section_output(section_data, wo) if section_data.get("_topped_up") else errors
+            if remaining:
+                section_data["_partial"] = True
+                section_data["_errors"] = remaining
+                print(f"[Section-Gen] '{wo.section_name}' emitting partial result "
+                      f"({len(section_data.get('questions', []))} q)")
+            else:
+                print(f"[Section-Gen] '{wo.section_name}' ✓ recovered via top-up "
+                      f"({len(section_data.get('questions', []))} q)")
+            section_data["_chapter_plan"] = list(wo.chapter_plan or [])
             if is_cbq:
                 _post_process_cbq_images(section_data, wo)
             return {wo.section_name: section_data}, total_in_tok, total_out_tok
@@ -2680,6 +2964,39 @@ def _typical_marks_for_types(types_list) -> float:
     return 1.0
 
 
+def _allocate_chapters_to_slots(candidate_chapters: list, n_slots: int, subject: str, covered: dict) -> list:
+    """Assign `n_slots` question slots to specific chapters.
+
+    Score per chapter = weight / (1 + times already covered). Because an uncovered chapter
+    scores its full weight, the allocator spreads across distinct chapters first (broad
+    coverage), and only repeats a chapter once the higher-weight ones are each covered —
+    so heavier (higher CBSE-marks) chapters get the repeats. `covered` is shared across the
+    whole paper and mutated in place, so later sections fill the gaps earlier ones left.
+    Deterministic: chapters are sorted and ties resolve to the alphabetically-first."""
+    chs = sorted({c for c in (candidate_chapters or []) if c})
+    if not chs or n_slots <= 0:
+        return []
+    weights = {c: max(1, _chapter_weight(subject, c)) for c in chs}
+    plan = []
+    for _ in range(int(n_slots)):
+        best = max(chs, key=lambda c: (weights[c] / (1 + covered.get((subject, c), 0)), weights[c]))
+        plan.append(best)
+        covered[(subject, best)] = covered.get((subject, best), 0) + 1
+    return plan
+
+
+def plan_chapter_allocation(work_orders: list) -> list:
+    """Give every section a per-question chapter plan (`wo.chapter_plan`), weighted by CBSE
+    unit marks where known (uniform otherwise) and coordinated across the whole paper to
+    maximise unique-chapter coverage before any chapter repeats. No-op for sections with no
+    chapters (e.g. One-Mark tests) — they keep the legacy 'spread across all topics' prompt."""
+    covered: dict = {}
+    for wo in work_orders:
+        eff_subject = wo.section_subject or wo.subject
+        wo.chapter_plan = _allocate_chapters_to_slots(wo.chapters, wo.questions_count, eff_subject, covered)
+    return work_orders
+
+
 def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list) -> list:
     pattern_section_map: dict = {}
     if pattern and hasattr(pattern, "sections") and pattern.sections:
@@ -2791,6 +3108,14 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         work_orders.append(wo)
         subj_tag = f" [{section_subject}]" if section_subject else ""
         print(f"[WorkOrder] '{sec_name}'{subj_tag}: {generate_count}q × {mpq}m = {marks}m, types={types_list}")
+
+    # Deterministic, CBSE-weighted, paper-wide chapter allocation (sets wo.chapter_plan).
+    plan_chapter_allocation(work_orders)
+    for wo in work_orders:
+        if wo.chapter_plan:
+            from collections import Counter
+            dist = ", ".join(f"{ch}×{n}" for ch, n in Counter(wo.chapter_plan).items())
+            print(f"[ChapterPlan] '{wo.section_name}': {dist}")
 
     return work_orders
 
@@ -3185,6 +3510,53 @@ def enforce_competency_distribution(paper_data: dict, class_name: str, subject: 
 # Main parallel generator
 # ─────────────────────────────────────────────
 
+def enforce_section_question_types(paper_data: dict, work_orders: list) -> dict:
+    """Final safety net — guarantee no foreign question type renders in a section.
+
+    The prompt directive + per-section validation already push hard for the right types, but a
+    section that exhausts its retries still EMITS a partial result containing whatever it has
+    (and the single-prompt fallback validates loosely). This pass removes any question whose
+    COARSE type (MCQ / SA / VSA / LA / CBQ / MAP) isn't one the section declared — so an MCQ
+    can never appear in a Short-Answer section, etc.
+
+    Coarse categories are used deliberately so legitimate subtype variants are never dropped:
+    assertion-reason (renders as MCQ), map-based (renders as SA), image/source CBQ. Questions
+    whose type can't be classified ("other") are kept, not dropped. Drops are logged and
+    recorded on `_dropped_wrong_type`; the marks/coverage audits then surface the shortfall."""
+    wo_by_name = {wo.section_name: wo for wo in (work_orders or [])}
+    for sec_name, sec_data in paper_data.items():
+        wo = wo_by_name.get(sec_name)
+        if not wo or not isinstance(sec_data, dict):
+            continue
+        allowed = set()
+        for t in (wo.question_types or []):
+            c = _type_category(t if isinstance(t, str) else str(t.get("type", "")))
+            if c and c != "other":
+                allowed.add(c)
+        if not allowed:
+            continue  # section type indeterminate — never drop blindly
+        questions = sec_data.get("questions") or []
+        kept, dropped = [], []
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            if str(q.get("subtype", "")).strip().lower() == "assertion_reason":
+                cat = "mcq"   # AR renders as MCQ — treat it as such
+            else:
+                cat = _type_category(str(q.get("type", "") or ""))
+            if cat == "other" or cat in allowed:
+                kept.append(q)
+            else:
+                dropped.append(q)
+        if dropped:
+            sec_data["questions"] = kept
+            sec_data["_dropped_wrong_type"] = [{"qnum": q.get("qnum"), "type": q.get("type")} for q in dropped]
+            want = "/".join(sorted(allowed)).upper()
+            print(f"[Type-Enforce] '{sec_name}': removed {len(dropped)} foreign-type question(s) "
+                  f"(section allows {want}): {[q.get('type') for q in dropped]}")
+    return paper_data
+
+
 def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list):
     """
     Generate all sections in parallel using ThreadPoolExecutor.
@@ -3221,6 +3593,28 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
         )
     if failed:
         print(f"[Parallel-Gen] ⚠️  {len(failed)} section(s) partial/failed: {failed}")
+
+    # Final guarantee: strip any wrong-type questions before numbering/render (covers the
+    # partial-emit path where a section shipped foreign types after exhausting retries).
+    paper_data = enforce_section_question_types(paper_data, work_orders)
+
+    # Refill any section the type-enforcer (or post-validation dedup) left SHORT. These trims
+    # run AFTER per-section validation passed, so the section never went 'partial' and was
+    # never topped up — e.g. a 20-question Objective section that emitted 2 stray SA questions
+    # ends up 18/20 silently. Top each short section back up to its work order's count.
+    wo_by_name = {wo.section_name: wo for wo in work_orders}
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__") or not isinstance(sec_data, dict):
+            continue
+        wo = wo_by_name.get(sec_name)
+        if not wo:
+            continue
+        expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
+        if expected and len(sec_data.get("questions", [])) < expected:
+            print(f"[Refill] '{sec_name}': {len(sec_data.get('questions', []))}/{expected} after enforce — topping up")
+            tu_in, tu_out = _top_up_short_section(sec_data, wo)
+            total_input_tokens += tu_in
+            total_output_tokens += tu_out
 
     paper_data = cross_section_validate(paper_data, blueprint)
     total_q = sum(len(v.get("questions", [])) for v in paper_data.values())
@@ -3285,6 +3679,7 @@ def _dump_questions_debug(paper_data, class_name, subject, difficulty, chapters,
                     "grounding_issues": data.get("_grounding_issues", []),
                     "quality_flags": data.get("_quality_flags", []),
                     "mcq_answer_warnings": data.get("_mcq_answer_warnings", []),
+                    "mcq_answer_corrections": data.get("_mcq_answer_corrections", []),
                     "uniqueness_warnings": data.get("_uniqueness_warnings", []),
                     "questions": data.get("questions", []),
                 }

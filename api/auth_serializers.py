@@ -8,12 +8,20 @@ class UserSerializer(serializers.ModelSerializer):
     school_id = serializers.SerializerMethodField()
     school_name = serializers.SerializerMethodField()
     allowed_subject = serializers.SerializerMethodField()
+    require_password_change = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser',
-                  'last_login', 'date_joined', 'role', 'school_id', 'school_name', 'allowed_subject')
+                  'last_login', 'date_joined', 'role', 'school_id', 'school_name', 'allowed_subject',
+                  'require_password_change')
         read_only_fields = ('id', 'last_login', 'date_joined')
+
+    def get_require_password_change(self, obj):
+        try:
+            return bool(obj.profile.require_password_change)
+        except Exception:
+            return False
 
     def get_role(self, obj):
         try:

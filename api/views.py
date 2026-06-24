@@ -10,6 +10,7 @@ from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate,
 from core import embeddings
 from core.tasks import generate_paper_task, ingest_material_task
 from core.views import extract_text_from_pdf, extract_text_from_docx, extract_docx_text_with_images
+from core.media_access import signed_file_url
 import os
 import json
 import tempfile
@@ -65,9 +66,68 @@ def _can_modify_paper(user, paper):
     return role in ('superadmin', 'school_admin') or user.is_superuser
 
 
-def _render_paper_from_stored_data(paper):
+def _owner_scope(qs, user, owner_field='created_by'):
+    """Visibility scoping: superadmin → everything; school_admin → their whole school;
+    a normal teacher → ONLY their own creations (not the admin's or other teachers')."""
+    role = _user_role(user)
+    if role == 'superadmin' or user.is_superuser:
+        return qs
+    if role == 'school_admin':
+        school = _get_school(user)
+        if school:
+            return qs.filter(**{f"{owner_field}__profile__school": school})
+        return qs.filter(**{owner_field: user})
+    # teacher / unknown role → own only
+    return qs.filter(**{owner_field: user})
+
+
+def _generation_blocked(user, exclude_id=None):
+    """Guard before queuing a paper-generation task. Returns an error string if generation
+    should be refused (concurrency / budget), else None. Prevents Retry/Generate spam and
+    runaway LLM+image spend (one paper = many billed calls). `exclude_id` skips the paper
+    being retried/regenerated so it doesn't block itself."""
+    # One active generation per user — a paper is expensive; don't let a user queue several.
+    active = QuestionPaper.objects.filter(created_by=user, status__in=['queued', 'generating'])
+    if exclude_id is not None:
+        active = active.exclude(id=exclude_id)
+    if active.exists():
+        return ("You already have a paper generating. Please wait for it to finish before "
+                "starting another.")
+    # School token budget (0 = unlimited). total_tokens_used is the cumulative counter.
+    school = _get_school(user)
+    if school and school.monthly_token_budget and school.total_tokens_used >= school.monthly_token_budget:
+        return (f"Your school has reached its token budget "
+                f"({school.total_tokens_used:,}/{school.monthly_token_budget:,} tokens). "
+                "Contact your administrator to raise it.")
+    return None
+
+
+def _scoped_blueprints(user):
+    """ExamBlueprint visible to this user — shared school-wide (any member sees the school's
+    blueprints), all for superadmin. Blueprints are reusable structures, not private content."""
+    base = ExamBlueprint.objects.filter(is_active=True)
+    if _user_role(user) == 'superadmin' or user.is_superuser:
+        return base
+    school = _get_school(user)
+    return base.filter(created_by__profile__school=school) if school else base.filter(created_by=user)
+
+
+def _scoped_blueprint_templates(user):
+    """BlueprintTemplate visible to this user — shared (default/superadmin) templates plus the
+    whole school's (reusable structures), never another school's."""
+    from django.db.models import Q
+    base = BlueprintTemplate.objects.filter(is_active=True)
+    if _user_role(user) == 'superadmin' or user.is_superuser:
+        return base
+    shared = (Q(is_default=True) | Q(created_by__isnull=True)
+              | Q(created_by__is_superuser=True) | Q(created_by__profile__role='superadmin'))
+    school = _get_school(user)
+    return base.filter(shared | Q(created_by__profile__school=school)) if school else base.filter(shared | Q(created_by=user))
+
+
+def _render_paper_from_stored_data(paper, request=None):
     """Re-render paper.file from paper.paper_data (preserves images, marks, grouping).
-    Returns the file URL. Shared by rerender / ai_edit / restore_data."""
+    Returns a signed file URL. Shared by rerender / ai_edit / restore_data."""
     import os, json as _json
     from django.conf import settings as _dj
     from core.generator import _render_paper_from_data, pattern_sections_to_blueprint_dict
@@ -89,11 +149,12 @@ def _render_paper_from_stored_data(paper):
     file_path, *_rest = _render_paper_from_data(
         paper_data=paper.paper_data, blueprint=blueprint, class_name=class_name,
         subject=paper.subject, chapters=paper.chapters, additional_context=ctx, pattern=paper.pattern,
+        cache_only=True,   # web request: reuse cached images, never call the slow image APIs
     )
     if os.path.exists(os.path.join(_dj.MEDIA_ROOT, file_path)):
         paper.file.name = file_path        # assign directly — file.save() renames on collision → 404
     paper.save(update_fields=['file', 'updated_at'])
-    return paper.file.url if paper.file else None
+    return signed_file_url(request, paper.file)
 
 
 def _paper_section_iter(paper_data):
@@ -151,14 +212,13 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         role = _user_role(user)
         if role == 'superadmin' or user.is_superuser:
             return ExamPattern.objects.all().order_by('-created_at')
-        # Premade (superadmin) patterns are HIDDEN from non-superadmins everywhere — list,
-        # generator, etc. They are reachable ONLY through the `templates` action inside the
-        # Create-Pattern flow, where the user clones one into their own school-scoped pattern.
+        # Patterns are a SHARED school resource — every member of the school sees ALL of the
+        # school's patterns (any subject, any creator), so they can reuse each other's. (Papers,
+        # by contrast, stay private to their creator.) Premade superadmin templates remain hidden
+        # — reachable only via the `templates` action (clone-only).
         school = _get_school(user)
         if school:
-            return ExamPattern.objects.filter(
-                created_by__profile__school=school
-            ).order_by('-created_at')
+            return ExamPattern.objects.filter(created_by__profile__school=school).order_by('-created_at')
         return ExamPattern.objects.filter(created_by=user).order_by('-created_at')
 
     def perform_create(self, serializer):
@@ -383,11 +443,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def dashboard_stats(self, request):
         """Get summary statistics for the dashboard"""
         user = request.user
-        if user.is_staff or user.is_superuser:
-            queryset = QuestionPaper.objects.all()
-        else:
-            queryset = QuestionPaper.objects.filter(created_by=user)
-            
+        # Same visibility as the list: admin → school-wide, teacher → own only.
+        queryset = _owner_scope(QuestionPaper.objects.all(), user)
+
         total_papers = queryset.count()
         
         # Calculate monthly papers
@@ -408,19 +466,10 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base = QuestionPaper.objects.all().order_by('-created_at')
-        role = _user_role(user)
-        if role == 'superadmin' or user.is_superuser:
-            queryset = base
-        else:
-            school = _get_school(user)
-            if school:
-                queryset = base.filter(created_by__profile__school=school)
-            else:
-                queryset = base.filter(created_by=user)
-
-        created_by = self.request.query_params.get('created_by')
-        if created_by == 'me':
+        # Hierarchical visibility: superadmin → all, school_admin → whole school,
+        # teacher → only their own papers (can't see the admin's or other teachers').
+        queryset = _owner_scope(QuestionPaper.objects.all().order_by('-created_at'), user)
+        if self.request.query_params.get('created_by') == 'me':
             queryset = queryset.filter(created_by=user)
         return queryset
 
@@ -436,9 +485,14 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         Handles both logic and legacy core processing flow via API.
         """
         try:
+            # Budget / concurrency guard — refuse before creating the paper or queuing work.
+            blocked = _generation_blocked(request.user)
+            if blocked:
+                return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
             # Extract data from request
             data = request.data
-            
+
             # Handle chapters (comma-separated string -> list)
             chapters_str = data.get("chapters", "")
             chapters_list = [ch.strip() for ch in chapters_str.split(",") if ch.strip()]
@@ -473,12 +527,12 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             if blueprint_id:
                 if blueprint_id.startswith("exam_"):
                     bp_id = blueprint_id.replace("exam_", "")
-                    blueprint = get_object_or_404(ExamBlueprint, id=bp_id, is_active=True)
+                    blueprint = get_object_or_404(_scoped_blueprints(request.user), id=bp_id)
                     if blueprint.class_name != class_name.split("-")[0] or blueprint.subject.lower() != subject.lower():
                         return Response({"error": "Selected blueprint doesn't match the class and subject."}, status=status.HTTP_400_BAD_REQUEST)
                 elif blueprint_id.startswith("template_"):
                     tp_id = blueprint_id.replace("template_", "")
-                    template = get_object_or_404(BlueprintTemplate, id=tp_id, is_active=True)
+                    template = get_object_or_404(_scoped_blueprint_templates(request.user), id=tp_id)
                     if template.class_name != class_name.split("-")[0] or template.subject.lower() != subject.lower():
                         return Response({"error": "Selected blueprint template doesn't match class/subject."}, status=status.HTTP_400_BAD_REQUEST)
                         
@@ -567,8 +621,16 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         if not _can_modify_paper(request.user, paper):
             return Response({'error': 'Not authorized to cancel this paper'}, status=status.HTTP_403_FORBIDDEN)
         if paper.status in ['queued', 'generating']:
-            # TODO: Implement Celery task cancellation
+            # Actually revoke the Celery task (terminate if already running) so it stops
+            # consuming a worker, then mark cancelled.
+            if paper.task_id:
+                try:
+                    from celery import current_app
+                    current_app.control.revoke(paper.task_id, terminate=True, signal='SIGTERM')
+                except Exception as _e:
+                    print(f"[Cancel] revoke failed for task {paper.task_id}: {_e}")
             paper.status = 'cancelled'
+            paper.status_detail = 'Cancelled by user.'
             paper.save()
             return Response({'status': 'Task cancelled'})
         return Response(
@@ -584,19 +646,30 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             if not _can_modify_paper(request.user, paper):
                 return Response({'error': 'Not authorized to retry this paper'}, status=status.HTTP_403_FORBIDDEN)
 
-            # Using the exact logic from core.views.retry_paper_view
-            if paper.status == "failed" or paper.status == "cancelled":
+            # Allow retry for failed/cancelled papers, and for ones stuck 'queued'/'generating'
+            # (e.g. a dead worker) — revoking the stale task first so it can't double-run.
+            if paper.status in ("failed", "cancelled", "queued", "generating"):
+                if paper.status in ("queued", "generating") and paper.task_id:
+                    try:
+                        from celery import current_app
+                        current_app.control.revoke(paper.task_id, terminate=True, signal='SIGTERM')
+                    except Exception as _e:
+                        print(f"[Retry] revoke of stale task {paper.task_id} failed: {_e}")
+                blocked = _generation_blocked(request.user, exclude_id=paper.id)
+                if blocked:
+                    return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
                 paper.status = "queued"
+                paper.status_detail = ""
                 paper.save()
-                
+
                 # Trigger the celery task
                 task = generate_paper_task.delay(paper.id)
                 paper.task_id = task.id
                 paper.save()
-                
+
                 return Response({'status': 'Retry initiated', 'task_id': task.id})
-            
-            return Response({'error': 'Paper must be in failed or cancelled state to retry'}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({'error': 'Paper cannot be retried from its current state'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -638,6 +711,10 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             "num_one_mark_questions": num_one_mark,
             "school_name": school_name,
         }
+
+        blocked = _generation_blocked(request.user, exclude_id=paper.id)
+        if blocked:
+            return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         # Re-queue. Keep the current file/paper_data until the new one is ready (so the paper
         # stays viewable if generation fails); drop any AI-edited text overlay.
@@ -777,6 +854,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                 chapters=paper.chapters,
                 additional_context=rerender_ctx,
                 pattern=paper.pattern,
+                cache_only=True,   # web request: reuse cached images, never call the slow image APIs
             )
 
             import os
@@ -787,7 +865,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                 paper.file.name = file_path
             paper.save(update_fields=['file', 'updated_at'])
 
-            return Response({'status': 'Re-rendered', 'file': paper.file.url if paper.file else None})
+            return Response({'status': 'Re-rendered', 'file': signed_file_url(request, paper.file)})
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -874,8 +952,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             paper.file.name = file_path
             paper.save(update_fields=['edited_content', 'file'])
 
-            file_url = request.build_absolute_uri(f'/media/{file_path}')
-            return Response({'file': file_url, 'status': 'rendered'})
+            return Response({'file': signed_file_url(request, paper.file), 'status': 'rendered'})
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -984,7 +1061,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         paper.edited_content = None        # JSON is now the source of truth; text re-extracts from the new DOCX
         paper.save(update_fields=['paper_data', 'edited_content', 'updated_at'])
         try:
-            file_url = _render_paper_from_stored_data(paper)
+            file_url = _render_paper_from_stored_data(paper, request)
         except Exception as e:
             import traceback; traceback.print_exc()
             return Response({'error': f'Edit applied but re-render failed: {e}'},
@@ -1005,7 +1082,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         paper.edited_content = None
         paper.save(update_fields=['paper_data', 'edited_content', 'updated_at'])
         try:
-            file_url = _render_paper_from_stored_data(paper)
+            file_url = _render_paper_from_stored_data(paper, request)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response({'status': 'restored', 'file': file_url})
@@ -1110,7 +1187,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             paper.file.save(filename, ContentFile(packet.getvalue()))
             paper.save()
             
-            return Response({'status': 'PDF regenerated successfully', 'file_url': paper.file.url})
+            return Response({'status': 'PDF regenerated successfully', 'file_url': signed_file_url(request, paper.file)})
             
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1302,6 +1379,11 @@ class BlueprintTemplateViewSet(viewsets.ModelViewSet):
     filterset_fields = ['subject', 'class_name', 'is_default']
     search_fields = ['name', 'subject']
 
+    def get_queryset(self):
+        # Hierarchical: shared (default/superadmin) templates visible to all; school_admin also
+        # sees their school's, a teacher only their own. (IDOR + own-only scoping.)
+        return _scoped_blueprint_templates(self.request.user).order_by('subject', 'class_name')
+
     def perform_create(self, serializer):
         """Set the created_by field to the current user"""
         serializer.save(created_by=self.request.user)
@@ -1309,7 +1391,7 @@ class BlueprintTemplateViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def defaults(self, request):
         """Get default templates for each subject/class combination"""
-        defaults = self.queryset.filter(is_default=True)
+        defaults = self.get_queryset().filter(is_default=True)
         serializer = self.get_serializer(defaults, many=True)
         return Response(serializer.data)
 
@@ -1325,6 +1407,10 @@ class ExamBlueprintViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     filterset_fields = ['class_name', 'subject']
     search_fields = ['subject', 'class_name', 'code']
+
+    def get_queryset(self):
+        # Hierarchical: superadmin → all, school_admin → school, teacher → own. (IDOR + own-only.)
+        return _scoped_blueprints(self.request.user).order_by('class_name', 'subject')
 
     def perform_create(self, serializer):
         """Set the created_by field to the current user"""
@@ -1445,11 +1531,10 @@ def get_blueprints(request):
             
         class_num = class_name.split("-")[0]
         
-        # 1. Standard Blueprint Templates
-        templates = BlueprintTemplate.objects.filter(
+        # 1. Standard Blueprint Templates (school-scoped)
+        templates = _scoped_blueprint_templates(request.user).filter(
             class_name=class_num,
             subject__iexact=subject,
-            is_active=True
         ).values('id', 'name', 'created_at')
         
         template_list = []
@@ -1461,11 +1546,10 @@ def get_blueprints(request):
                 'created_at': t['created_at']
             })
 
-        # 2. AI-generated Blueprints (iterate objects to avoid field errors)
-        blueprints = ExamBlueprint.objects.filter(
+        # 2. AI-generated Blueprints (school-scoped)
+        blueprints = _scoped_blueprints(request.user).filter(
             class_name=class_num,
             subject__iexact=subject,
-            is_active=True
         )
 
         blueprint_list = []
@@ -1506,7 +1590,7 @@ def get_blueprint_details(request, blueprint_id):
     try:
         if blueprint_id.startswith("exam_"):
             bp_id = blueprint_id.replace("exam_", "")
-            blueprint = ExamBlueprint.objects.get(id=bp_id)
+            blueprint = _scoped_blueprints(request.user).get(id=bp_id)
             # Safe data extraction
             bp_json = blueprint.blueprint or {}
             
@@ -1529,7 +1613,7 @@ def get_blueprint_details(request, blueprint_id):
             })
         elif blueprint_id.startswith("template_"):
             tp_id = blueprint_id.replace("template_", "")
-            template = BlueprintTemplate.objects.get(id=tp_id)
+            template = _scoped_blueprint_templates(request.user).get(id=tp_id)
             tp_json = template.blueprint or {}
             
             # Calculate total marks if missing

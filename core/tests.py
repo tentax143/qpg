@@ -14,9 +14,12 @@ Run with:  python manage.py test core
 
 from django.test import TestCase
 
-from core.models import ExamPattern
+from django.contrib.auth.models import User
+
+from core.models import ExamPattern, School, ExamBlueprint
 from core import section_generator as sg
 from core import generator as sg_gen
+from api.views import _scoped_blueprints
 
 
 def _sub(name, qtype, marks, q, mpq):
@@ -195,6 +198,714 @@ class RenderGroupingTest(TestCase):
         qs = [{"type": "MCQ", "subtype": "standard", "marks": 1} for _ in range(5)]
         groups = sg_gen._regroup_section(qs, {"name": "A", "subsections": []})
         self.assertEqual([lbl for lbl, _ in groups if lbl], [])
+
+
+class CountBasedValidationTest(TestCase):
+    """Section validation must check the right NUMBER of each type (renderer handles order),
+    not that each type sits at an exact position."""
+
+    def _wo(self):
+        pattern = ExamPattern(name="cv", subject="Science", class_name="10", sections=[{
+            "name": "Biology", "marks": 8, "questions_count": 5, "marks_per_question": "varies",
+            "question_types": ["MCQ", "Assertion-Reason", "VSA", "SA"],
+            "subsections": [
+                {"name": "MCQ", "question_types": ["MCQ"], "marks": 2, "questions_count": 2, "marks_per_question": 1},
+                {"name": "AR", "question_types": ["Assertion-Reason"], "marks": 1, "questions_count": 1, "marks_per_question": 1},
+                {"name": "VSA", "question_types": ["VSA"], "marks": 2, "questions_count": 1, "marks_per_question": 2},
+                {"name": "SA", "question_types": ["SA"], "marks": 3, "questions_count": 1, "marks_per_question": 3},
+            ],
+        }])
+        bp = {s["name"]: s for s in pattern.sections}
+        return sg.build_work_orders(bp, pattern, {}, "Medium", "10", "Science", ["Life"])[0]
+
+    def _mcq(self, m=1, ar=False):
+        q = {"type": "MCQ", "subtype": "assertion_reason" if ar else "standard", "marks": m,
+             "text": "Assertion (A): x\nReason (R): y" if ar else "q", "answer": "a",
+             "options": {"a": "1", "b": "2", "c": "3", "d": "4"}}
+        return q
+
+    def test_right_counts_wrong_order_passes_type_check(self):
+        # Jumbled order, but exactly 2 MCQ + 1 AR + 1 VSA + 1 SA.
+        qs = [
+            {"type": "SA", "marks": 3, "text": "q", "answer_explanation": "a"},
+            {"type": "VSA", "marks": 2, "text": "q", "answer_explanation": "a"},
+            self._mcq(1),
+            self._mcq(1, ar=True),
+            self._mcq(1),
+        ]
+        errors = sg.validate_section_output({"questions": qs}, self._wo())
+        self.assertFalse(any("distribution wrong" in e for e in errors), errors)
+        self.assertFalse(any("type mismatch" in e for e in errors), errors)
+
+    def test_wrong_counts_flagged(self):
+        # 3 MCQ, 0 AR, 1 VSA, 1 SA — AR missing, MCQ over.
+        qs = [self._mcq(1), self._mcq(1), self._mcq(1),
+              {"type": "VSA", "marks": 2, "text": "q", "answer_explanation": "a"},
+              {"type": "SA", "marks": 3, "text": "q", "answer_explanation": "a"}]
+        errors = sg.validate_section_output({"questions": qs}, self._wo())
+        dist = [e for e in errors if "distribution wrong" in e]
+        self.assertTrue(dist, errors)
+        self.assertIn("AR", dist[0])
+
+
+class SectionTypeEnforcementTest(TestCase):
+    """Uniform sections must reject foreign question types and the prompt must forbid them."""
+
+    def _wo(self, types, count=5, mpq=2.0):
+        from core import section_generator as sg
+        return sg.SectionWorkOrder(
+            section_name="Section B", section_id="B", title="Short Answer I", marks=int(count * mpq),
+            questions_count=count, marks_per_question=mpq, question_types=types, instructions=[],
+            constraints={}, context_text="ctx", difficulty="medium", subject="Chemistry",
+            class_name="12", chapters=["Equilibrium"])
+
+    def _sa_q(self, n):
+        return {"qnum": n, "type": "SA", "subtype": "standard", "text": f"Explain concept {n}.",
+                "marks": 2, "answer_explanation": "…", "competency_type": "constructed"}
+
+    def _mcq_q(self, n):
+        return {"qnum": n, "type": "MCQ", "subtype": "standard", "text": f"Pick {n}",
+                "options": {"a": "1", "b": "2", "c": "3", "d": "4"}, "answer": "a",
+                "marks": 2, "answer_explanation": "…", "competency_type": "recall"}
+
+    def test_mcq_in_short_answer_section_is_rejected(self):
+        from core import section_generator as sg
+        wo = self._wo(["Short Answer I"])
+        data = {"questions": [self._sa_q(1), self._sa_q(2), self._sa_q(3), self._mcq_q(4), self._mcq_q(5)]}
+        errs = sg.validate_section_output(data, wo)
+        self.assertTrue(any("Wrong question type" in e and "MCQ" in e for e in errs), errs)
+
+    def test_all_short_answer_section_passes_type_check(self):
+        from core import section_generator as sg
+        wo = self._wo(["Short Answer I"])
+        data = {"questions": [self._sa_q(i) for i in range(1, 6)]}
+        errs = sg.validate_section_output(data, wo)
+        self.assertFalse(any("Wrong question type" in e for e in errs), errs)
+
+    def test_mcq_and_ar_both_allowed_in_objective_section(self):
+        from core import section_generator as sg
+        wo = self._wo(["MCQ", "Assertion-Reason"], count=2, mpq=1.0)
+        ar = {"qnum": 2, "type": "MCQ", "subtype": "assertion_reason",
+              "text": "Assertion (A): x.\nReason (R): y.",
+              "options": {"a": "Both A and R are true and R is the correct explanation of A",
+                          "b": "Both true, R not correct explanation", "c": "A true R false", "d": "A false R true"},
+              "answer": "a", "marks": 1, "answer_explanation": "…", "competency_type": "application"}
+        mcq = self._mcq_q(1); mcq["marks"] = 1
+        errs = sg.validate_section_output({"questions": [mcq, ar]}, wo)
+        self.assertFalse(any("Wrong question type" in e for e in errs), errs)
+
+    def test_prompt_forbids_other_types_for_short_answer(self):
+        from core import section_generator as sg
+        wo = self._wo(["Short Answer I"])
+        sg.plan_chapter_allocation([wo])
+        p = sg.build_section_prompt(wo)
+        self.assertIn("QUESTION TYPE — MANDATORY", p)
+        self.assertIn("WRITTEN-ANSWER", p)
+        self.assertIn('"type":"SA"', p)
+
+    def test_mcq_token_budget_fits_sixteen(self):
+        from core import section_generator as sg
+        wo = self._wo(["MCQ", "Assertion-Reason"], count=16, mpq=1.0)
+        # 16 MCQs must budget well above the old 3380 truncation point.
+        self.assertGreater(sg.estimate_token_budget(wo), 4000)
+
+    def test_enforce_pass_strips_mcq_from_sa_section(self):
+        from core import section_generator as sg
+        wo = self._wo(["Short Answer I"])
+        paper_data = {"Section B": {"section_name": "Section B", "questions": [
+            self._sa_q(1), self._mcq_q(2), self._sa_q(3)]}}
+        out = sg.enforce_section_question_types(paper_data, [wo])
+        kinds = [q["type"] for q in out["Section B"]["questions"]]
+        self.assertEqual(kinds, ["SA", "SA"])                         # MCQ removed
+        self.assertEqual(len(out["Section B"]["_dropped_wrong_type"]), 1)
+
+    def test_enforce_pass_keeps_assertion_reason_in_objective_section(self):
+        from core import section_generator as sg
+        wo = self._wo(["MCQ", "Assertion-Reason"], count=2, mpq=1.0)
+        ar = {"qnum": 2, "type": "MCQ", "subtype": "assertion_reason", "text": "A…R…",
+              "options": {"a": "1", "b": "2", "c": "3", "d": "4"}, "answer": "a", "marks": 1}
+        paper_data = {"Section B": {"section_name": "Section B", "questions": [self._mcq_q(1), ar]}}
+        out = sg.enforce_section_question_types(paper_data, [wo])
+        self.assertEqual(len(out["Section B"]["questions"]), 2)        # nothing dropped
+        self.assertNotIn("_dropped_wrong_type", out["Section B"])
+
+    def test_enforce_pass_keeps_cbq_with_subtype(self):
+        from core import section_generator as sg
+        wo = self._wo(["Case-Based Questions"], count=2, mpq=4.0)
+        cbq = {"qnum": 1, "type": "CBQ", "subtype": "image_based", "text": "Observe…",
+               "marks": 4, "sub_questions": [{"text": "a?", "marks": 2}, {"text": "b?", "marks": 2}]}
+        paper_data = {"Section B": {"section_name": "Section B", "questions": [cbq]}}
+        out = sg.enforce_section_question_types(paper_data, [wo])
+        self.assertEqual(len(out["Section B"]["questions"]), 1)        # CBQ kept despite subtype
+
+
+class ChapterAllocationTest(TestCase):
+    """Deterministic, CBSE-weighted, coverage-balanced chapter allocation."""
+
+    def test_plan_length_equals_question_count(self):
+        from core import section_generator as sg
+        plan = sg._allocate_chapters_to_slots(["A", "B", "C", "D", "E"], 3, "X", {})
+        self.assertEqual(len(plan), 3)
+
+    def test_uniform_weights_spread_distinct_when_fewer_slots(self):
+        from unittest import mock
+        from core import section_generator as sg
+        with mock.patch.object(sg, "_chapter_weight", return_value=1):
+            plan = sg._allocate_chapters_to_slots(["A", "B", "C", "D", "E"], 3, "X", {})
+        self.assertEqual(len(set(plan)), 3)        # 3 distinct chapters, no clustering
+
+    def test_more_slots_than_chapters_covers_all_then_repeats(self):
+        from collections import Counter
+        from unittest import mock
+        from core import section_generator as sg
+        with mock.patch.object(sg, "_chapter_weight", return_value=1):
+            plan = sg._allocate_chapters_to_slots(["A", "B", "C"], 7, "X", {})
+        c = Counter(plan)
+        self.assertEqual(set(c), {"A", "B", "C"})  # every chapter covered
+        self.assertEqual(sum(c.values()), 7)
+        self.assertGreaterEqual(min(c.values()), 2)
+
+    def test_heavier_chapter_gets_more_questions(self):
+        from collections import Counter
+        from unittest import mock
+        from core import section_generator as sg
+        w = {"Heavy": 10, "Light": 1}
+        with mock.patch.object(sg, "_chapter_weight", side_effect=lambda subj, ch: w.get(ch, 1)):
+            plan = sg._allocate_chapters_to_slots(["Heavy", "Light"], 6, "X", {})
+        c = Counter(plan)
+        self.assertGreater(c["Heavy"], c.get("Light", 0))
+
+    def test_sections_coordinate_to_fill_coverage_gaps(self):
+        from unittest import mock
+        from core import section_generator as sg
+        with mock.patch.object(sg, "_chapter_weight", return_value=1):
+            covered = {}
+            p1 = sg._allocate_chapters_to_slots(["A", "B", "C", "D"], 2, "X", covered)
+            p2 = sg._allocate_chapters_to_slots(["A", "B", "C", "D"], 2, "X", covered)
+        self.assertEqual(len(set(p1) | set(p2)), 4)  # 2nd section fills what the 1st left out
+
+
+class ChapterCoverageAuditTest(TestCase):
+    """audit_chapter_coverage: every planned chapter should receive at least one question."""
+
+    def test_no_plan_is_ok(self):
+        from core.paper_audit import audit_chapter_coverage
+        res = audit_chapter_coverage({"Section A": {"questions": [{"chapter_tag": "X"}]}})
+        self.assertFalse(res["has_plan"])
+        self.assertTrue(res["ok"])
+
+    def test_all_planned_chapters_covered(self):
+        from core.paper_audit import audit_chapter_coverage
+        pd = {"Section A": {"_chapter_plan": ["Carbon", "Electricity"],
+                            "questions": [{"chapter_tag": "Carbon and its Compounds"},
+                                          {"chapter_tag": "Electricity"}]}}
+        res = audit_chapter_coverage(pd)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["covered"], 2)
+        self.assertEqual(res["missed"], [])
+
+    def test_missed_chapter_is_flagged(self):
+        from core.paper_audit import audit_chapter_coverage
+        pd = {"Section A": {"_chapter_plan": ["Carbon", "Electricity"],
+                            "questions": [{"chapter_tag": "Carbon"}, {"chapter_tag": "Carbon"}]}}
+        res = audit_chapter_coverage(pd)
+        self.assertFalse(res["ok"])
+        self.assertEqual((res["planned"], res["covered"]), (2, 1))
+        self.assertTrue(any("Electricity" in m for m in res["missed"]))
+
+    def test_chapter_covered_in_another_section_is_not_a_gap(self):
+        """A chapter planned for Section B but answered in Section A counts as covered — the
+        old per-section audit wrongly reported it as 'Section B: <chapter> missing'."""
+        from core.paper_audit import audit_chapter_coverage
+        pd = {
+            "Section A": {"_chapter_plan": ["Carbon"],
+                          "questions": [{"chapter_tag": "Carbon"}]},
+            "Section B": {"_chapter_plan": ["Carbon", "Acids"],
+                          "questions": [{"chapter_tag": "Acids"}]},
+        }
+        res = audit_chapter_coverage(pd)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["missed"], [])
+        self.assertEqual((res["planned"], res["covered"]), (2, 2))      # distinct chapters
+        self.assertEqual((res["slot_planned"], res["slot_covered"]), (3, 2))  # section-slots
+
+
+class SectionTopUpTest(TestCase):
+    """A uniform-marks section that comes back short on count is filled by ONE focused top-up
+    call, strictly additively (only valid, correctly-typed, non-duplicate questions, never
+    more than the shortfall)."""
+
+    # Genuinely distinct question stems so concept-overlap dedup doesn't falsely reject them.
+    EXISTING = ["Atomic radius decreases across a period left to right.",
+                "Noble gases have completely filled valence shells."]
+    FRESH = ["Methane exhibits a tetrahedral molecular geometry.",
+             "Sodium chloride forms via ionic bonding between Na and Cl.",
+             "Benzene shows delocalised pi electron resonance stability.",
+             "Hydrogen bonding raises the boiling point of water."]
+
+    def _wo(self, n, types=("MCQ",)):
+        from core.section_generator import SectionWorkOrder
+        return SectionWorkOrder(
+            section_name="Section A", section_id="A", title="MCQ", marks=n,
+            questions_count=n, marks_per_question=1, question_types=list(types),
+            instructions=[], constraints={}, context_text="", difficulty="medium",
+            subject="Chemistry", class_name="11", chapters=["Structure of Atom", "Chemical Bonding"],
+        )
+
+    @staticmethod
+    def _mcq(text, chapter="Chemical Bonding"):
+        return {"type": "MCQ", "text": text, "options": ["a) 1", "b) 2", "c) 3", "d) 4"],
+                "answer": "a", "marks": 1, "chapter_tag": chapter}
+
+    def _existing(self, n):
+        return [self._mcq(t, "Structure of Atom") for t in self.EXISTING[:n]]
+
+    def test_topup_fills_missing_mcqs(self):
+        import json
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(4)
+        section_data = {"questions": self._existing(2)}
+        fake = json.dumps({"questions": [self._mcq(t) for t in self.FRESH[:2]]})
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(fake, 10, 20)):
+            tokens = sg._top_up_short_section(section_data, wo)
+        self.assertEqual(len(section_data["questions"]), 4)
+        self.assertEqual(section_data.get("_topped_up"), 2)
+        self.assertEqual(tokens, (10, 20))
+
+    def test_topup_fills_mcq_plus_assertion_reason_section(self):
+        """The reported case: a 16-q 'MCQ + Assertion-Reason' Section A short by 1 — the old
+        single-category guard skipped it. An AR question (type MCQ, subtype assertion_reason)
+        is a valid fill for the allowed set."""
+        import json
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(3, types=("MCQ", "Assertion-Reason"))
+        section_data = {"questions": self._existing(2)}
+        ar = {"type": "MCQ", "subtype": "assertion_reason",
+              "text": "Assertion (A): Oxygen is paramagnetic.\nReason (R): It has two unpaired electrons.",
+              "options": ["a) ...", "b) ...", "c) ...", "d) ..."], "answer": "a",
+              "marks": 1, "chapter_tag": "Chemical Bonding"}
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(json.dumps({"questions": [ar]}), 5, 5)):
+            sg._top_up_short_section(section_data, wo)
+        self.assertEqual(len(section_data["questions"]), 3)
+        self.assertEqual(section_data.get("_topped_up"), 1)
+
+    def test_topup_rejects_near_duplicate(self):
+        """A topped-up question that echoes an existing one is dropped (no V5 chain runs on it)."""
+        import json
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(3)
+        section_data = {"questions": self._existing(2)}
+        dup = self._mcq(self.EXISTING[0])      # verbatim echo of an existing question
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(json.dumps({"questions": [dup]}), 1, 1)):
+            sg._top_up_short_section(section_data, wo)
+        self.assertEqual(len(section_data["questions"]), 2)        # duplicate rejected
+        self.assertNotIn("_topped_up", section_data)
+
+    def test_topup_never_exceeds_shortfall(self):
+        import json
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(3)                                   # need 3, have 2 → only 1 missing
+        section_data = {"questions": self._existing(2)}
+        fake = json.dumps({"questions": [self._mcq(t) for t in self.FRESH[:4]]})  # over-delivers
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(fake, 1, 1)):
+            sg._top_up_short_section(section_data, wo)
+        self.assertEqual(len(section_data["questions"]), 3)
+
+    def test_topup_noop_when_section_complete(self):
+        from core import section_generator as sg
+        wo = self._wo(2)
+        section_data = {"questions": self._existing(2)}
+        self.assertEqual(sg._top_up_short_section(section_data, wo), (0, 0))
+        self.assertNotIn("_topped_up", section_data)
+
+
+class ImageStemGuardTest(TestCase):
+    """A generic 'observe the diagram and answer' stem must NOT be turned into an image prompt
+    (that produced a second, irrelevant image — e.g. an org chart on a chemistry CBQ)."""
+
+    def test_generic_pointer_stems_are_flagged(self):
+        from core.generator import _is_generic_image_stem
+        for s in [
+            "Observe the diagram carefully and answer the following questions:",
+            "Study the figure below and answer:",
+            "Refer to the graph shown and identify the trend.",
+            "Based on the diagram, explain the periodic trend.",
+            "Read the source/case and answer the questions that follow:",
+        ]:
+            self.assertTrue(_is_generic_image_stem(s), f"should be generic: {s!r}")
+
+    def test_real_descriptions_are_not_flagged(self):
+        from core.generator import _is_generic_image_stem
+        for s in [
+            "A line graph with Atomic Number on the X-axis and Atomic Radius on the Y-axis showing a decreasing trend.",
+            "The Lewis structure of carbon dioxide with two double bonds drawn around the central atom.",
+            "A titration apparatus with a burette clamped above a conical flask containing an indicator.",
+        ]:
+            self.assertFalse(_is_generic_image_stem(s), f"should NOT be generic: {s!r}")
+
+
+class RerenderImageCacheTest(TestCase):
+    """Synchronous re-render must reuse cached images and NEVER call the slow image APIs
+    (those calls could block the request for minutes → page timeout)."""
+
+    @staticmethod
+    def _boom(*a, **k):
+        raise AssertionError("external image API was called in cache_only mode")
+
+    def test_cache_only_raises_without_any_network_call(self):
+        from unittest import mock
+        from core import generator as g
+        with mock.patch.object(g, "_openai_image_bytes", self._boom), \
+             mock.patch.object(g, "_together_image_bytes", self._boom), \
+             mock.patch.object(g, "_pollinations_image_bytes", self._boom):
+            with self.assertRaises(g.ImageNotCached):
+                g.generate_ai_image("a unique uncached prompt 12345", cache_only=True)
+
+    def test_materialize_images_cache_only_skips_uncached_image(self):
+        from unittest import mock
+        from core import generator as g
+        items = [("q", "1. A question"), ("image_gen", "another unique uncached prompt 67890")]
+        with mock.patch.object(g, "_openai_image_bytes", self._boom), \
+             mock.patch.object(g, "_together_image_bytes", self._boom), \
+             mock.patch.object(g, "_pollinations_image_bytes", self._boom):
+            out = g.materialize_images(items, allow=True, cache_only=True)
+        self.assertIn(("q", "1. A question"), out)            # text preserved
+        self.assertFalse(any(t == "image" for t, _ in out))   # uncached image dropped, not hung on
+
+
+class PaperMarksAuditTest(TestCase):
+    """audit_paper_marks: per-question marks (OR pair counted once) must add up to the pattern."""
+
+    class _Pat:
+        def __init__(self, sections, total_marks):
+            self.sections = sections
+            self.total_marks = total_marks
+
+    def _pat(self):
+        secs = [
+            {"name": "Section A", "marks": 4, "questions_count": 4, "marks_per_question": 1.0},
+            {"name": "Section E", "marks": 10, "questions_count": 2, "marks_per_question": 5.0},
+        ]
+        return self._Pat(secs, 14)
+
+    def test_clean_paper_passes(self):
+        from core.paper_audit import audit_paper_marks
+        pd = {
+            "Section A": {"marks": 4, "questions": [{"marks": 1} for _ in range(4)]},
+            "Section E": {"marks": 10, "questions": [{"marks": 5}, {"marks": 5}]},
+        }
+        res = audit_paper_marks(pd, self._pat())
+        self.assertTrue(res["ok"], res["issues"])
+        self.assertEqual(res["actual_total"], 14)
+
+    def test_under_produced_section_is_flagged(self):
+        from core.paper_audit import audit_paper_marks
+        pd = {  # Section A only has 2 of 4 questions
+            "Section A": {"marks": 4, "questions": [{"marks": 1}, {"marks": 1}]},
+            "Section E": {"marks": 10, "questions": [{"marks": 5}, {"marks": 5}]},
+        }
+        res = audit_paper_marks(pd, self._pat())
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["actual_total"], 12)
+        self.assertTrue(any("Section A" in i and "questions" in i for i in res["issues"]))
+
+    def test_over_marked_section_is_flagged(self):
+        from core.paper_audit import audit_paper_marks
+        pd = {  # right count (4) but inflated marks (2 each → 8, expected 4)
+            "Section A": {"marks": 4, "questions": [{"marks": 2} for _ in range(4)]},
+            "Section E": {"marks": 10, "questions": [{"marks": 5}, {"marks": 5}]},
+        }
+        res = audit_paper_marks(pd, self._pat())
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("Section A" in i and "marks" in i for i in res["issues"]))
+
+    def test_or_alternative_field_counts_once(self):
+        from core.paper_audit import audit_paper_marks
+        pd = {  # Section E questions carry an OR alternative as a FIELD — still 5m each, not 10
+            "Section A": {"marks": 4, "questions": [{"marks": 1} for _ in range(4)]},
+            "Section E": {"marks": 10, "questions": [
+                {"marks": 5, "or_alternative": "Alternative question text"},
+                {"marks": 5, "or_alternative": {"text": "Alt"}},
+            ]},
+        }
+        res = audit_paper_marks(pd, self._pat())
+        self.assertEqual(res["actual_total"], 14)
+        self.assertTrue(res["ok"], res["issues"])
+
+    def test_or_alternative_as_separate_entry_is_excluded(self):
+        from core.paper_audit import audit_paper_marks
+        pd = {  # an OR alternative leaked in as its own entry + an "OR" marker entry
+            "Section A": {"marks": 4, "questions": [{"marks": 1} for _ in range(4)]},
+            "Section E": {"marks": 10, "questions": [
+                {"marks": 5},
+                {"text": "OR"},                              # separator entry → excluded
+                {"marks": 5, "is_or_alternative": True},      # alternative entry → excluded
+                {"marks": 5},
+            ]},
+        }
+        res = audit_paper_marks(pd, self._pat())
+        # Section E should count only the 2 primary 5-mark questions = 10
+        self.assertEqual(res["actual_total"], 14)
+        self.assertTrue(res["ok"], res["issues"])
+
+
+class MCQAnswerCorrectionTest(TestCase):
+    """V4 auto-corrects a wrong MCQ key only when two independent high-confidence passes agree."""
+
+    def _mcq(self, ans):
+        return [{
+            "type": "MCQ", "text": "2 + 2 = ?",
+            "options": {"a": "3", "b": "4", "c": "5", "d": "6"},
+            "answer": ans, "marks": 1,
+        }]
+
+    def _reply(self, letter, conf):
+        import json as _json
+        return (_json.dumps([{"q": 1, "answer": letter, "confidence": conf}]), 0, 0)
+
+    def test_two_high_confidence_passes_correct_the_key(self):
+        from unittest import mock
+        from core import section_generator as sg
+        qs = self._mcq("a")  # stored wrong; verifier insists on 'b' twice, high
+        with mock.patch.object(sg.mantle_client, "converse",
+                               side_effect=[self._reply("b", "high"), self._reply("b", "high")]):
+            res = sg.verify_mcq_answers(qs, "10", "Mathematics")
+        self.assertEqual(qs[0]["answer"], "b")          # key fixed in place
+        self.assertTrue(res[0]["corrected"])
+        self.assertFalse(res[0]["suspect"])             # fixed → not also flagged
+
+    def test_single_disagreement_only_flags_not_corrects(self):
+        from unittest import mock
+        from core import section_generator as sg
+        qs = self._mcq("a")  # first says 'b' high, second pass agrees with stored 'a' → don't flip
+        with mock.patch.object(sg.mantle_client, "converse",
+                               side_effect=[self._reply("b", "high"), self._reply("a", "high")]):
+            res = sg.verify_mcq_answers(qs, "10", "Mathematics")
+        self.assertEqual(qs[0]["answer"], "a")          # key unchanged
+        self.assertFalse(res[0]["corrected"])
+        self.assertTrue(res[0]["suspect"])              # flagged for human review
+
+    def test_medium_confidence_never_corrects(self):
+        from unittest import mock
+        from core import section_generator as sg
+        qs = self._mcq("a")
+        with mock.patch.object(sg.mantle_client, "converse",
+                               side_effect=[self._reply("b", "medium")]):
+            res = sg.verify_mcq_answers(qs, "10", "Mathematics")
+        self.assertEqual(qs[0]["answer"], "a")          # medium is never enough to overwrite
+        self.assertFalse(res[0]["corrected"])
+        self.assertTrue(res[0]["suspect"])
+
+
+class FirstLoginPasswordTest(TestCase):
+    """First-login flow: set a new password OR skip — both clear require_password_change."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.user = User.objects.create_user("newbie", "n@x.com", "temppass123")
+        p = self.user.profile
+        p.require_password_change = True
+        p.save()
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+
+    def test_set_password_clears_flag(self):
+        r = self.api.post('/api/auth/first-login-password/', {'new_password': 'brandnew123'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.user.refresh_from_db()
+        self.user.profile.refresh_from_db()
+        self.assertFalse(self.user.profile.require_password_change)
+        self.assertTrue(self.user.check_password('brandnew123'))
+
+    def test_skip_clears_flag_keeps_password(self):
+        r = self.api.post('/api/auth/first-login-password/', {'skip': True}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.user.profile.refresh_from_db()
+        self.assertFalse(self.user.profile.require_password_change)
+        self.assertTrue(self.user.check_password('temppass123'))
+
+    def test_set_rejected_when_flag_already_false(self):
+        p = self.user.profile
+        p.require_password_change = False
+        p.save()
+        r = self.api.post('/api/auth/first-login-password/', {'new_password': 'brandnew123'}, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_short_password_rejected(self):
+        r = self.api.post('/api/auth/first-login-password/', {'new_password': 'short'}, format='json')
+        self.assertEqual(r.status_code, 400)
+
+
+class TeamUsagePersistenceTest(TestCase):
+    """The team-usage page reads each user's tokens/cost from the UsageEvent log, so the figures
+    survive paper deletion (old behaviour: recomputed from live papers → reset to 0 on delete)."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.school = School.objects.create(name="Test School")
+
+        def mk(uname, role):
+            u = User.objects.create_user(uname, f"{uname}@x.com", "pw")
+            p = u.profile
+            p.school = self.school
+            p.role = role
+            p.save()
+            return u
+
+        self.admin = mk("admin1", "school_admin")
+        self.teacher = mk("teach1", "teacher")
+        self.api = APIClient()
+        self.api.force_authenticate(self.admin)
+
+    def _row(self, username):
+        r = self.api.get(f'/api/admin/schools/{self.school.id}/user-usage/')
+        self.assertEqual(r.status_code, 200)
+        return next(x for x in r.json()['users'] if x['username'] == username)
+
+    def test_usage_comes_from_events_not_live_papers(self):
+        from core.models import UsageEvent
+        UsageEvent.record(user=self.teacher, input_tokens=1000, output_tokens=500, cost=2)
+        row = self._row("teach1")
+        self.assertEqual(row['total_tokens'], 1500)      # from the event …
+        self.assertEqual(float(row['total_cost']), 2.0)
+        self.assertEqual(row['total_papers'], 1)
+        self.assertEqual(row['current_papers'], 0)       # … even with no surviving paper
+
+    def test_monthly_excludes_prior_months(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from core.models import UsageEvent
+        UsageEvent.record(user=self.teacher, input_tokens=100, cost=1)           # this month
+        old = UsageEvent.record(user=self.teacher, input_tokens=900, cost=9)
+        UsageEvent.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=45))
+        row = self._row("teach1")
+        self.assertEqual(row['total_tokens'], 1000)      # all-time
+        self.assertEqual(row['monthly_tokens'], 100)     # only the current-month event
+
+
+class HierarchicalVisibilityTest(TestCase):
+    """Validates the `_owner_scope` helper used for QuestionPaper visibility: a teacher sees only
+    their OWN papers; a school_admin sees the whole school's; superadmin sees all. (Patterns and
+    blueprints are intentionally school-wide-shared and do NOT use this helper.) ExamPattern rows
+    are used here only as a convenient model with a `created_by` field to exercise the helper."""
+
+    def setUp(self):
+        from api.views import _owner_scope
+        self._scope = _owner_scope
+        self.school = School.objects.create(name="S")
+        def mk(uname, role):
+            u = User.objects.create_user(uname, f"{uname}@x.com", "pw")
+            p = u.profile
+            p.school = self.school
+            p.role = role
+            p.save()
+            return u
+        self.admin = mk("adm", "school_admin")
+        self.t1 = mk("t1", "teacher")
+        self.t2 = mk("t2", "teacher")
+        secs = [{"name": "A", "marks": 10, "questions_count": 5}]
+        self.p_admin = ExamPattern.objects.create(name="pa", sections=secs, created_by=self.admin)
+        self.p_t1 = ExamPattern.objects.create(name="p1", sections=secs, created_by=self.t1)
+        self.p_t2 = ExamPattern.objects.create(name="p2", sections=secs, created_by=self.t2)
+
+    def test_teacher_sees_only_own(self):
+        ids = set(self._scope(ExamPattern.objects.all(), self.t1).values_list("id", flat=True))
+        self.assertEqual(ids, {self.p_t1.id})  # not the admin's, not the other teacher's
+
+    def test_admin_sees_whole_school(self):
+        ids = set(self._scope(ExamPattern.objects.all(), self.admin).values_list("id", flat=True))
+        self.assertEqual(ids, {self.p_admin.id, self.p_t1.id, self.p_t2.id})
+
+
+class BlueprintIsolationTest(TestCase):
+    """A teacher must not see another school's ExamBlueprints (IDOR fix #3)."""
+
+    def setUp(self):
+        self.sa = School.objects.create(name="A")
+        self.sb = School.objects.create(name="B")
+        self.ua = User.objects.create_user("ta", "a@x.com", "pw")
+        self.ub = User.objects.create_user("tb", "b@x.com", "pw")
+        for u, s in ((self.ua, self.sa), (self.ub, self.sb)):
+            p = u.profile          # auto-created by signal
+            p.school = s
+            p.role = "teacher"
+            p.save()
+        self.bp_a = ExamBlueprint.objects.create(class_name="10", subject="Science", blueprint={}, created_by=self.ua)
+        self.bp_b = ExamBlueprint.objects.create(class_name="10", subject="Science", blueprint={}, created_by=self.ub)
+
+    def test_blueprints_scoped_to_own_school(self):
+        ids_a = set(_scoped_blueprints(self.ua).values_list("id", flat=True))
+        self.assertIn(self.bp_a.id, ids_a)
+        self.assertNotIn(self.bp_b.id, ids_a)   # School A cannot see School B's blueprint
+
+
+class MCQHardeningTest(TestCase):
+    """MCQs must have exactly 4 non-empty a/b/c/d options and a valid answer key."""
+
+    def _opts(self, options, answer="a"):
+        return sg._validate_mcq_options({"options": options, "answer": answer}, 1, "MCQ/standard")
+
+    def test_valid_four_pass(self):
+        self.assertEqual(self._opts({"a": "1", "b": "2", "c": "3", "d": "4"}), [])
+
+    def test_three_options_flagged(self):
+        self.assertTrue(any("EXACTLY 4" in e for e in self._opts({"a": "1", "b": "2", "c": "3"})))
+
+    def test_five_options_flagged(self):
+        self.assertTrue(any("EXACTLY 4" in e for e in self._opts({"a": "1", "b": "2", "c": "3", "d": "4", "e": "5"})))
+
+    def test_empty_option_flagged(self):
+        self.assertTrue(any("EXACTLY 4" in e for e in self._opts({"a": "1", "b": "  ", "c": "3", "d": "4"})))
+
+    def test_wrong_keys_flagged(self):
+        self.assertTrue(any("keys must be" in e for e in self._opts({"a": "1", "b": "2", "c": "3", "e": "4"})))
+
+    def test_missing_answer_flagged(self):
+        self.assertTrue(any("answer" in e for e in self._opts({"a": "1", "b": "2", "c": "3", "d": "4"}, answer="")))
+
+    def test_bad_answer_flagged(self):
+        self.assertTrue(any("a/b/c/d" in e for e in self._opts({"a": "1", "b": "2", "c": "3", "d": "4"}, answer="z")))
+
+    def test_missing_type_flagged(self):
+        pattern = ExamPattern(name="mt", subject="Science", class_name="10", sections=[{
+            "name": "A", "marks": 2, "questions_count": 2, "marks_per_question": 1, "question_types": ["MCQ"],
+            "subsections": [{"name": "MCQ", "question_types": ["MCQ"], "marks": 2, "questions_count": 2, "marks_per_question": 1}],
+        }])
+        wo = sg.build_work_orders({s["name"]: s for s in pattern.sections}, pattern, {}, "M", "10", "Science", ["x"])[0]
+        errs = sg._validate_by_subtype({"text": "q", "marks": 1}, 1, wo)   # no 'type'
+        self.assertTrue(any("missing 'type'" in e for e in errs))
+
+
+class InlineImageSalvageTest(TestCase):
+    """Models sometimes write '(Image description: …)' inline instead of an image_prompt field,
+    so no image was generated. The renderer must salvage it into a real image."""
+
+    def test_extracts_neuron_description(self):
+        t = ("(Image description: A simple diagram showing a neuron with labelled parts A, B, C. "
+             "Part A is a branched structure, B is a long fibre, and C is a gap between two neurons.) "
+             "Which label in the diagram shows the synapse?")
+        clean, prompt = sg_gen._extract_inline_image(t)
+        self.assertEqual(clean, "Which label in the diagram shows the synapse?")
+        self.assertIn("neuron", prompt)
+
+    def test_bracketed_and_midsentence(self):
+        clean, prompt = sg_gen._extract_inline_image("[Image: bar chart of rainfall] Which city is wettest?")
+        self.assertEqual(clean, "Which city is wettest?")
+        self.assertIn("bar chart", prompt)
+
+    def test_plain_question_untouched(self):
+        t = "What is the chemical formula of water?"
+        clean, prompt = sg_gen._extract_inline_image(t)
+        self.assertEqual(clean, t)
+        self.assertIsNone(prompt)
+
+    def test_empty_marker_not_treated_as_image(self):
+        clean, prompt = sg_gen._extract_inline_image("Observe the figure (figure) below.")
+        self.assertIsNone(prompt)
 
 
 class MissingCountDerivationTest(TestCase):

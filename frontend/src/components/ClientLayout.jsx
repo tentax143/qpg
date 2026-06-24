@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import Sidebar from './Sidebar';
 
 // Pages reachable without a session (the root "/" is itself the login screen).
-const PUBLIC_PATHS = ['/', '/login', '/register', '/forgot-password'];
+const PUBLIC_PATHS = ['/', '/login', '/register', '/forgot-password', '/change-password'];
 
 function isPublicPath(pathname) {
   return PUBLIC_PATHS.includes(pathname);

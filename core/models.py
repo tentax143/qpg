@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.utils import timezone
 
 
 class School(models.Model):
@@ -139,6 +140,7 @@ class QuestionPaper(models.Model):
     file = models.FileField(upload_to="question_papers/", blank=True, null=True)
     status = models.CharField(max_length=20, default="queued")  # queued/generating/done/cancelled
     task_id = models.CharField(max_length=255, blank=True, null=True)  # Celery task ID
+    status_detail = models.TextField(blank=True, default="")  # failure reason / warnings shown to the teacher
     edited_content = models.TextField(blank=True, null=True)  # Store edited content from the editor
     paper_data = models.JSONField(null=True, blank=True)      # Raw generated JSON — used for re-rendering
     cost = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
@@ -162,7 +164,7 @@ class Material(models.Model):
 
     class_name = models.CharField(max_length=10)
     subject = models.CharField(max_length=50)
-    unit = models.CharField(max_length=50, blank=True, null=True)
+    unit = models.CharField(max_length=255, blank=True, null=True)  # CBSE chapter names can be long
     title = models.CharField(max_length=200)
     file = models.FileField(upload_to="materials/")
     type = models.CharField(max_length=50, choices=MATERIAL_TYPES)
@@ -256,6 +258,61 @@ class UserProfile(models.Model):
         return f"Profile({self.user.username})"
 
 
+class UsageEvent(models.Model):
+    """Append-only record of one token-consuming operation (one per paper generation).
+
+    The team-usage page aggregates THESE, not live papers, so a teacher's all-time and
+    monthly tokens/cost survive paper deletion — mirroring how the School keeps a cumulative
+    counter. ``paper_id`` is a plain int (not an FK) because it may point to a since-deleted
+    paper; ``school`` is denormalised so usage still attributes correctly if a user later moves.
+    """
+    KIND_CHOICES = [
+        ("generate", "Generate"),
+        ("regenerate", "Regenerate"),
+        ("rerender", "Re-render"),
+        ("edit", "AI Edit"),
+        ("pattern", "Pattern"),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="usage_events")
+    school = models.ForeignKey("School", on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name="usage_events")
+    paper_id = models.IntegerField(null=True, blank=True)   # may reference a since-deleted paper
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES, default="generate")
+    input_tokens = models.BigIntegerField(default=0)
+    output_tokens = models.BigIntegerField(default=0)
+    cost = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["school", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"UsageEvent({self.user_id}, {self.kind}, {self.input_tokens + self.output_tokens} tok)"
+
+    @classmethod
+    def record(cls, user, input_tokens=0, output_tokens=0, cost=0, kind="generate",
+               paper_id=None, school=None, created_at=None):
+        """Create a usage event. Best-effort: resolves the user's school if not given, and never
+        raises (callers wrap in try/except, but guard here too so usage tracking can't break
+        generation)."""
+        try:
+            if school is None and user is not None:
+                school = getattr(getattr(user, "profile", None), "school", None)
+            return cls.objects.create(
+                user=user, school=school, paper_id=paper_id, kind=kind,
+                input_tokens=int(input_tokens or 0), output_tokens=int(output_tokens or 0),
+                cost=cost or 0,
+                **({"created_at": created_at} if created_at else {}),
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"[UsageEvent] Could not record usage: {e}")
+            return None
+
+
 class GeneratedQuestion(models.Model):
     """
     Track generated questions to avoid duplicates across multiple paper generations.
@@ -284,7 +341,11 @@ class GeneratedQuestion(models.Model):
 
 
 @receiver(post_save, sender=User)
-def ensure_user_profile(sender, instance, created, **kwargs):
+def ensure_user_profile(sender, instance, created, raw=False, **kwargs):
+    # During fixture loads (loaddata sets raw=True) the profile is loaded explicitly —
+    # don't auto-create one here or it collides with the fixture's UserProfile.
+    if raw:
+        return
     # Create profile on first save
     if created:
         UserProfile.objects.create(user=instance)

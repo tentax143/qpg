@@ -4,12 +4,22 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Plus, FileText, Download, CheckCircle,
+  Plus, FileText, Download, CheckCircle, AlertTriangle,
   Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil, RotateCw
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
+import Modal from '@/components/Modal';
+
+// status_detail is one string of one or more teacher-facing notes. Older papers join
+// them with spaces, newer ones with newlines — split on both, and also before each
+// known note prefix so a space-joined blob still breaks into separate warnings.
+const parseWarnings = (detail) =>
+  (detail || '')
+    .split(/(?=Marks check —|Coverage —|Generated without)|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -26,6 +36,7 @@ export default function DashboardPage() {
   const [success, setSuccess] = useState(null);
   const [rerenderingId, setRerenderingId] = useState(null);
   const [regeneratingId, setRegeneratingId] = useState(null);
+  const [warningPaper, setWarningPaper] = useState(null);  // paper whose warnings/failure detail is shown in the modal
   const pollingIntervalRef = useRef(null);
 
   useEffect(() => {
@@ -98,6 +109,10 @@ export default function DashboardPage() {
       fetchDashboardData();
     } catch { setError('Bulk delete failed'); }
   };
+
+  // A paper stuck in 'generating' for >15 min (e.g. a dead worker) is treated as retryable.
+  const isStuck = (p) => p.status === 'generating' && p.updated_at
+    && (Date.now() - new Date(p.updated_at).getTime() > 15 * 60 * 1000);
 
   const handleRetry = async (id) => {
     try {
@@ -253,13 +268,35 @@ export default function DashboardPage() {
                       </td>
                       <td className="px-5 py-4">
                         {paper.status === 'done' ? (
-                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
-                            <CheckCircle className="w-3.5 h-3.5" />
-                            Completed
-                          </span>
+                          paper.status_detail ? (
+                            <button
+                              type="button"
+                              onClick={() => setWarningPaper(paper)}
+                              title="Click to see what to check"
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full hover:bg-emerald-100 transition-colors cursor-pointer"
+                            >
+                              <CheckCircle className="w-3.5 h-3.5" />
+                              Completed ⚠
+                            </button>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+                              <CheckCircle className="w-3.5 h-3.5" />
+                              Completed
+                            </span>
+                          )
                         ) : paper.status === 'failed' ? (
-                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full">
+                          <button
+                            type="button"
+                            onClick={() => paper.status_detail && setWarningPaper(paper)}
+                            title={paper.status_detail ? 'Click to see why it failed' : 'Generation failed'}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full hover:bg-red-100 transition-colors cursor-pointer disabled:cursor-default"
+                            disabled={!paper.status_detail}
+                          >
                             Failed
+                          </button>
+                        ) : isStuck(paper) ? (
+                          <span title="Generation looks stalled — you can retry." className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                            Stalled
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded-full">
@@ -313,11 +350,11 @@ export default function DashboardPage() {
                               <RotateCw className={`w-4 h-4 ${regeneratingId === paper.id ? 'animate-spin' : ''}`} />
                             </button>
                           )}
-                          {paper.status === 'failed' && (
+                          {(paper.status === 'failed' || isStuck(paper)) && (
                             <button
                               onClick={() => handleRetry(paper.id)}
                               className="p-1.5 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors"
-                              title="Retry"
+                              title={paper.status_detail || 'Retry'}
                             >
                               <RefreshCw className="w-4 h-4" />
                             </button>
@@ -369,6 +406,56 @@ export default function DashboardPage() {
         </div>
 
       </div>
+
+      {/* Warnings / failure-reason popup for a paper's status badge */}
+      <Modal
+        isOpen={!!warningPaper}
+        onClose={() => setWarningPaper(null)}
+        title={warningPaper?.status === 'failed' ? 'Why this paper failed' : 'Things to check'}
+        size="lg"
+      >
+        {warningPaper && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+              <div className="w-9 h-9 bg-slate-100 border border-slate-200 rounded-md flex items-center justify-center text-slate-700 text-xs font-semibold shrink-0">
+                {warningPaper.class_name}
+              </div>
+              <div>
+                <p className="font-medium text-slate-900">{warningPaper.subject}</p>
+                <p className="text-xs text-slate-400">{warningPaper.pattern_name || 'Standard'}</p>
+              </div>
+            </div>
+
+            {warningPaper.status === 'failed' ? (
+              <div className="flex gap-2.5 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-800">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-red-500" />
+                <span className="break-words">{warningPaper.status_detail}</span>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-slate-600">
+                  The paper generated successfully, but a few things are worth a quick look before you hand it out:
+                </p>
+                <ul className="space-y-2">
+                  {parseWarnings(warningPaper.status_detail).map((w, i) => (
+                    <li
+                      key={i}
+                      className="flex gap-2.5 p-3 rounded-lg bg-amber-50 border border-amber-100 text-sm text-amber-900"
+                    >
+                      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
+                      <span className="break-words">{w}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-slate-400">
+                  Tip: use <span className="font-medium text-amber-600">Regenerate</span> to rebuild fresh
+                  questions from the pattern, or open the paper to edit it directly.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

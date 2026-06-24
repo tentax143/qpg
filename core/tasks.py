@@ -147,6 +147,7 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
     paper = QuestionPaper.objects.get(id=paper_id)
     paper.status = "generating"
     paper.task_id = self.request.id  # Store the actual task ID
+    paper.status_detail = ""         # clear any prior failure reason / warning
     paper.save()
 
     try:
@@ -236,9 +237,43 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
                 print(f"[Task] paper_data not available in request state; paper_data will be empty")
         except Exception as _e:
             print(f"[Task] Could not save paper_data: {_e}")
+
+        # Teacher-facing note: warn if generated without materials (#8) and if the whole-paper
+        # marks total drifts from the pattern total (#9).
+        notes = []
+        try:
+            from .models import Material
+            cls_num = (class_name or '').split('-')[0]
+            if not Material.objects.filter(class_name=cls_num, subject__iexact=paper.subject).exists():
+                notes.append("Generated without uploaded materials for this class/subject — "
+                             "verify the questions against the syllabus.")
+        except Exception:
+            pass
+        try:
+            # OR-aware, per-section marks audit: sum per-question marks (an OR /
+            # internal-choice pair counts once) and compare to the pattern, section
+            # by section, so a mismatch names the exact section and cause.
+            from .paper_audit import audit_paper_marks, summary_line
+            if paper.pattern:
+                result = audit_paper_marks(paper.paper_data or {}, paper.pattern)
+                if not result["ok"]:
+                    notes.append("Marks check — " + summary_line(result))
+        except Exception:
+            pass
+        try:
+            # Chapter-coverage audit: did every planned (weighted) chapter get a question?
+            from .paper_audit import audit_chapter_coverage, coverage_summary_line
+            cov = audit_chapter_coverage(paper.paper_data or {})
+            cov_line = coverage_summary_line(cov)
+            if cov_line:
+                notes.append("Coverage — " + cov_line)
+        except Exception:
+            pass
+        paper.status_detail = " ".join(notes)
         paper.save()
 
         # Update school cumulative usage (atomic — persists even after paper is deleted)
+        school = None
         try:
             school = paper.created_by.profile.school
             if school:
@@ -251,11 +286,23 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         except Exception as _se:
             print(f"[Task] Could not update school cumulative stats: {_se}")
 
+        # Per-user usage log — survives paper deletion, so the team-usage page stays accurate
+        # (a regenerate re-runs this task and correctly logs another event).
+        try:
+            from .models import UsageEvent
+            UsageEvent.record(
+                user=paper.created_by, school=school, paper_id=paper.id, kind="generate",
+                input_tokens=input_tokens, output_tokens=output_tokens, cost=total_cost or 0,
+            )
+        except Exception as _ue:
+            print(f"[Task] Could not record usage event: {_ue}")
+
         return summary
         
     except Exception as e:
-        # Mark the paper as failed (no auto-retry)
+        # Mark the paper as failed (no auto-retry) and record a short reason for the teacher.
         paper.status = "failed"
+        paper.status_detail = str(e)[:500]
         paper.save()
 
         # Log the error and let the task fail once

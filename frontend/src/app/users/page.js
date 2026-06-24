@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { 
+import { useRouter } from 'next/navigation';
+import {
   Users as UsersIcon, Plus, Search, Mail, 
   Shield, UserCheck, Trash2, ShieldAlert,
   UserPlus, Lock, CheckCircle, Clock,
@@ -19,6 +20,7 @@ const ROLE_BADGE = {
 };
 
 export default function UsersPage() {
+  const router = useRouter();
   const [users, setUsers] = useState([]);
   const [papers, setPapers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -38,9 +40,16 @@ export default function UsersPage() {
 
   useEffect(() => {
     const stored = localStorage.getItem('user');
-    if (stored) setCurrentUser(JSON.parse(stored));
+    const u = stored ? JSON.parse(stored) : null;
+    setCurrentUser(u);
+    // Only school admins / superadmins manage users — bounce teachers away.
+    if (u && u.role !== 'school_admin' && u.role !== 'superadmin') {
+      router.replace('/dashboard');
+      return;
+    }
     fetchData();
     apiClient.get('/subjects/').then(r => setSubjects(r.data.subjects || [])).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchData = async () => {

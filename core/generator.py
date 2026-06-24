@@ -1175,6 +1175,57 @@ def _marks_suffix(marks_raw):
     return f" [{int_val} {label}]"
 
 
+# Models sometimes describe a diagram INLINE — "(Image description: a neuron with parts A, B, C…)"
+# — instead of emitting a structured image_prompt field, so no image gets generated. This catches
+# that parenthetical/bracketed description so we can render a real image and drop the stray text.
+_INLINE_IMG_RE = re.compile(
+    r'[\(\[]\s*(?:image\s*description|image|diagram|figure|picture|illustration)\b[:\-\s]*'
+    r'(.*?)[\)\]]',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+# A generic "observe / study the diagram and answer…" stem POINTS to an image, it does not
+# DESCRIBE one. Deriving an image prompt from such a stem makes the generator invent a random,
+# meaningless picture (e.g. a CEO/Manager org chart for a chemistry CBQ). The real image is
+# already supplied via the section's image_path or an explicit image_prompt — so these stems
+# must never be turned into image prompts.
+_GENERIC_IMG_STEM_RE = re.compile(
+    r'(observe|study|look\s+at|refer\s+to|examine|consider|based\s+on|using|from|read)\b'
+    r'[^.]{0,50}\b(diagram|figure|image|graph|picture|illustration|chart|map|flow\s*chart|'
+    r'table|setup|set-up|circuit|structure|source|case|passage|given|above|below|following)\b',
+    re.IGNORECASE,
+)
+
+
+def _is_generic_image_stem(text: str) -> bool:
+    """True if `text` merely points at an image/source rather than describing one to draw."""
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    if "answer the following" in t or "answer the question" in t:
+        return True
+    return bool(_GENERIC_IMG_STEM_RE.search(t))
+
+
+def _extract_inline_image(text):
+    """Return (clean_text, image_prompt_or_None). If the question text contains an inline
+    '(Image description: …)' style note, pull it out as an image prompt and strip it from
+    the visible text."""
+    if not text:
+        return text, None
+    m = _INLINE_IMG_RE.search(text)
+    if not m:
+        return text, None
+    desc = (m.group(1) or "").strip().strip(".")
+    clean = (text[:m.start()] + " " + text[m.end():])
+    clean = re.sub(r"\s{2,}", " ", clean).strip()
+    # Only treat it as an image if the description is substantive enough to render.
+    if len(desc) < 12:
+        return clean or text, None
+    return clean, desc
+
+
 def process_question(all_questions, q, q_counter, class_name=None, subject=None, chapters=None, paper_id=None):
     # Handle case where q might be a string instead of dict
     if not isinstance(q, dict):
@@ -1328,8 +1379,25 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
             all_questions.append(("instruction", "Read the source/case and answer the questions that follow:"))
             all_questions.append(("passage", _src_text))
 
-        # Image-based questions: render the diagram ABOVE the question text.
+        # Image-based questions: render a diagram ABOVE the question. An image is produced when
+        # the model gives an image_prompt, OR writes an inline "(Image description: …)", OR simply
+        # tags the question subtype/type "image_based" — making the tag itself a reliable trigger.
         _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
+        _is_image_q = (str(q.get('subtype', '')).lower() == 'image_based'
+                       or _qt_str(q.get('type', '')) == 'image_based')
+        if not _img_p:
+            _orig_text = text_content
+            text_content, _inline = _extract_inline_image(text_content)
+            if _inline:
+                _img_p = _inline
+            elif _is_image_q:
+                # Tagged image_based but no prompt/description — derive a prompt from the
+                # question text, but ONLY if it actually describes a visual. A generic
+                # "observe the diagram and answer…" stem would generate a meaningless image
+                # (the real one comes from the section image_path / an explicit image_prompt).
+                _derived = re.sub(r'\s+', ' ', _orig_text or '').strip()
+                if not _is_generic_image_stem(_derived):
+                    _img_p = _derived
         if _img_p and len(_img_p) > 10:
             all_questions.append(('image_gen', _img_p))
 
@@ -1409,8 +1477,19 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         # AR questions are skipped — their "(A):"/"(R):" markers are part of the statements.
         question_text = _strip_inline_options(question_text, options, q)
 
-        # Image-based questions: render the diagram ABOVE the question text.
+        # Image-based questions: render a diagram ABOVE the question (see main branch above).
         _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
+        _is_image_q = (str(q.get('subtype', '')).lower() == 'image_based'
+                       or _qt_str(q.get('type', '')) == 'image_based')
+        if not _img_p:
+            _orig_text = question_text
+            question_text, _inline = _extract_inline_image(question_text)
+            if _inline:
+                _img_p = _inline
+            elif _is_image_q:
+                _derived = re.sub(r'\s+', ' ', _orig_text or '').strip()
+                if not _is_generic_image_stem(_derived):
+                    _img_p = _derived
         if _img_p and len(_img_p) > 10:
             all_questions.append(('image_gen', _img_p))
 
@@ -2491,6 +2570,16 @@ def _openai_image_size(width: int, height: int) -> str:
 IMAGE_OPENAI_ATTEMPTS = int(os.environ.get("IMAGE_OPENAI_ATTEMPTS", "2"))
 
 
+class ImageNotCached(Exception):
+    """Raised when an image is requested in cache-only mode but isn't already on disk.
+
+    Synchronous endpoints (re-render, AI-edit re-render, restore) run in a web request
+    and must never make the slow external image-generation calls (OpenAI/Together can
+    block for minutes per image → the page times out). Images are already generated and
+    cached during the async Celery generation, so those endpoints reuse the cache and
+    skip anything missing instead of regenerating it."""
+
+
 def _decode_image_item(item, _requests):
     """Pull image bytes from a Together/OpenAI 'data' item (b64 or url)."""
     b64 = item.get("b64_json") or item.get("b64")
@@ -2558,7 +2647,7 @@ def _pollinations_image_bytes(prompt: str, _requests) -> bytes:
     return resp.content
 
 
-def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_scale: float = 8.0) -> str:
+def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_scale: float = 8.0, cache_only: bool = False) -> str:
     """Generate an image and save under MEDIA_ROOT/generated_images. Returns relative media path.
 
     Provider chain: OpenAI gpt-image-1 (primary, IMAGE_OPENAI_ATTEMPTS tries) →
@@ -2574,6 +2663,10 @@ def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_sc
     abs_path = os.path.join(settings.MEDIA_ROOT, rel_path)
     if os.path.exists(abs_path):
         return rel_path
+    if cache_only:
+        # Web-request re-render path: the image isn't cached and we must not block the
+        # request on a slow external API call. Skip it (raise → caller drops the image).
+        raise ImageNotCached(str(prompt)[:80])
 
     size = _openai_image_size(width, height)
     img_bytes = None
@@ -2614,9 +2707,12 @@ def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_sc
     return rel_path
 
 
-def materialize_images(all_questions, allow=True):
+def materialize_images(all_questions, allow=True, cache_only=False):
     """Convert ('image_gen', prompt) and [IMAGE:/[Picture:/[Diagram:] markers (case-insensitive) to ('image', rel_path).
-    Supports markers embedded in any text type (q, subq, instruction, passage)."""
+    Supports markers embedded in any text type (q, subq, instruction, passage).
+
+    cache_only=True (synchronous re-render path): reuse images already on disk but never
+    call the external image APIs — uncached images are skipped, keeping the request fast."""
     if not allow:
         return all_questions
     import re
@@ -2628,8 +2724,11 @@ def materialize_images(all_questions, allow=True):
             # Direct generation tuple
             if typ == 'image_gen':
                 print(f"[ImageGen] image_prompt detected: {str(text)[:120]}...")
-                rel = generate_ai_image(str(text))
-                out.append(('image', rel))
+                try:
+                    rel = generate_ai_image(str(text), cache_only=cache_only)
+                    out.append(('image', rel))
+                except ImageNotCached:
+                    print(f"[ImageGen] cache-only re-render: skipping uncached image ({str(text)[:60]})")
                 continue
 
             if isinstance(text, str):
@@ -2656,9 +2755,11 @@ def materialize_images(all_questions, allow=True):
 
                         print(f"[ImageGen] marker detected: {_kind} | {prompt_clean[:120]}...")
                         try:
-                            rel = generate_ai_image(prompt_clean)
+                            rel = generate_ai_image(prompt_clean, cache_only=cache_only)
                             out.append(('image', rel))
                             generated_any = True
+                        except ImageNotCached:
+                            print(f"[ImageGen] cache-only re-render: skipping uncached image ({prompt_clean[:60]})")
                         except Exception as ge:
                             print(f"[ImageGen] Generation failed for prompt '{prompt_clean[:60]}': {ge}")
 
@@ -2680,7 +2781,7 @@ def materialize_images(all_questions, allow=True):
 _COST_PER_INPUT_1K  = 0.49   # INR per 1k input tokens
 _COST_PER_OUTPUT_1K = 1.47   # INR per 1k output tokens
 
-def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters, additional_context, pattern, total_input_tokens=0, total_output_tokens=0, allow_images=True):
+def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters, additional_context, pattern, total_input_tokens=0, total_output_tokens=0, allow_images=True, cache_only=False):
     """
     Render a pre-generated paper_data dict to DOCX.
     Used by the parallel pipeline after generate_paper_parallel() succeeds.
@@ -2694,9 +2795,9 @@ def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters
     # These hold validation reports and warnings and must not appear in the DOCX
     _INTERNAL_KEYS = {
         "_competency_report", "_coherence_report", "_final_audit",
-        "_uniqueness_warnings", "_mcq_answer_warnings", "_quality_flags",
+        "_uniqueness_warnings", "_mcq_answer_warnings", "_mcq_answer_corrections", "_quality_flags",
         "_grounding_issues", "_cbq_passage_issues", "_cross_section_duplicates",
-        "_partial", "_errors",
+        "_partial", "_errors", "_chapter_plan", "_dropped_wrong_type", "_topped_up",
     }
     render_data = {}
     for sec_name, sec_data in paper_data.items():
@@ -2706,7 +2807,7 @@ def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters
         render_data[sec_name] = clean_sec
 
     all_questions = render_section_questions([], render_data, blueprint, class_name, subject, chapters, None)
-    all_questions = materialize_images(all_questions, allow=allow_images)
+    all_questions = materialize_images(all_questions, allow=allow_images, cache_only=cache_only)
 
     summary = {sec: {"title": sec, "marks": render_data.get(sec, {}).get("marks", 0)} for sec in render_data.keys()}
 
@@ -3390,6 +3491,24 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
         # the shared temp_clean.json file that caused cross-user data contamination.
         direct_data = getattr(_request_state, 'paper_data', None) or paper_data
         print(f"[DIRECT] Using paper data with keys: {list(direct_data.keys())}")
+
+        # The fallback skips the parallel pipeline's validation chain. Run at least V1 structural
+        # validation per section so broken MCQs / wrong counts / missing fields are caught and
+        # recorded (attached as _errors/_partial → visible in paper_data & temp_questions.json),
+        # instead of an unvalidated paper silently reaching a teacher.
+        try:
+            from .section_generator import build_work_orders, validate_section_output
+            for _wo in build_work_orders(blueprint, pattern, {}, difficulty, class_name, subject, chapters):
+                _sec = direct_data.get(_wo.section_name)
+                if isinstance(_sec, dict) and isinstance(_sec.get("questions"), list) and _sec["questions"]:
+                    _errs = validate_section_output({"questions": _sec["questions"]}, _wo)
+                    if _errs:
+                        _sec["_errors"] = _errs
+                        _sec["_partial"] = True
+                        print(f"[Fallback-Validate] '{_wo.section_name}': {len(_errs)} issue(s) — {_errs[:3]}")
+        except Exception as _ve:
+            print(f"[Fallback-Validate] skipped ({_ve})")
+
         all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
         # Attach AI-generated images if prompts/markers present
         allow_images = True
