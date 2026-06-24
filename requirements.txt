@@ -23,6 +23,7 @@ PyPDF2==3.0.1
 pdfplumber==0.10.3
 reportlab==4.0.7
 python-docx==1.1.0
+mammoth
 
 # Text Processing and Embeddings
 sentence-transformers==2.2.2

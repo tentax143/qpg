@@ -1,16 +1,82 @@
 """
 Management command: python manage.py seed_cbse_patterns
 
-Seeds official CBSE 2024-25 board exam patterns from core/data/cbse_patterns.py
+Seeds official CBSE 2025-26 board exam patterns from core/data/cbse_patterns.py
 into the ExamPattern table with pattern_source='cbse_official'.
 
-Safe to re-run: existing cbse_official patterns are skipped (not duplicated).
-Use --force to delete and re-create all.
+Safe to re-run: existing cbse_official patterns are UPDATED in place (refreshing the
+description, sections, marks and sqp_year) rather than duplicated. Use --force to delete
+and re-create all from scratch.
 """
+
+import re as _re
 
 from django.core.management.base import BaseCommand
 from core.models import ExamPattern
 from core.data.cbse_patterns import PATTERNS, PATTERNS_MIDDLE_SCHOOL, EXAM_TYPES
+
+
+def _infer_sub_count(sub: dict) -> int:
+    """Best-effort number of questions a sub-block represents (for template display)."""
+    # "attempt": "3 of 4" → generate the larger provided set (4).
+    attempt = str(sub.get("attempt", ""))
+    m = _re.findall(r"\d+", attempt)
+    if len(m) >= 2:
+        return int(m[-1])
+    # "q": "Q3-Q7" / "Q13-Q15" → inclusive range count.
+    q = str(sub.get("q", ""))
+    nums = _re.findall(r"\d+", q)
+    if len(nums) >= 2:
+        return max(1, int(nums[-1]) - int(nums[0]) + 1)
+    return 1
+
+
+def _infer_qtype_label(text: str) -> str:
+    """Map a descriptive sub-question type to a coarse question-type label."""
+    t = (text or "").lower()
+    if "mcq" in t or "multiple choice" in t or "objective" in t:
+        return "MCQ"
+    if "long answer" in t or " la " in t or "(la" in t:
+        return "LA"
+    if "very short" in t or "vsa" in t:
+        return "VSA"
+    if "extract" in t:
+        return "Extract"
+    if "passage" in t or "reading" in t or "comprehension" in t or "unseen" in t:
+        return "Reading"
+    if any(k in t for k in ("letter", "essay", "paragraph", "article", "report", "notice", "writing", "lekhan", "nibandh")):
+        return "Writing"
+    if any(k in t for k in ("grammar", "gap", "editing", "omission", "reorder", "sandhi", "samaas", "vyakaran")):
+        return "Grammar"
+    if "short answer" in t or " sa " in t or "(sa" in t:
+        return "SA"
+    return "SA"
+
+
+def _subsections_from_sub(subs_raw: list):
+    """Build (subsections, total_question_count) from a section's `sub` list."""
+    subsections, q_total = [], 0
+    for sub in subs_raw:
+        label = sub.get("type") or sub.get("q") or ""
+        sm = sub.get("marks", 0) or 0
+        cnt = _infer_sub_count(sub)
+        q_total += cnt
+        mpq = round(sm / cnt, 2) if cnt else sm
+        extras = [x for x in [
+            sub.get("types"),
+            (f"Choice: {sub['choice']}" if sub.get("choice") else None),
+            (f"Attempt {sub['attempt']}" if sub.get("attempt") else None),
+            (sub.get("sub") if isinstance(sub.get("sub"), str) else None),
+        ] if x]
+        subsections.append({
+            "name": (sub.get("q") or label or "Q")[:60],
+            "marks": sm,
+            "questions_count": cnt,
+            "marks_per_question": mpq,
+            "question_types": [_infer_qtype_label(label)],
+            "instructions": extras,
+        })
+    return subsections, q_total
 
 
 def _sections_from_pattern(pattern: dict) -> list:
@@ -38,6 +104,28 @@ def _sections_from_pattern(pattern: dict) -> list:
             })
             continue
 
+        # Sub-block format (language papers: English Lang & Lit, Hindi, English Core, Sanskrit).
+        # The detail lives in `sub` — build real subsections so the section isn't blank, and
+        # keep `sub`/`total` so the create-pattern text view renders the breakdown too.
+        if isinstance(s.get("sub"), list) and s["sub"]:
+            total = s.get("total", 0)
+            subsections, q_total = _subsections_from_sub(s["sub"])
+            clean_title = name.split("—", 1)[-1].strip() if "—" in name else name
+            result.append({
+                "name": name,
+                "title": clean_title,
+                "type": clean_title,             # create-pattern text view shows "Section A — <title>"
+                "total": total,
+                "marks": total,
+                "questions": q_total,
+                "questions_count": q_total,
+                "sub": s["sub"],                 # raw — create-pattern text view renders this
+                "subsections": subsections,      # structured — generation + pattern-detail page
+                "internal_choice": any(su.get("choice") for su in s["sub"]),
+                "notes": s.get("notes", ""),
+            })
+            continue
+
         # Traditional format: sections keyed by question type (MCQ, VSA, SA, etc.)
         q_type = s.get("type", "")
         provided = s.get("count") or 0
@@ -54,6 +142,8 @@ def _sections_from_pattern(pattern: dict) -> list:
         result.append({
             "name": name,
             "title": q_type,
+            "type": q_type,
+            "total": total,
             "marks": total,
             "questions": count,       # total questions printed in paper
             "attempt": attempt,       # MO-01: students attempt this many (None if N/A)
@@ -62,35 +152,11 @@ def _sections_from_pattern(pattern: dict) -> list:
             "notes": notes,
         })
 
-    # Fallback: if pattern uses sub-section style (English Core, Hindi Core, etc.)
-    if not result:
-        for s in sections_raw:
-            name = s.get("name", "")
-            total = s.get("total", 0)
-            subs = s.get("sub", [])
-            sub_list = []
-            for sub in subs:
-                sub_list.append({
-                    "q": sub.get("q", ""),
-                    "type": sub.get("type", ""),
-                    "marks": sub.get("marks", 0),
-                    "notes": sub.get("notes", sub.get("types", "")),
-                })
-            result.append({
-                "name": name,
-                "title": name,
-                "marks": total,
-                "questions": len(subs),
-                "subsections": sub_list,
-                "internal_choice": False,
-                "notes": "",
-            })
-
     return result
 
 
 class Command(BaseCommand):
-    help = "Seed official CBSE 2024-25 exam patterns into ExamPattern table"
+    help = "Seed official CBSE 2025-26 exam patterns into ExamPattern table"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -114,7 +180,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"Deleted {deleted} existing cbse_official patterns."))
 
         created_count = 0
-        skipped_count = 0
+        updated_count = 0
 
         all_patterns = list(PATTERNS.items()) + list(PATTERNS_MIDDLE_SCHOOL.items())
 
@@ -135,21 +201,12 @@ class Command(BaseCommand):
             for cls in classes:
                 name = f"CBSE Board {subject_name} Class {cls}"
                 description = (
-                    f"Official CBSE 2024-25 board exam pattern for {subject_name} Class {cls}. "
+                    f"Official CBSE 2025-26 board exam pattern for {subject_name} Class {cls}. "
                     f"Theory: {theory_marks}M"
                     + (f" + Practical: {practical_marks}M" if practical_marks else "")
                     + f". Duration: {duration} min."
                 )
-
-                if not force and ExamPattern.objects.filter(
-                    name=name, pattern_source="cbse_official"
-                ).exists():
-                    self.stdout.write(f"  SKIP  {name}")
-                    skipped_count += 1
-                    continue
-
-                ExamPattern.objects.create(
-                    name=name,
+                fields = dict(
                     description=description,
                     subject=subject_name,
                     class_name=cls,
@@ -157,13 +214,25 @@ class Command(BaseCommand):
                     total_marks=theory_marks,
                     total_questions=total_questions,
                     pattern_source="cbse_official",
+                    sqp_year="2025-26",
                     created_by=None,
                 )
-                self.stdout.write(self.style.SUCCESS(f"  CREATE {name}  ({len(sections)} sections, {theory_marks}M theory)"))
-                created_count += 1
+
+                # Update in place if it already exists (refreshes year/sections), else create.
+                existing = ExamPattern.objects.filter(name=name, pattern_source="cbse_official").first()
+                if existing:
+                    for k, v in fields.items():
+                        setattr(existing, k, v)
+                    existing.save()
+                    self.stdout.write(f"  UPDATE {name}  ({len(sections)} sections)")
+                    updated_count += 1
+                else:
+                    ExamPattern.objects.create(name=name, **fields)
+                    self.stdout.write(self.style.SUCCESS(f"  CREATE {name}  ({len(sections)} sections, {theory_marks}M theory)"))
+                    created_count += 1
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"\nDone. Created: {created_count}  Skipped (already exist): {skipped_count}"
+                f"\nDone. Created: {created_count}  Updated: {updated_count}"
             )
         )

@@ -793,12 +793,29 @@ PATTERNS["Hindi Course B"] = {
     "duration_minutes": 180,
     "notes": "Similar structure to Course A but uses Sparsh (poetry/prose) + Sanchayan (supplementary). Slightly easier level than Course A.",
     "sections": [
-        {"name": "खंड-क — Apathit Bodh", "total": 14},
-        {"name": "खंड-ख — Vyakaran", "total": 16},
-        {"name": "खंड-ग — Sahitya (Sparsh + Sanchayan)", "total": 34},
-        {"name": "खंड-घ — Lekhan", "total": 16},
+        {"name": "खंड-क — Apathit Bodh (Unseen)", "total": 14,
+         "sub": [
+             {"q": "Q1", "type": "Unseen Gadyansh (Prose, ~300 words)", "marks": 8, "sub": "MCQ + VSA"},
+             {"q": "Q2", "type": "Unseen Padyansh (Poetry)", "marks": 6, "sub": "MCQ + VSA"},
+         ]},
+        {"name": "खंड-ख — Vyakaran (Grammar)", "total": 16,
+         "sub": [
+             {"type": "Pad-parichay, Rachna ke aadhar par vakya bhed, Vachya, Alankar, Muhavare", "marks": 16, "format": "Mostly MCQ + 2-mark SA"},
+         ]},
+        {"name": "खंड-ग — Sahitya (Sparsh + Sanchayan)", "total": 34,
+         "sub": [
+             {"q": "Q — Sparsh (Poetry/Prose)", "marks": 24, "types": "Extracts MCQ+SA + Long answer"},
+             {"q": "Q — Sanchayan (Supplementary)", "marks": 10, "types": "SA + LA"},
+         ]},
+        {"name": "खंड-घ — Lekhan (Writing)", "total": 16,
+         "sub": [
+             {"q": "Q — Patra Lekhan (Letter)", "marks": 5, "choice": "1 of 2"},
+             {"q": "Q — Anuched Lekhan (Paragraph)", "marks": 6, "choice": "1 of 3"},
+             {"q": "Q — Vigyapan / Soochna / Samvad Lekhan", "marks": 5, "choice": "1 of 2"},
+         ]},
     ],
     "total_questions": 14,
+    "notes_detail": "Exact sub-question distribution varies year to year.",
 }
 
 # ---------------------------------------------------------------------------

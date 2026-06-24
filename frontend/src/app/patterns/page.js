@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { 
-  ChevronDown, ChevronUp, BookOpen, Layers, Clock, 
-  Settings2, Plus, Info, Eye, Edit2, Trash2, 
+import {
+  ChevronDown, ChevronUp, BookOpen, Layers, Clock,
+  Settings2, Plus, Info, Eye, Edit2, Trash2,
   Settings, CheckCircle, HelpCircle, FileText,
-  Lightbulb, PenTool, MessageSquare, Files, Calculator
+  Lightbulb, PenTool, MessageSquare, Files, Calculator,
+  CheckSquare, Square
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -18,10 +19,49 @@ export default function PatternsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [selected, setSelected] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     fetchPatterns();
   }, []);
+
+  const toggleSelect = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = patterns.length > 0 && selected.size === patterns.length;
+  const toggleSelectAll = () => {
+    setSelected(allSelected ? new Set() : new Set(patterns.map(p => p.id)));
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} selected pattern(s)? This cannot be undone.`)) return;
+    setBulkBusy(true);
+    try {
+      const res = await apiClient.post('/patterns/bulk-delete/', { ids });
+      const data = res.data || {};
+      const deletedIds = data.deleted_ids || [];
+      setPatterns(prev => prev.filter(p => !deletedIds.includes(p.id)));
+      setSelected(new Set());
+      let msg = `Deleted ${data.deleted ?? deletedIds.length} pattern(s).`;
+      if ((data.protected_skipped || []).length)
+        msg += ` ${data.protected_skipped.length} shared official pattern(s) skipped — superadmin only.`;
+      if ((data.not_found_or_forbidden || []).length)
+        msg += ` ${data.not_found_or_forbidden.length} could not be deleted.`;
+      setSuccess(msg);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to delete selected patterns');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const fetchPatterns = async () => {
     try {
@@ -79,10 +119,31 @@ export default function PatternsPage() {
                 </div>
                 <h2 className="text-xl font-black text-gray-900">Available Patterns</h2>
               </div>
-              <Link href="/create-pattern" className="bg-[#1e293b] text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-slate-800 transition-all duration-300 hover:-translate-y-0.5 active:scale-95 flex items-center gap-2 shadow-xl shadow-slate-200">
-                <Plus size={14} />
-                <span>Add Pattern</span>
-              </Link>
+              <div className="flex items-center gap-2">
+                {patterns.length > 0 && (
+                  <button
+                    onClick={toggleSelectAll}
+                    className="px-3 py-2.5 bg-white border border-gray-200 text-gray-600 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] hover:bg-gray-50 transition-all flex items-center gap-2"
+                  >
+                    {allSelected ? <CheckSquare size={14} className="text-blue-600" /> : <Square size={14} />}
+                    {allSelected ? 'Clear' : 'Select all'}
+                  </button>
+                )}
+                {selected.size > 0 && (
+                  <button
+                    onClick={handleBulkDelete}
+                    disabled={bulkBusy}
+                    className="px-4 py-2.5 bg-red-600 text-white rounded-xl text-[10px] font-black uppercase tracking-[0.15em] hover:bg-red-700 transition-all flex items-center gap-2 shadow-lg shadow-red-200 disabled:opacity-60"
+                  >
+                    <Trash2 size={14} />
+                    {bulkBusy ? 'Deleting…' : `Delete (${selected.size})`}
+                  </button>
+                )}
+                <Link href="/create-pattern" className="bg-[#1e293b] text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-slate-800 transition-all duration-300 hover:-translate-y-0.5 active:scale-95 flex items-center gap-2 shadow-xl shadow-slate-200">
+                  <Plus size={14} />
+                  <span>Add Pattern</span>
+                </Link>
+              </div>
             </div>
             
             <div className="p-8">
@@ -101,12 +162,22 @@ export default function PatternsPage() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {patterns.map((pattern, index) => (
-                    <div key={pattern.id} className="p-6 bg-white border border-gray-100 rounded-[30px] hover:border-blue-200 hover:shadow-xl hover:shadow-blue-500/5 transition-all group relative">
+                    <div key={pattern.id} className={`p-6 bg-white border rounded-[30px] hover:shadow-xl hover:shadow-blue-500/5 transition-all group relative ${selected.has(pattern.id) ? 'border-blue-400 ring-2 ring-blue-100' : 'border-gray-100 hover:border-blue-200'}`}>
                       <div className="absolute top-6 right-6 w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center text-[10px] font-black italic">
                         {index + 1}
                       </div>
-                      
-                      <div className="flex items-start gap-3 mb-6">
+
+                      <button
+                        onClick={() => toggleSelect(pattern.id)}
+                        title="Select for bulk delete"
+                        className="absolute top-6 left-6 text-gray-300 hover:text-blue-600 transition-colors"
+                      >
+                        {selected.has(pattern.id)
+                          ? <CheckSquare size={20} className="text-blue-600" />
+                          : <Square size={20} />}
+                      </button>
+
+                      <div className="flex items-start gap-3 mb-6 pl-9">
                         <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0">
                           <FileText size={20} />
                         </div>

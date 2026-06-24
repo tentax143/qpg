@@ -68,7 +68,7 @@ export default function Sidebar() {
     { href: '/blueprints', icon: Settings2, label: 'Blueprints' },
     { href: '/materials/upload', icon: UploadCloud, label: 'Upload Material' },
     { href: '/materials', icon: BookOpen, label: 'Materials' },
-    { href: '/users', icon: Users, label: 'Users' },
+    { href: '/users', icon: Users, label: 'Users', roles: ['school_admin'] },
     { href: '/team-usage', icon: BarChart3, label: 'Team Usage', roles: ['school_admin'] },
   ];
 

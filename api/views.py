@@ -9,7 +9,8 @@ from django.utils import timezone
 from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Subject
 from core import embeddings
 from core.tasks import generate_paper_task, ingest_material_task
-from core.views import extract_text_from_pdf, extract_text_from_docx
+from core.views import extract_text_from_pdf, extract_text_from_docx, extract_docx_text_with_images
+from core.media_access import signed_file_url
 import os
 import json
 import tempfile
@@ -54,6 +55,146 @@ def _allowed_subject(user):
         return None
 
 
+ALLOWED_MATERIAL_EXTENSIONS = {'.pdf', '.docx', '.doc', '.txt'}
+
+
+def _can_modify_paper(user, paper):
+    """True if the user owns the paper or has school_admin/superadmin role."""
+    if paper.created_by == user:
+        return True
+    role = _user_role(user)
+    return role in ('superadmin', 'school_admin') or user.is_superuser
+
+
+def _owner_scope(qs, user, owner_field='created_by'):
+    """Visibility scoping: superadmin → everything; school_admin → their whole school;
+    a normal teacher → ONLY their own creations (not the admin's or other teachers')."""
+    role = _user_role(user)
+    if role == 'superadmin' or user.is_superuser:
+        return qs
+    if role == 'school_admin':
+        school = _get_school(user)
+        if school:
+            return qs.filter(**{f"{owner_field}__profile__school": school})
+        return qs.filter(**{owner_field: user})
+    # teacher / unknown role → own only
+    return qs.filter(**{owner_field: user})
+
+
+def _generation_blocked(user, exclude_id=None):
+    """Guard before queuing a paper-generation task. Returns an error string if generation
+    should be refused (concurrency / budget), else None. Prevents Retry/Generate spam and
+    runaway LLM+image spend (one paper = many billed calls). `exclude_id` skips the paper
+    being retried/regenerated so it doesn't block itself."""
+    # One active generation per user — a paper is expensive; don't let a user queue several.
+    active = QuestionPaper.objects.filter(created_by=user, status__in=['queued', 'generating'])
+    if exclude_id is not None:
+        active = active.exclude(id=exclude_id)
+    if active.exists():
+        return ("You already have a paper generating. Please wait for it to finish before "
+                "starting another.")
+    # School token budget (0 = unlimited). total_tokens_used is the cumulative counter.
+    school = _get_school(user)
+    if school and school.monthly_token_budget and school.total_tokens_used >= school.monthly_token_budget:
+        return (f"Your school has reached its token budget "
+                f"({school.total_tokens_used:,}/{school.monthly_token_budget:,} tokens). "
+                "Contact your administrator to raise it.")
+    return None
+
+
+def _scoped_blueprints(user):
+    """ExamBlueprint visible to this user — shared school-wide (any member sees the school's
+    blueprints), all for superadmin. Blueprints are reusable structures, not private content."""
+    base = ExamBlueprint.objects.filter(is_active=True)
+    if _user_role(user) == 'superadmin' or user.is_superuser:
+        return base
+    school = _get_school(user)
+    return base.filter(created_by__profile__school=school) if school else base.filter(created_by=user)
+
+
+def _scoped_blueprint_templates(user):
+    """BlueprintTemplate visible to this user — shared (default/superadmin) templates plus the
+    whole school's (reusable structures), never another school's."""
+    from django.db.models import Q
+    base = BlueprintTemplate.objects.filter(is_active=True)
+    if _user_role(user) == 'superadmin' or user.is_superuser:
+        return base
+    shared = (Q(is_default=True) | Q(created_by__isnull=True)
+              | Q(created_by__is_superuser=True) | Q(created_by__profile__role='superadmin'))
+    school = _get_school(user)
+    return base.filter(shared | Q(created_by__profile__school=school)) if school else base.filter(shared | Q(created_by=user))
+
+
+def _render_paper_from_stored_data(paper, request=None):
+    """Re-render paper.file from paper.paper_data (preserves images, marks, grouping).
+    Returns a signed file URL. Shared by rerender / ai_edit / restore_data."""
+    import os, json as _json
+    from django.conf import settings as _dj
+    from core.generator import _render_paper_from_data, pattern_sections_to_blueprint_dict
+
+    class_name = paper.class_name.split('-', 1)[0] if '-' in (paper.class_name or '') else paper.class_name
+    school_name = ''
+    try:
+        s = paper.created_by.profile.school
+        school_name = (s.name or '') if s else ''
+    except Exception:
+        pass
+    ctx = _json.dumps({
+        "class_name": class_name,
+        "school_name": school_name,
+        "marks": str(paper.pattern.total_marks) if paper.pattern else "",
+        "test_type": paper.pattern.name if paper.pattern else "",
+    })
+    blueprint = pattern_sections_to_blueprint_dict(paper.pattern)
+    file_path, *_rest = _render_paper_from_data(
+        paper_data=paper.paper_data, blueprint=blueprint, class_name=class_name,
+        subject=paper.subject, chapters=paper.chapters, additional_context=ctx, pattern=paper.pattern,
+        cache_only=True,   # web request: reuse cached images, never call the slow image APIs
+    )
+    if os.path.exists(os.path.join(_dj.MEDIA_ROOT, file_path)):
+        paper.file.name = file_path        # assign directly — file.save() renames on collision → 404
+    paper.save(update_fields=['file', 'updated_at'])
+    return signed_file_url(request, paper.file)
+
+
+def _paper_section_iter(paper_data):
+    """Yield (section_name, section_dict) for each section that has a questions list.
+    Handles paper_data shaped as {Section:{...}}, {sections:{...}}, or {sections:[...]}."""
+    secs = paper_data.get('sections', paper_data) if isinstance(paper_data, dict) else paper_data
+    if isinstance(secs, dict):
+        for sname, sec in secs.items():
+            if isinstance(sec, dict) and isinstance(sec.get('questions'), list):
+                yield (sec.get('section_name') or sname), sec
+    elif isinstance(secs, list):
+        for sec in secs:
+            if isinstance(sec, dict) and isinstance(sec.get('questions'), list):
+                yield (sec.get('section_name') or sec.get('name') or ''), sec
+
+
+def _extract_json_blob(s):
+    """Pull the first balanced JSON object/array out of an LLM reply (tolerates fences/prose)."""
+    import json as _json, re as _re
+    if not s:
+        return None
+    s = _re.sub(r'```(?:json)?', '', s).strip()
+    for opener, closer in (('{', '}'), ('[', ']')):
+        start = s.find(opener)
+        if start < 0:
+            continue
+        depth = 0
+        for i in range(start, len(s)):
+            if s[i] == opener:
+                depth += 1
+            elif s[i] == closer:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return _json.loads(s[start:i + 1])
+                    except Exception:
+                        break
+    return None
+
+
 class ExamPatternViewSet(viewsets.ModelViewSet):
     """
     ViewSet for ExamPattern model.
@@ -61,32 +202,150 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
     """
     serializer_class = ExamPatternSerializer
     pagination_class = LargeResultsSetPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['class_name', 'subject', 'pattern_source']
     search_fields = ['name', 'subject', 'class_name']
 
     def get_queryset(self):
-        from django.db.models import Q
         user = self.request.user
-        if not user.is_authenticated:
-            return ExamPattern.objects.all().order_by('-created_at')
         role = _user_role(user)
         if role == 'superadmin' or user.is_superuser:
             return ExamPattern.objects.all().order_by('-created_at')
-        # Global patterns (One Mark Test, CBSE official) are always visible
-        global_q = Q(pattern_source__in=['one_mark_test', 'cbse_official'])
+        # Patterns are a SHARED school resource — every member of the school sees ALL of the
+        # school's patterns (any subject, any creator), so they can reuse each other's. (Papers,
+        # by contrast, stay private to their creator.) Premade superadmin templates remain hidden
+        # — reachable only via the `templates` action (clone-only).
         school = _get_school(user)
         if school:
-            return ExamPattern.objects.filter(
-                global_q | Q(created_by__profile__school=school)
-            ).order_by('-created_at')
-        return ExamPattern.objects.filter(
-            global_q | Q(created_by=user)
-        ).order_by('-created_at')
+            return ExamPattern.objects.filter(created_by__profile__school=school).order_by('-created_at')
+        return ExamPattern.objects.filter(created_by=user).order_by('-created_at')
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    @staticmethod
+    def _template_queryset():
+        """Premade patterns owned by the superadmin / seeded — the clone source."""
+        from django.db.models import Q
+        return ExamPattern.objects.filter(
+            Q(pattern_source__in=['cbse_official', 'one_mark_test'])
+            | Q(created_by__isnull=True)
+            | Q(created_by__is_superuser=True)
+            | Q(created_by__profile__role='superadmin')
+        )
+
+    @action(detail=False, methods=['get'])
+    def templates(self, request):
+        """
+        Premade superadmin patterns available to clone, filtered by class / subject /
+        exam_type. This is the ONLY way non-superadmins reach premade patterns (they're
+        hidden from the normal list). Returns a list; the frontend previews + clones one.
+        """
+        qs = self._template_queryset()
+        class_name = request.query_params.get('class') or request.query_params.get('class_name')
+        subject    = request.query_params.get('subject')
+        exam_type  = request.query_params.get('exam_type')
+
+        if class_name:
+            qs = qs.filter(class_name__iexact=class_name)
+        if subject:
+            narrowed = qs.filter(subject__iexact=subject)
+            qs = narrowed if narrowed.exists() else qs.filter(subject__icontains=subject)
+
+        results = list(qs.order_by('-created_at'))
+        # Soft exam_type narrowing by name; keep the broader set if nothing name-matches.
+        if exam_type:
+            et = exam_type.strip().lower()
+            hit = [p for p in results if et in (p.name or '').lower()]
+            if hit:
+                results = hit
+
+        return Response(ExamPatternSerializer(results, many=True).data)
+
+    @action(detail=False, methods=['post'], url_path='clone-template')
+    def clone_template(self, request):
+        """
+        Clone a premade superadmin pattern into a NEW pattern owned by the caller
+        (school-scoped). Copies the template's sections verbatim so the full compound
+        structure is preserved (the section editor would flatten it).
+        """
+        template_id = request.data.get('template_id')
+        if not template_id:
+            return Response({"error": "template_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            template = self._template_queryset().get(id=int(template_id))
+        except (ExamPattern.DoesNotExist, TypeError, ValueError):
+            return Response({"error": "Template pattern not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        new_pattern = ExamPattern.objects.create(
+            name=(request.data.get('name') or template.name or 'Untitled Pattern'),
+            description=request.data.get('description', template.description or ''),
+            subject=request.data.get('subject', template.subject),
+            class_name=request.data.get('class_name', template.class_name),
+            sections=template.sections,          # verbatim — preserves question_types/sub_questions
+            total_marks=template.total_marks,
+            total_questions=template.total_questions,
+            sqp_year=template.sqp_year,
+            pattern_source='manual',             # now a user-owned pattern, not a premade template
+            status='done',
+            created_by=request.user,
+        )
+        return Response(ExamPatternSerializer(new_pattern).data, status=status.HTTP_201_CREATED)
+
+    # Global/system templates shared across all schools — only a superadmin may delete these.
+    _GLOBAL_SOURCES = ('cbse_official', 'one_mark_test')
+
+    def _is_superadmin(self, user):
+        return _user_role(user) == 'superadmin' or user.is_superuser
+
+    def destroy(self, request, *args, **kwargs):
+        """Block non-superadmins from deleting shared global templates (cbse_official / one_mark_test)."""
+        instance = self.get_object()
+        if instance.pattern_source in self._GLOBAL_SOURCES and not self._is_superadmin(request.user):
+            return Response(
+                {"error": "Shared official patterns can only be deleted by a superadmin."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=['post'], url_path='bulk-delete')
+    def bulk_delete(self, request):
+        """
+        Delete multiple patterns by id. Scoped to what the caller may see (enforces
+        school-wise isolation) and may delete (non-superadmins cannot remove shared
+        global templates). Returns counts of deleted / skipped / not-found.
+        """
+        ids = request.data.get('ids', [])
+        if not isinstance(ids, list) or not ids:
+            return Response({"error": "Provide a non-empty 'ids' list."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            ids = [int(i) for i in ids]
+        except (TypeError, ValueError):
+            return Response({"error": "'ids' must be a list of integers."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # get_queryset() already restricts to the caller's school / own + global templates,
+        # so ids belonging to other schools are silently excluded here.
+        visible = self.get_queryset().filter(id__in=ids)
+
+        protected_skipped = []
+        deletable = visible
+        if not self._is_superadmin(request.user):
+            protected_skipped = list(
+                visible.filter(pattern_source__in=self._GLOBAL_SOURCES).values_list('id', flat=True)
+            )
+            deletable = visible.exclude(pattern_source__in=self._GLOBAL_SOURCES)
+
+        deletable_ids = list(deletable.values_list('id', flat=True))
+        deletable.delete()
+
+        not_found = sorted(set(ids) - set(deletable_ids) - set(protected_skipped))
+        return Response({
+            'deleted': len(deletable_ids),
+            'deleted_ids': deletable_ids,
+            'protected_skipped': protected_skipped,        # shared templates (need superadmin)
+            'not_found_or_forbidden': not_found,           # not in caller's scope (e.g. other school)
+        })
 
     @action(detail=False, methods=['post'])
     def generate_from_ai(self, request):
@@ -131,7 +390,7 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         subject = request.query_params.get('subject')
         class_name = request.query_params.get('class')
         
-        queryset = self.queryset
+        queryset = self.get_queryset()
         if subject:
             queryset = queryset.filter(subject=subject)
         if class_name:
@@ -175,7 +434,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     """
     serializer_class = QuestionPaperSerializer
     pagination_class = LargeResultsSetPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['class_name', 'subject', 'status', 'difficulty']
     search_fields = ['subject', 'class_name']
@@ -184,11 +443,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def dashboard_stats(self, request):
         """Get summary statistics for the dashboard"""
         user = request.user
-        if user.is_staff or user.is_superuser:
-            queryset = QuestionPaper.objects.all()
-        else:
-            queryset = QuestionPaper.objects.filter(created_by=user)
-            
+        # Same visibility as the list: admin → school-wide, teacher → own only.
+        queryset = _owner_scope(QuestionPaper.objects.all(), user)
+
         total_papers = queryset.count()
         
         # Calculate monthly papers
@@ -209,21 +466,10 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base = QuestionPaper.objects.all().order_by('-created_at')
-        if not user.is_authenticated:
-            return base
-        role = _user_role(user)
-        if role == 'superadmin' or user.is_superuser:
-            queryset = base
-        else:
-            school = _get_school(user)
-            if school:
-                queryset = base.filter(created_by__profile__school=school)
-            else:
-                queryset = base.filter(created_by=user)
-
-        created_by = self.request.query_params.get('created_by')
-        if created_by == 'me':
+        # Hierarchical visibility: superadmin → all, school_admin → whole school,
+        # teacher → only their own papers (can't see the admin's or other teachers').
+        queryset = _owner_scope(QuestionPaper.objects.all().order_by('-created_at'), user)
+        if self.request.query_params.get('created_by') == 'me':
             queryset = queryset.filter(created_by=user)
         return queryset
 
@@ -239,9 +485,14 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         Handles both logic and legacy core processing flow via API.
         """
         try:
+            # Budget / concurrency guard — refuse before creating the paper or queuing work.
+            blocked = _generation_blocked(request.user)
+            if blocked:
+                return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
             # Extract data from request
             data = request.data
-            
+
             # Handle chapters (comma-separated string -> list)
             chapters_str = data.get("chapters", "")
             chapters_list = [ch.strip() for ch in chapters_str.split(",") if ch.strip()]
@@ -276,12 +527,12 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             if blueprint_id:
                 if blueprint_id.startswith("exam_"):
                     bp_id = blueprint_id.replace("exam_", "")
-                    blueprint = get_object_or_404(ExamBlueprint, id=bp_id, is_active=True)
+                    blueprint = get_object_or_404(_scoped_blueprints(request.user), id=bp_id)
                     if blueprint.class_name != class_name.split("-")[0] or blueprint.subject.lower() != subject.lower():
                         return Response({"error": "Selected blueprint doesn't match the class and subject."}, status=status.HTTP_400_BAD_REQUEST)
                 elif blueprint_id.startswith("template_"):
                     tp_id = blueprint_id.replace("template_", "")
-                    template = get_object_or_404(BlueprintTemplate, id=tp_id, is_active=True)
+                    template = get_object_or_404(_scoped_blueprint_templates(request.user), id=tp_id)
                     if template.class_name != class_name.split("-")[0] or template.subject.lower() != subject.lower():
                         return Response({"error": "Selected blueprint template doesn't match class/subject."}, status=status.HTTP_400_BAD_REQUEST)
                         
@@ -367,9 +618,19 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def cancel(self, request, pk=None):
         """Cancel a question paper generation task"""
         paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to cancel this paper'}, status=status.HTTP_403_FORBIDDEN)
         if paper.status in ['queued', 'generating']:
-            # TODO: Implement Celery task cancellation
+            # Actually revoke the Celery task (terminate if already running) so it stops
+            # consuming a worker, then mark cancelled.
+            if paper.task_id:
+                try:
+                    from celery import current_app
+                    current_app.control.revoke(paper.task_id, terminate=True, signal='SIGTERM')
+                except Exception as _e:
+                    print(f"[Cancel] revoke failed for task {paper.task_id}: {_e}")
             paper.status = 'cancelled'
+            paper.status_detail = 'Cancelled by user.'
             paper.save()
             return Response({'status': 'Task cancelled'})
         return Response(
@@ -382,22 +643,93 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         """Retry a failed question paper generation task"""
         try:
             paper = self.get_object()
-            
-            # Using the exact logic from core.views.retry_paper_view
-            if paper.status == "failed" or paper.status == "cancelled":
+            if not _can_modify_paper(request.user, paper):
+                return Response({'error': 'Not authorized to retry this paper'}, status=status.HTTP_403_FORBIDDEN)
+
+            # Allow retry for failed/cancelled papers, and for ones stuck 'queued'/'generating'
+            # (e.g. a dead worker) — revoking the stale task first so it can't double-run.
+            if paper.status in ("failed", "cancelled", "queued", "generating"):
+                if paper.status in ("queued", "generating") and paper.task_id:
+                    try:
+                        from celery import current_app
+                        current_app.control.revoke(paper.task_id, terminate=True, signal='SIGTERM')
+                    except Exception as _e:
+                        print(f"[Retry] revoke of stale task {paper.task_id} failed: {_e}")
+                blocked = _generation_blocked(request.user, exclude_id=paper.id)
+                if blocked:
+                    return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
                 paper.status = "queued"
+                paper.status_detail = ""
                 paper.save()
-                
+
                 # Trigger the celery task
                 task = generate_paper_task.delay(paper.id)
                 paper.task_id = task.id
                 paper.save()
-                
+
                 return Response({'status': 'Retry initiated', 'task_id': task.id})
-            
-            return Response({'error': 'Paper must be in failed or cancelled state to retry'}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({'error': 'Paper cannot be retried from its current state'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def regenerate(self, request, pk=None):
+        """Regenerate the paper from scratch using its EXISTING config (class, subject, pattern,
+        chapters, difficulty) — produces fresh questions in place. Works on a completed paper
+        (unlike retry, which is only for failed/cancelled)."""
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to regenerate this paper'}, status=status.HTTP_403_FORBIDDEN)
+        if paper.status == 'generating':
+            return Response({'error': 'Generation already in progress for this paper'}, status=status.HTTP_400_BAD_REQUEST)
+        if not paper.pattern:
+            return Response({'error': 'This paper has no pattern to regenerate from'}, status=status.HTTP_400_BAD_REQUEST)
+
+        import json as _json
+        school_name = ""
+        try:
+            school = paper.created_by.profile.school
+            school_name = (school.name or "") if school else ""
+        except Exception:
+            pass
+
+        num_one_mark = None
+        if paper.pattern.pattern_source == 'one_mark_test':
+            try:
+                num_one_mark = max(1, min(200, int(request.data.get('num_one_mark_questions',
+                                                                     paper.pattern.total_questions or 20))))
+            except (ValueError, TypeError):
+                num_one_mark = 20
+
+        meta_payload = {
+            "class_name": paper.class_name,
+            "duration": str(request.data.get('duration', '') or '').strip(),
+            "marks": str(paper.pattern.total_marks or ''),
+            "test_type": paper.pattern.name or '',
+            "extra_context": '',
+            "num_one_mark_questions": num_one_mark,
+            "school_name": school_name,
+        }
+
+        blocked = _generation_blocked(request.user, exclude_id=paper.id)
+        if blocked:
+            return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        # Re-queue. Keep the current file/paper_data until the new one is ready (so the paper
+        # stays viewable if generation fails); drop any AI-edited text overlay.
+        paper.status = 'queued'
+        paper.edited_content = None
+        paper.save(update_fields=['status', 'edited_content', 'updated_at'])
+
+        task = generate_paper_task.delay(
+            paper.id,
+            model_source=request.session.get('model_choice', 'aws'),
+            additional_context=_json.dumps(meta_payload),
+        )
+        paper.task_id = task.id
+        paper.save(update_fields=['task_id'])
+        return Response({'status': 'Regeneration started', 'task_id': task.id})
 
     @action(detail=False, methods=['post'], url_path='bulk-delete')
     def bulk_delete(self, request):
@@ -406,11 +738,54 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         if not ids:
             return Response({'error': 'No IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
         
-        papers = QuestionPaper.objects.filter(id__in=ids)
+        papers = self.get_queryset().filter(id__in=ids)
         count = papers.count()
         papers.delete()
         
         return Response({'message': f'Successfully deleted {count} papers'})
+
+    @action(detail=True, methods=['get'])
+    def docx_file(self, request, pk=None):
+        """Return the raw DOCX file as a binary download (used by the frontend preview)."""
+        from django.http import FileResponse, Http404
+        import re as _re
+        paper = self.get_object()
+        if not paper.file:
+            raise Http404("No file for this paper")
+        path = paper.file.path
+        if not os.path.exists(path):
+            stripped = _re.sub(r'_[A-Za-z0-9]{7}(\.[^.]+)$', r'\1', path)
+            if os.path.exists(stripped):
+                path = stripped
+            else:
+                raise Http404("File not found on disk")
+        filename = os.path.basename(path)
+        response = FileResponse(open(path, 'rb'),
+                                content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        response['Content-Disposition'] = f'inline; filename="{filename}"'
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    @action(detail=True, methods=['get'])
+    def docx_preview(self, request, pk=None):
+        """Convert the paper DOCX to HTML for Word-like browser preview."""
+        paper = self.get_object()
+        if not paper.file:
+            return Response({'error': 'No file available'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            import mammoth
+            path = paper.file.path
+            # Resolve renamed-suffix path if needed (same fallback as serve_media)
+            if not os.path.exists(path):
+                import re as _re
+                stripped = _re.sub(r'_[A-Za-z0-9]{7}(\.[^.]+)$', r'\1', path)
+                if os.path.exists(stripped):
+                    path = stripped
+            with open(path, 'rb') as f:
+                result = mammoth.convert_to_html(f)
+            return Response({'html': result.value, 'messages': [m.message for m in result.messages]})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['get'])
     def get_content(self, request, pk=None):
@@ -421,10 +796,15 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         if paper.edited_content:
             return Response({'content': paper.edited_content})
             
-        # Otherwise, try to extract from PDF
+        # Otherwise extract from the file — dispatch by extension
         if paper.file:
             try:
-                content = extract_text_from_pdf(paper.file.path)
+                path = paper.file.path
+                if path.lower().endswith('.docx'):
+                    # Image-aware extraction so diagrams survive the AI-edit round-trip.
+                    content = extract_docx_text_with_images(path, paper.id)
+                else:
+                    content = extract_text_from_pdf(path)
                 return Response({'content': content})
             except Exception as e:
                 return Response({'error': f"Failed to extract text: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -435,6 +815,8 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def rerender(self, request, pk=None):
         """Re-render the DOCX from the stored paper_data JSON without calling the LLM."""
         paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to re-render this paper'}, status=status.HTTP_403_FORBIDDEN)
         if not paper.paper_data:
             return Response(
                 {'error': 'No stored paper_data for this paper. Only papers generated after this feature was added can be re-rendered.'},
@@ -442,7 +824,6 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             )
         try:
             from core.generator import _render_paper_from_data, pattern_sections_to_blueprint_dict
-            from django.core.files import File as DjangoFile
 
             class_name = paper.class_name
             if '-' in class_name:
@@ -473,25 +854,270 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                 chapters=paper.chapters,
                 additional_context=rerender_ctx,
                 pattern=paper.pattern,
+                cache_only=True,   # web request: reuse cached images, never call the slow image APIs
             )
 
             import os
             from django.conf import settings as django_settings
             full_path = os.path.join(django_settings.MEDIA_ROOT, file_path)
             if os.path.exists(full_path):
-                with open(full_path, 'rb') as f:
-                    filename = os.path.basename(file_path)
-                    paper.file.save(filename, DjangoFile(f), save=False)
+                # Assign directly — do NOT use file.save() which renames on collision → 404
+                paper.file.name = file_path
             paper.save(update_fields=['file', 'updated_at'])
 
-            return Response({'status': 'Re-rendered', 'file': paper.file.url if paper.file else None})
+            return Response({'status': 'Re-rendered', 'file': signed_file_url(request, paper.file)})
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def ai_correct(self, request, pk=None):
+        """Apply an AI correction instruction to the current paper text."""
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        content     = request.data.get('content', '').strip()
+        instruction = request.data.get('instruction', '').strip()
+        if not instruction:
+            return Response({'error': 'No instruction provided'}, status=status.HTTP_400_BAD_REQUEST)
+        if not content:
+            return Response({'error': 'No content to correct'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from core import mantle_client
+            system = (
+                "You are a CBSE exam paper editor. You receive a question paper in plain text and a correction "
+                "instruction from the teacher. Apply the correction precisely and return ONLY the corrected paper "
+                "text — no explanation, no commentary, no markdown fences.\n"
+                "IMPORTANT: The paper may contain image markers like [IMG_FILE: generated_images/...]. These mark "
+                "diagrams that belong to a question. Preserve every [IMG_FILE: ...] marker EXACTLY as-is, on its own "
+                "line, in the same position relative to its question, unless the instruction explicitly says to "
+                "remove that image. Never alter the path inside a marker."
+            )
+            prompt = f"PAPER:\n{content}\n\nCORRECTION INSTRUCTION:\n{instruction}\n\nCorrected paper:"
+            corrected, _, _ = mantle_client.converse(
+                model_id=mantle_client.GEN_MODEL,
+                prompt=prompt,
+                system_prompt=system,
+                max_tokens=4000,
+                temperature=0.3,
+            )
+            return Response({'corrected_content': corrected.strip()})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def render_edited_docx(self, request, pk=None):
+        """Regenerate a properly-formatted DOCX from AI-corrected plain text."""
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        content = request.data.get('content', '').strip() or (paper.edited_content or '').strip()
+        if not content:
+            return Response({'error': 'No content to render'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from core.generator import render_docx, _parse_edited_text
+
+            all_questions = _parse_edited_text(content)
+
+            school_name = ''
+            try:
+                school = paper.created_by.profile.school
+                if school:
+                    school_name = school.name or ''
+            except Exception:
+                pass
+
+            header_meta = {
+                'class_name': paper.class_name,
+                'subject': paper.subject,
+                'pattern_name': paper.pattern.name if paper.pattern else '',
+                'marks': paper.pattern.total_marks if paper.pattern else '',
+                'school_name': school_name,
+            }
+
+            file_path, _ = render_docx(
+                class_name=paper.class_name,
+                subject=paper.subject,
+                chapters=paper.chapters,
+                all_questions=all_questions,
+                summary={},
+                header_meta=header_meta,
+            )
+
+            # Persist corrected text and point paper.file at the new DOCX
+            paper.edited_content = content
+            paper.file.name = file_path
+            paper.save(update_fields=['edited_content', 'file'])
+
+            return Response({'file': signed_file_url(request, paper.file), 'status': 'rendered'})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def ai_edit(self, request, pk=None):
+        """Targeted, structure-preserving AI edit (two-stage).
+
+        1. LOCATE — show the LLM a compact index of questions + the instruction; it returns
+           which question number(s) to edit.
+        2. EDIT — send ONLY each target question's JSON object + the instruction; the LLM
+           returns the corrected question with the same schema. Splice back into paper_data
+           and re-render.
+
+        Operating on paper_data (not whole-paper text) avoids the 4000-token truncation that
+        silently dropped edits, and preserves images, per-type marks, and section grouping.
+        Returns 'no_paper_data' (400) for legacy papers so the client can fall back.
+        """
+        import copy, re as _re, json as _json
+        from core import mantle_client
+
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+        instruction = (request.data.get('instruction') or '').strip()
+        if not instruction:
+            return Response({'error': 'No instruction provided'}, status=status.HTTP_400_BAD_REQUEST)
+        pd = paper.paper_data
+        if not isinstance(pd, dict) or not pd:
+            return Response({'error': 'no_paper_data'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Build a flat index of all questions.
+        index = []
+        for sname, sec in _paper_section_iter(pd):
+            for q in sec['questions']:
+                if isinstance(q, dict):
+                    index.append({'qnum': q.get('qnum'), 'section': sname,
+                                  'type': q.get('type'), 'snippet': str(q.get('text', ''))[:120]})
+        if not index:
+            return Response({'error': 'no_questions'}, status=status.HTTP_400_BAD_REQUEST)
+        valid_qnums = {qi['qnum'] for qi in index}
+
+        # ── Stage 1: locate target question(s) ──────────────────────────────
+        explicit = [int(n) for n in _re.findall(r'(?:question|ques|q)\s*#?\s*(\d+)', instruction, _re.IGNORECASE)]
+        targets = [n for n in explicit if n in valid_qnums]
+        if not targets:
+            loc_sys = (
+                "You route an exam-paper edit. Given a JSON list of questions (qnum, section, type, snippet) "
+                "and a teacher instruction, return ONLY JSON {\"targets\":[qnum,...]} naming the question "
+                "number(s) the instruction refers to. For a section-wide instruction, list every qnum in that "
+                "section. If nothing matches, return {\"targets\":[]}. JSON only."
+            )
+            loc_prompt = f"QUESTIONS:\n{_json.dumps(index, ensure_ascii=False)}\n\nINSTRUCTION:\n{instruction}\n\nJSON:"
+            try:
+                loc_raw, _, _ = mantle_client.converse(
+                    model_id=mantle_client.GEN_MODEL, prompt=loc_prompt, system_prompt=loc_sys,
+                    max_tokens=300, temperature=0.1)
+                parsed = _extract_json_blob(loc_raw) or {}
+                tlist = parsed.get('targets') if isinstance(parsed, dict) else parsed
+                targets = [int(t) for t in (tlist or []) if str(t).strip().lstrip('-').isdigit() and int(t) in valid_qnums]
+            except Exception as e:
+                return Response({'error': f'Could not locate the question to edit: {e}'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if not targets:
+            return Response({'error': "Couldn't identify which question to edit — try naming the number, e.g. 'change question 1 …'."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # ── Stage 2: edit each target question in place ─────────────────────
+        prev_data = copy.deepcopy(pd)
+        new_pd = copy.deepcopy(pd)
+        edit_sys = (
+            "You edit ONE CBSE exam question. You receive a single question as a JSON object and an instruction. "
+            "Apply the instruction and return ONLY the corrected question as a JSON object with the EXACT same keys. "
+            "Do NOT change qnum, type, subtype, or marks unless the instruction explicitly requires it. MCQ/Assertion-"
+            "Reason questions MUST keep their 4 options (same a/b/c/d structure). Return JSON only — no markdown, no prose."
+        )
+        edited = []
+        for sname, sec in _paper_section_iter(new_pd):
+            for idx, q in enumerate(sec['questions']):
+                if not (isinstance(q, dict) and q.get('qnum') in targets):
+                    continue
+                eprompt = f"QUESTION JSON:\n{_json.dumps(q, ensure_ascii=False)}\n\nINSTRUCTION:\n{instruction}\n\nCorrected question JSON:"
+                try:
+                    eraw, _, _ = mantle_client.converse(
+                        model_id=mantle_client.GEN_MODEL, prompt=eprompt, system_prompt=edit_sys,
+                        max_tokens=1500, temperature=0.3)
+                    newq = _extract_json_blob(eraw)
+                except Exception:
+                    newq = None
+                if isinstance(newq, dict) and str(newq.get('text', '')).strip():
+                    # Preserve identity/structure fields the editor must not invent.
+                    newq['qnum'] = q.get('qnum')
+                    newq.setdefault('type', q.get('type'))
+                    newq.setdefault('subtype', q.get('subtype'))
+                    if newq.get('marks') in (None, '', 0):
+                        newq['marks'] = q.get('marks')
+                    sec['questions'][idx] = newq
+                    edited.append(q.get('qnum'))
+
+        if not edited:
+            return Response({'error': 'The edit could not be applied — please rephrase the instruction.'},
+                            status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        paper.paper_data = new_pd
+        paper.edited_content = None        # JSON is now the source of truth; text re-extracts from the new DOCX
+        paper.save(update_fields=['paper_data', 'edited_content', 'updated_at'])
+        try:
+            file_url = _render_paper_from_stored_data(paper, request)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            return Response({'error': f'Edit applied but re-render failed: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'status': 'edited', 'edited_qnums': sorted(edited),
+                         'file': file_url, 'prev_data': prev_data})
+
+    @action(detail=True, methods=['post'])
+    def restore_data(self, request, pk=None):
+        """Restore a previous paper_data snapshot (used by the change-log revert) and re-render."""
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+        data = request.data.get('paper_data')
+        if not isinstance(data, dict) or not data:
+            return Response({'error': 'No paper_data provided'}, status=status.HTTP_400_BAD_REQUEST)
+        paper.paper_data = data
+        paper.edited_content = None
+        paper.save(update_fields=['paper_data', 'edited_content', 'updated_at'])
+        try:
+            file_url = _render_paper_from_stored_data(paper, request)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'status': 'restored', 'file': file_url})
+
+    @action(detail=True, methods=['post'])
+    def upload_image(self, request, pk=None):
+        """Upload an image to embed in the paper. Returns the media URL."""
+        paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        img = request.FILES.get('image')
+        if not img:
+            return Response({'error': 'No image file provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        import os, hashlib
+        from django.conf import settings as _s
+        ext      = os.path.splitext(img.name)[1].lower() or '.jpg'
+        raw      = img.read()
+        digest   = hashlib.sha256(raw).hexdigest()[:20]
+        filename = f"paper_{paper.id}_{digest}{ext}"
+        out_dir  = os.path.join(_s.MEDIA_ROOT, 'paper_images')
+        os.makedirs(out_dir, exist_ok=True)
+        dest     = os.path.join(out_dir, filename)
+        with open(dest, 'wb') as f:
+            f.write(raw)
+        url = f"{_s.MEDIA_URL}paper_images/{filename}"
+        return Response({'url': url, 'marker': f'[Image: {url}]'})
 
     @action(detail=True, methods=['post'])
     def save_content(self, request, pk=None):
         """Save edited content"""
         paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to edit this paper'}, status=status.HTTP_403_FORBIDDEN)
         content = request.data.get('content', '')
         
         paper.edited_content = content
@@ -503,6 +1129,8 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def regenerate_pdf(self, request, pk=None):
         """Regenerate PDF from edited content"""
         paper = self.get_object()
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized to regenerate this paper'}, status=status.HTTP_403_FORBIDDEN)
         content = request.data.get('content', '') or paper.edited_content
         
         if not content:
@@ -559,7 +1187,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             paper.file.save(filename, ContentFile(packet.getvalue()))
             paper.save()
             
-            return Response({'status': 'PDF regenerated successfully', 'file_url': paper.file.url})
+            return Response({'status': 'PDF regenerated successfully', 'file_url': signed_file_url(request, paper.file)})
             
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -572,7 +1200,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
     """
     serializer_class = MaterialSerializer
     pagination_class = LargeResultsSetPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['class_name', 'subject', 'type', 'unit']
     search_fields = ['title', 'subject', 'class_name']
@@ -580,8 +1208,6 @@ class MaterialViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         base = Material.objects.all().select_related('uploaded_by', 'school').order_by('-uploaded_at')
-        if not user.is_authenticated:
-            return base
         role = _user_role(user)
         if role == 'superadmin' or user.is_superuser:
             return base
@@ -640,7 +1266,14 @@ class MaterialViewSet(viewsets.ModelViewSet):
                     return Response({"error": "No files provided for bulk upload"}, status=status.HTTP_400_BAD_REQUEST)
 
                 for file in files:
-                    if not file: continue
+                    if not file:
+                        continue
+                    ext = os.path.splitext(file.name)[1].lower()
+                    if ext not in ALLOWED_MATERIAL_EXTENSIONS:
+                        return Response(
+                            {"error": f"'{file.name}' has an unsupported type. Allowed: PDF, DOCX, DOC, TXT"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
                     filename = file.name
                     base_name = os.path.splitext(filename)[0]
 
@@ -671,7 +1304,14 @@ class MaterialViewSet(viewsets.ModelViewSet):
                     title = request.data.get(f"title_{i}")
                     file = request.FILES.get(f"file_{i}")
 
-                    if not file: continue
+                    if not file:
+                        continue
+                    ext = os.path.splitext(file.name)[1].lower()
+                    if ext not in ALLOWED_MATERIAL_EXTENSIONS:
+                        return Response(
+                            {"error": f"'{file.name}' has an unsupported type. Allowed: PDF, DOCX, DOC, TXT"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
                     material = Material.objects.create(
                         class_name=class_name,
@@ -735,9 +1375,14 @@ class BlueprintTemplateViewSet(viewsets.ModelViewSet):
     """
     queryset = BlueprintTemplate.objects.filter(is_active=True).order_by('subject', 'class_name')
     serializer_class = BlueprintTemplateSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filterset_fields = ['subject', 'class_name', 'is_default']
     search_fields = ['name', 'subject']
+
+    def get_queryset(self):
+        # Hierarchical: shared (default/superadmin) templates visible to all; school_admin also
+        # sees their school's, a teacher only their own. (IDOR + own-only scoping.)
+        return _scoped_blueprint_templates(self.request.user).order_by('subject', 'class_name')
 
     def perform_create(self, serializer):
         """Set the created_by field to the current user"""
@@ -746,7 +1391,7 @@ class BlueprintTemplateViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def defaults(self, request):
         """Get default templates for each subject/class combination"""
-        defaults = self.queryset.filter(is_default=True)
+        defaults = self.get_queryset().filter(is_default=True)
         serializer = self.get_serializer(defaults, many=True)
         return Response(serializer.data)
 
@@ -759,9 +1404,13 @@ class ExamBlueprintViewSet(viewsets.ModelViewSet):
     queryset = ExamBlueprint.objects.filter(is_active=True).order_by('class_name', 'subject')
     serializer_class = ExamBlueprintSerializer
     pagination_class = LargeResultsSetPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticated]
     filterset_fields = ['class_name', 'subject']
     search_fields = ['subject', 'class_name', 'code']
+
+    def get_queryset(self):
+        # Hierarchical: superadmin → all, school_admin → school, teacher → own. (IDOR + own-only.)
+        return _scoped_blueprints(self.request.user).order_by('class_name', 'subject')
 
     def perform_create(self, serializer):
         """Set the created_by field to the current user"""
@@ -812,7 +1461,7 @@ def cbse_subject_pattern(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsAuthenticated])
 def get_subjects_for_class(request):
     """Return subjects available to the requesting user's school."""
     class_name = request.GET.get("class_name", "").strip()
@@ -844,7 +1493,7 @@ def get_subjects_for_class(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsAuthenticated])
 def get_chapters(request):
     """Return chapters available to the requesting user's school."""
     class_name = request.GET.get("class_name", "").strip()
@@ -870,7 +1519,7 @@ def get_chapters(request):
     return Response({"chapters": list(chapters)})
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsAuthenticated])
 def get_blueprints(request):
     """API version of blueprint lookup"""
     try:
@@ -882,11 +1531,10 @@ def get_blueprints(request):
             
         class_num = class_name.split("-")[0]
         
-        # 1. Standard Blueprint Templates
-        templates = BlueprintTemplate.objects.filter(
+        # 1. Standard Blueprint Templates (school-scoped)
+        templates = _scoped_blueprint_templates(request.user).filter(
             class_name=class_num,
             subject__iexact=subject,
-            is_active=True
         ).values('id', 'name', 'created_at')
         
         template_list = []
@@ -898,11 +1546,10 @@ def get_blueprints(request):
                 'created_at': t['created_at']
             })
 
-        # 2. AI-generated Blueprints (iterate objects to avoid field errors)
-        blueprints = ExamBlueprint.objects.filter(
+        # 2. AI-generated Blueprints (school-scoped)
+        blueprints = _scoped_blueprints(request.user).filter(
             class_name=class_num,
             subject__iexact=subject,
-            is_active=True
         )
 
         blueprint_list = []
@@ -937,13 +1584,13 @@ def get_blueprints(request):
         return Response({"error": str(e), "trace": traceback.format_exc()}, status=500)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsAuthenticated])
 def get_blueprint_details(request, blueprint_id):
     """API version of blueprint details lookup"""
     try:
         if blueprint_id.startswith("exam_"):
             bp_id = blueprint_id.replace("exam_", "")
-            blueprint = ExamBlueprint.objects.get(id=bp_id)
+            blueprint = _scoped_blueprints(request.user).get(id=bp_id)
             # Safe data extraction
             bp_json = blueprint.blueprint or {}
             
@@ -966,7 +1613,7 @@ def get_blueprint_details(request, blueprint_id):
             })
         elif blueprint_id.startswith("template_"):
             tp_id = blueprint_id.replace("template_", "")
-            template = BlueprintTemplate.objects.get(id=tp_id)
+            template = _scoped_blueprint_templates(request.user).get(id=tp_id)
             tp_json = template.blueprint or {}
             
             # Calculate total marks if missing

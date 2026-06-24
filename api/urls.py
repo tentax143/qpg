@@ -15,7 +15,7 @@ from .views import (
     get_blueprint_details,
     model_choice,
 )
-from .auth_views import login, logout, user_profile, user_management, delete_user, change_password
+from .auth_views import login, logout, user_profile, user_management, delete_user, change_password, first_login_password
 from .admin_views import (
     superadmin_dashboard,
     schools_list,
@@ -45,6 +45,7 @@ urlpatterns = [
     path('auth/logout/', logout, name='api_logout'),
     path('auth/profile/', user_profile, name='api_profile'),
     path('auth/change-password/', change_password, name='api_change_password'),
+    path('auth/first-login-password/', first_login_password, name='api_first_login_password'),
 
     # User management
     path('users/', user_management, name='api_user_management'),
