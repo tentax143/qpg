@@ -48,7 +48,10 @@ function LoginForm() {
       localStorage.setItem('user', JSON.stringify(userData));
       localStorage.setItem('loginTimestamp', Date.now().toString());
       setSuccess('Login successful! Redirecting...');
-      const dest = userData?.role === 'superadmin' ? '/superadmin' : '/dashboard';
+      // First-login users (created by an admin) are prompted to change their password.
+      const dest = userData?.require_password_change
+        ? '/change-password'
+        : (userData?.role === 'superadmin' ? '/superadmin' : '/dashboard');
       setTimeout(() => { window.location.href = dest; }, 1000);
     } catch (err) {
       const errorMsg = err.response?.data?.detail ||

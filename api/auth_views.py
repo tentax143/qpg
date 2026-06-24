@@ -65,7 +65,7 @@ def user_management(request):
     is_superadmin = role == 'superadmin'
     is_school_admin = role == 'school_admin'
 
-    if not (is_superadmin or is_school_admin or request.user.is_staff or request.user.is_superuser):
+    if not (is_superadmin or is_school_admin or request.user.is_superuser):
         return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
@@ -78,7 +78,7 @@ def user_management(request):
             except Exception:
                 users = User.objects.none()
         else:
-            users = User.objects.all().select_related('profile__school').order_by('-date_joined')
+            users = User.objects.none()
         return Response(UserSerializer(users, many=True).data)
 
     elif request.method == 'POST':
@@ -113,7 +113,7 @@ def delete_user(request, pk):
     except Exception:
         role = None
 
-    if not (role in ('superadmin', 'school_admin') or request.user.is_staff or request.user.is_superuser):
+    if not (role in ('superadmin', 'school_admin') or request.user.is_superuser):
         return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
 
     user_to_delete = get_object_or_404(User, pk=pk)
@@ -163,14 +163,56 @@ def change_password(request):
     """
     if not request.user.is_authenticated:
         return Response({'error': 'Not authenticated'}, status=status.HTTP_401_UNAUTHORIZED)
-        
+
     serializer = PasswordUpdateSerializer(data=request.data)
     if serializer.is_valid():
         if not request.user.check_password(serializer.validated_data['old_password']):
             return Response({'error': 'Incorrect old password'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         request.user.set_password(serializer.validated_data['new_password'])
         request.user.save()
+        _clear_password_change_flag(request.user)
         return Response({'message': 'Password updated successfully'})
-        
+
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _clear_password_change_flag(user):
+    try:
+        profile = user.profile
+        if profile.require_password_change:
+            profile.require_password_change = False
+            profile.save(update_fields=['require_password_change'])
+    except Exception:
+        pass
+
+
+@api_view(['POST'])
+def first_login_password(request):
+    """First-login prompt: set a new password, OR skip. Both clear the require-password-change
+    flag so the user isn't asked again. No old password needed (the user just authenticated);
+    setting a new one this way is only allowed while the flag is set (first-login window)."""
+    if not request.user.is_authenticated:
+        return Response({'error': 'Not authenticated'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if request.data.get('skip'):
+        _clear_password_change_flag(request.user)
+        return Response({'message': 'Skipped — you can change your password later in settings.'})
+
+    try:
+        must_change = bool(request.user.profile.require_password_change)
+    except Exception:
+        must_change = False
+    if not must_change:
+        return Response({'error': 'Use the regular change-password form (current password required).'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    new_password = str(request.data.get('new_password', ''))
+    if len(new_password) < 8:
+        return Response({'error': 'Password must be at least 8 characters.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    request.user.set_password(new_password)   # token auth → token stays valid, user stays logged in
+    request.user.save()
+    _clear_password_change_flag(request.user)
+    return Response({'message': 'Password updated successfully'})

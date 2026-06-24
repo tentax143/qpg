@@ -7,8 +7,8 @@ import {
   Settings2, Plus, Info, Eye, Edit2, Trash2, 
   Settings, CheckCircle, HelpCircle, FileText,
   Lightbulb, PenTool, MessageSquare, Files, Calculator,
-  Filter, Search, ArrowLeft, MoreHorizontal, Calendar, 
-  User, Hash, Target
+  Filter, Search, ArrowLeft, MoreHorizontal, Calendar,
+  User, Hash, Target, CheckSquare, Square
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -20,10 +20,44 @@ export default function PatternsListPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [selected, setSelected] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     fetchPatterns();
   }, []);
+
+  const toggleSelect = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} selected pattern(s)? This cannot be undone.`)) return;
+    setBulkBusy(true);
+    try {
+      const res = await apiClient.post('/patterns/bulk-delete/', { ids });
+      const data = res.data || {};
+      const deletedIds = data.deleted_ids || [];
+      setPatterns(prev => prev.filter(p => !deletedIds.includes(p.id)));
+      setSelected(new Set());
+      let msg = `Deleted ${data.deleted ?? deletedIds.length} pattern(s).`;
+      if ((data.protected_skipped || []).length)
+        msg += ` ${data.protected_skipped.length} shared official pattern(s) skipped — superadmin only.`;
+      if ((data.not_found_or_forbidden || []).length)
+        msg += ` ${data.not_found_or_forbidden.length} could not be deleted.`;
+      setSuccess(msg);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to delete selected patterns');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const fetchPatterns = async () => {
     try {
@@ -97,6 +131,16 @@ export default function PatternsListPage() {
             />
         </div>
         <div className="flex items-center gap-3 w-full md:w-auto">
+            {selected.size > 0 && (
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkBusy}
+                className="flex items-center justify-center gap-2 px-6 py-3.5 bg-red-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-red-700 transition-all shadow-lg shadow-red-200 disabled:opacity-60"
+              >
+                <Trash2 size={16} />
+                {bulkBusy ? 'Deleting…' : `Delete (${selected.size})`}
+              </button>
+            )}
             <button className="flex-1 md:flex-none flex items-center justify-center gap-2 px-6 py-3.5 bg-white border border-gray-100 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition-all">
                 <Filter size={18} />
                 <span>Filter</span>
@@ -114,7 +158,21 @@ export default function PatternsListPage() {
           <table className="w-full text-left">
             <thead>
               <tr className="bg-gray-50/50 border-b border-gray-100">
-                <th className="px-8 py-5 text-[10px] font-black text-gray-400 uppercase tracking-widest">Pattern Identity</th>
+                <th className="pl-8 pr-2 py-5 w-10">
+                  <button
+                    onClick={() => {
+                      const allSel = filteredPatterns.length > 0 && filteredPatterns.every(p => selected.has(p.id));
+                      setSelected(allSel ? new Set() : new Set(filteredPatterns.map(p => p.id)));
+                    }}
+                    title="Select all"
+                    className="text-gray-300 hover:text-blue-600 transition-colors align-middle"
+                  >
+                    {filteredPatterns.length > 0 && filteredPatterns.every(p => selected.has(p.id))
+                      ? <CheckSquare size={18} className="text-blue-600" />
+                      : <Square size={18} />}
+                  </button>
+                </th>
+                <th className="px-4 py-5 text-[10px] font-black text-gray-400 uppercase tracking-widest">Pattern Identity</th>
                 <th className="px-6 py-5 text-[10px] font-black text-gray-400 uppercase tracking-widest">Context</th>
                 <th className="px-6 py-5 text-[10px] font-black text-gray-400 uppercase tracking-widest text-center">Stats</th>
                 <th className="px-6 py-5 text-[10px] font-black text-gray-400 uppercase tracking-widest">Ownership</th>
@@ -123,8 +181,19 @@ export default function PatternsListPage() {
             </thead>
             <tbody className="divide-y divide-gray-50 bg-white">
               {filteredPatterns.map((pattern) => (
-                <tr key={pattern.id} className="hover:bg-blue-50/30 transition-all group">
-                  <td className="px-8 py-6">
+                <tr key={pattern.id} className={`transition-all group ${selected.has(pattern.id) ? 'bg-blue-50/60' : 'hover:bg-blue-50/30'}`}>
+                  <td className="pl-8 pr-2 py-6 w-10">
+                    <button
+                      onClick={() => toggleSelect(pattern.id)}
+                      title="Select for bulk delete"
+                      className="text-gray-300 hover:text-blue-600 transition-colors align-middle"
+                    >
+                      {selected.has(pattern.id)
+                        ? <CheckSquare size={18} className="text-blue-600" />
+                        : <Square size={18} />}
+                    </button>
+                  </td>
+                  <td className="px-4 py-6">
                     <div className="flex items-center gap-4">
                       <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform">
                         <FileText size={24} />
@@ -201,7 +270,7 @@ export default function PatternsListPage() {
               ))}
               {filteredPatterns.length === 0 && (
                 <tr>
-                    <td colSpan="5" className="px-8 py-20 text-center">
+                    <td colSpan="6" className="px-8 py-20 text-center">
                         <div className="flex flex-col items-center">
                             <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
                                 <Search size={32} className="text-gray-200" />

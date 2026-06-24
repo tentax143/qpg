@@ -1,6 +1,6 @@
 # QPG Pipeline Upgrade — Robust Multi-Stage Validation Architecture
 
-**Status:** Design document — not yet implemented  
+**Status:** ✅ COMPLETE — all 17 stages implemented  
 **Scope:** `core/section_generator.py`, `core/image_finder.py`, `core/generator.py`, `core/embeddings.py`  
 **Constraint:** Time and LLM cost are not constraints — maximise quality.
 
@@ -929,34 +929,31 @@ This report is stored in `QuestionPaper.paper_data` and can be surfaced in the a
 
 | Priority | Stage | File(s) | Est. LLM calls added per paper |
 |---|---|---|---|
-| 1 | V1 — Full structural validation | `section_generator.py` | 0 (code only) |
-| 2 | V5 — Inter-question uniqueness (Layer 1) | `section_generator.py` | 0 (code only) |
-| 3 | V7 — Bloom's enforcement | `section_generator.py` | 0–6 (targeted regen) |
-| 4 | 3.1 — Cross-section dedup | `section_generator.py`, `embeddings.py` | 0 (code only) |
-| 5 | 4.1 — Schema enrichment (chapter_tag, explanation) | `section_generator.py` | 0 (prompt change) |
-| 6 | V4 — MCQ answer verification | `section_generator.py` | ~20 (batched) |
-| 7 | V2 — Content quality critic | `section_generator.py` | ~38 individual |
-| 8 | V6 — CBQ passage validation | `section_generator.py` | ~4 (one per CBQ) |
-| 9 | V3 — NCERT grounding | `section_generator.py` | ~38 individual |
-| 10 | V9.1 — Multi-image + ranking | `image_finder.py` | ~6 per image question |
-| 11 | V9.2 — Scientific accuracy | `image_finder.py` | ~1 per image question |
-| 12 | V8 — Cross-section coherence | `section_generator.py` | 1 |
-| 13 | V10 — Final paper audit | `section_generator.py`, `generator.py` | 1 |
-| 14 | 3.2 — Per-type context routing | `section_generator.py` | 0 (code only) |
-| 15 | 3.3 — Context quality pre-check | `section_generator.py` | 1 per section |
-| 16 | 4.3 — Individual LA/CBQ generation | `section_generator.py` | +5 per paper |
-| 17 | V5 Layer 2 — Semantic uniqueness | `section_generator.py` | 0–5 (only on flag) |
+| 1 | ✅ V1 — Full structural validation | `section_generator.py` | 0 (code only) |
+| 2 | ✅ V5 — Inter-question uniqueness (Layer 1) | `section_generator.py` | 0 (code only) |
+| 3 | ✅ V7 — Bloom's enforcement | `section_generator.py` | 0–6 (targeted regen) |
+| 4 | ✅ 3.1 — Cross-section dedup | `section_generator.py` | 0 (code only) |
+| 5 | ✅ 4.1 — Schema enrichment (chapter_tag, explanation) | `section_generator.py` | 0 (prompt change) |
+| 6 | ✅ V4 — MCQ answer verification | `section_generator.py` | ~20 (batched) |
+| 7 | ✅ V2 — Content quality critic | `section_generator.py` | ~38 individual |
+| 8 | ✅ V6 — CBQ passage validation | `section_generator.py` | ~4 (one per CBQ) |
+| 9 | ✅ V3 — NCERT grounding | `section_generator.py` | ~38 individual |
+| 10 | ✅ V9.1 — Multi-image + ranking | `image_finder.py` | ~6 per image question |
+| 11 | ✅ V9.2 — Scientific accuracy | `image_finder.py` | ~1 per image question |
+| 12 | ✅ V8 — Cross-section coherence | `section_generator.py` | 1 |
+| 13 | ✅ V10 — Final paper audit | `section_generator.py` | 1 |
+| 14 | ✅ 3.2 — Per-type context routing | `section_generator.py` | 0 (code only) |
+| 15 | ✅ 3.3 — Context quality pre-check | `section_generator.py` | 1 per section |
+| 16 | ✅ 4.3 — Individual LA/CBQ generation | `section_generator.py` | +5 per paper |
+| 17 | ✅ V5 Layer 2 — Semantic uniqueness | `section_generator.py` | 0–5 (only on flag) |
 
 ### Files Changed
 
 | File | Changes |
 |---|---|
-| `core/section_generator.py` | Main file — all validation stages, context upgrades, schema changes |
-| `core/image_finder.py` | V9 multi-image, accuracy check, enhanced Kimi verify |
-| `core/embeddings.py` | Cross-section dedup support (expose doc IDs from query results) |
-| `core/generator.py` | V10 final audit call; strip `_v*` fields before rendering |
-| `core/models.py` | No changes required |
-| `core/tasks.py` | Store `_pipeline_report` in `paper.paper_data` |
+| `core/section_generator.py` | V1–V10 all validation stages, cross-section dedup, per-type context routing, schema enrichment, Bloom's enforcement, final paper audit |
+| `core/image_finder.py` | V9.1 multi-image + Kimi ranking, V9.2 scientific accuracy check |
+| `core/generator.py` | Strip internal `_*` pipeline fields before DOCX rendering |
 
 ---
 

@@ -313,6 +313,7 @@ def school_user_usage(request, pk):
 
     from django.db.models import Sum, Count
     from django.utils import timezone
+    from core.models import UsageEvent
 
     users = User.objects.filter(profile__school=school).select_related('profile')
     now = timezone.now()
@@ -320,25 +321,31 @@ def school_user_usage(request, pk):
 
     rows = []
     for u in users:
-        papers_qs = QuestionPaper.objects.filter(created_by=u)
-        agg = papers_qs.aggregate(
-            total_papers=Count('id'),
+        # Aggregate the persistent usage log (survives paper deletion), not live papers, so a
+        # teacher's tokens/cost don't reset when they delete a paper. 'total_papers' counts
+        # generation events — consistent with the school's persistent total_papers_generated.
+        events = UsageEvent.objects.filter(user=u)
+        agg = events.aggregate(
+            n=Count('id'),
             total_input=Sum('input_tokens'),
             total_output=Sum('output_tokens'),
             total_cost=Sum('cost'),
         )
-        monthly = papers_qs.filter(created_at__gte=first_of_month).aggregate(
+        monthly = events.filter(created_at__gte=first_of_month).aggregate(
             monthly_input=Sum('input_tokens'),
             monthly_output=Sum('output_tokens'),
             monthly_cost=Sum('cost'),
         )
+        # Papers the user currently owns (separate from all-time generated count above).
+        live_papers = QuestionPaper.objects.filter(created_by=u).count()
         rows.append({
             'id': u.id,
             'username': u.username,
             'email': u.email,
             'role': getattr(u.profile, 'role', 'teacher'),
             'allowed_subject': getattr(u.profile, 'allowed_subject', None),
-            'total_papers': agg['total_papers'] or 0,
+            'total_papers': agg['n'] or 0,
+            'current_papers': live_papers,
             'total_tokens': (agg['total_input'] or 0) + (agg['total_output'] or 0),
             'total_cost': str(agg['total_cost'] or 0),
             'monthly_tokens': (monthly['monthly_input'] or 0) + (monthly['monthly_output'] or 0),
