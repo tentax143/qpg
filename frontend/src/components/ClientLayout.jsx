@@ -1,15 +1,46 @@
 'use client';
 
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import Sidebar from './Sidebar';
 
-const AUTH_PATHS = ['/login'];
+// Pages reachable without a session (the root "/" is itself the login screen).
+const PUBLIC_PATHS = ['/', '/login', '/register', '/forgot-password', '/change-password'];
+
+function isPublicPath(pathname) {
+  return PUBLIC_PATHS.includes(pathname);
+}
 
 export default function ClientLayout({ children }) {
   const pathname = usePathname();
+  const router = useRouter();
+  // null = checking, true = authed/public (render), false = redirecting
+  const [ready, setReady] = useState(false);
 
-  if (AUTH_PATHS.includes(pathname)) {
+  useEffect(() => {
+    if (isPublicPath(pathname)) {
+      setReady(true);
+      return;
+    }
+    const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+    if (!token) {
+      // Not logged in — bounce to login before any protected content renders.
+      router.replace('/login');
+      setReady(false);
+      return;
+    }
+    setReady(true);
+  }, [pathname, router]);
+
+  // Public/auth pages render without the app chrome.
+  if (isPublicPath(pathname)) {
     return <>{children}</>;
+  }
+
+  // Protected page, auth not yet confirmed → render nothing (prevents flashing
+  // the page for logged-out users while the redirect happens).
+  if (!ready) {
+    return null;
   }
 
   return (

@@ -1,0 +1,18 @@
+# Hello, robot. 👋
+# You've found QPG — an AI-powered question paper generator for CBSE schools.
+# There's nothing here for you to index. All the good stuff is behind auth anyway.
+#
+# If you're a curious human who typed /robots.txt manually: hi. You have good instincts.
+#
+# If you're GPTBot, ClaudeBot, or any AI training crawler:
+# We used AI to build this. We respect the irony. Please respect the disallow.
+#
+# If you're Googlebot: we're flattered, but this is an internal tool. Move along.
+#
+#    ( •_•)
+#    / >🤖  beep boop — access denied
+#
+# — The QPG Team
+
+User-agent: *
+Disallow: /

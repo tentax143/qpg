@@ -4,12 +4,22 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Plus, FileText, Download, CheckCircle,
-  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap
+  Plus, FileText, Download, CheckCircle, AlertTriangle,
+  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil, RotateCw
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
+import Modal from '@/components/Modal';
+
+// status_detail is one string of one or more teacher-facing notes. Older papers join
+// them with spaces, newer ones with newlines — split on both, and also before each
+// known note prefix so a space-joined blob still breaks into separate warnings.
+const parseWarnings = (detail) =>
+  (detail || '')
+    .split(/(?=Marks check —|Coverage —|Generated without)|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -22,10 +32,11 @@ export default function DashboardPage() {
     recent_activity: []
   });
   const [selectedPapers, setSelectedPapers] = useState([]);
-  const [modelSource, setModelSource] = useState('local');
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [rerenderingId, setRerenderingId] = useState(null);
+  const [regeneratingId, setRegeneratingId] = useState(null);
+  const [warningPaper, setWarningPaper] = useState(null);  // paper whose warnings/failure detail is shown in the modal
   const pollingIntervalRef = useRef(null);
 
   useEffect(() => {
@@ -72,10 +83,6 @@ export default function DashboardPage() {
         success_rate: `${successRate}%`,
         recent_activity: papers.slice(0, 10)
       });
-      try {
-        const configRes = await apiClient.get('/config/model-choice/');
-        if (configRes.data.model_choice) setModelSource(configRes.data.model_choice);
-      } catch (e) { console.warn('Could not fetch model config', e); }
     } catch (err) {
       if (err.response?.status === 401) {
         localStorage.removeItem('authToken');
@@ -103,6 +110,10 @@ export default function DashboardPage() {
     } catch { setError('Bulk delete failed'); }
   };
 
+  // A paper stuck in 'generating' for >15 min (e.g. a dead worker) is treated as retryable.
+  const isStuck = (p) => p.status === 'generating' && p.updated_at
+    && (Date.now() - new Date(p.updated_at).getTime() > 15 * 60 * 1000);
+
   const handleRetry = async (id) => {
     try {
       await apiClient.post(`/papers/${id}/retry/`);
@@ -124,16 +135,21 @@ export default function DashboardPage() {
     }
   };
 
-  const handleToggleModel = async () => {
-    const newSource = modelSource === 'local' ? 'aws' : 'local';
+  // Regenerate fresh questions using the paper's existing config (pattern/class/subject/chapters).
+  const handleRegenerate = async (id) => {
+    if (!confirm('Regenerate this paper from its pattern? This creates fresh questions and replaces the current content.')) return;
+    setRegeneratingId(id);
     try {
-      await apiClient.post('/config/model-choice/', { model_choice: newSource });
-      setModelSource(newSource);
-      setSuccess(`Switched to ${newSource === 'aws' ? 'AWS Bedrock' : 'Local'}`);
-    } catch {
-      setError('Failed to update model configuration');
+      await apiClient.post(`/papers/${id}/regenerate/`);
+      setSuccess('Regenerating — refresh in a minute to see the new paper');
+      fetchDashboardData();   // status flips to generating; the list shows the spinner
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Could not start regeneration');
+    } finally {
+      setRegeneratingId(null);
     }
   };
+
 
   const toggleSelectPaper = (id) => {
     setSelectedPapers(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
@@ -188,9 +204,9 @@ export default function DashboardPage() {
       {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} />}
       {error && <ErrorAlert message={error} onClose={() => setError(null)} />}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="space-y-6">
         {/* Papers table */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="space-y-6">
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-900">Recent Papers</h2>
@@ -252,13 +268,35 @@ export default function DashboardPage() {
                       </td>
                       <td className="px-5 py-4">
                         {paper.status === 'done' ? (
-                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
-                            <CheckCircle className="w-3.5 h-3.5" />
-                            Completed
-                          </span>
+                          paper.status_detail ? (
+                            <button
+                              type="button"
+                              onClick={() => setWarningPaper(paper)}
+                              title="Click to see what to check"
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full hover:bg-emerald-100 transition-colors cursor-pointer"
+                            >
+                              <CheckCircle className="w-3.5 h-3.5" />
+                              Completed ⚠
+                            </button>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+                              <CheckCircle className="w-3.5 h-3.5" />
+                              Completed
+                            </span>
+                          )
                         ) : paper.status === 'failed' ? (
-                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full">
+                          <button
+                            type="button"
+                            onClick={() => paper.status_detail && setWarningPaper(paper)}
+                            title={paper.status_detail ? 'Click to see why it failed' : 'Generation failed'}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full hover:bg-red-100 transition-colors cursor-pointer disabled:cursor-default"
+                            disabled={!paper.status_detail}
+                          >
                             Failed
+                          </button>
+                        ) : isStuck(paper) ? (
+                          <span title="Generation looks stalled — you can retry." className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                            Stalled
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded-full">
@@ -268,13 +306,22 @@ export default function DashboardPage() {
                         )}
                       </td>
                       <td className="px-5 py-4 text-right">
-                        <div className="flex items-center justify-end gap-0.5">
+                        <div className="flex items-center justify-end gap-1">
+                          {paper.status === 'done' && (
+                            <Link
+                              href={`/papers/${paper.id}/edit`}
+                              className="p-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors"
+                              title="Edit paper"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </Link>
+                          )}
                           {paper.file && (
                             <a
                               href={paper.file}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                              className="p-1.5 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
                               title="Download"
                             >
                               <Download className="w-4 h-4" />
@@ -284,7 +331,7 @@ export default function DashboardPage() {
                             <button
                               onClick={() => handleRerender(paper.id)}
                               disabled={rerenderingId === paper.id}
-                              className="p-1.5 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="p-1.5 text-violet-600 bg-violet-50 hover:bg-violet-100 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Re-render DOCX"
                             >
                               {rerenderingId === paper.id
@@ -293,18 +340,28 @@ export default function DashboardPage() {
                               }
                             </button>
                           )}
-                          {paper.status === 'failed' && (
+                          {paper.status === 'done' && (
+                            <button
+                              onClick={() => handleRegenerate(paper.id)}
+                              disabled={regeneratingId === paper.id}
+                              className="p-1.5 text-amber-600 bg-amber-50 hover:bg-amber-100 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Regenerate fresh questions (same pattern, class, subject & chapters)"
+                            >
+                              <RotateCw className={`w-4 h-4 ${regeneratingId === paper.id ? 'animate-spin' : ''}`} />
+                            </button>
+                          )}
+                          {(paper.status === 'failed' || isStuck(paper)) && (
                             <button
                               onClick={() => handleRetry(paper.id)}
-                              className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
-                              title="Retry"
+                              className="p-1.5 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors"
+                              title={paper.status_detail || 'Retry'}
                             >
                               <RefreshCw className="w-4 h-4" />
                             </button>
                           )}
                           <button
                             onClick={() => handleDelete(paper.id)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                            className="p-1.5 text-red-500 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
                             title="Delete"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -348,35 +405,57 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Right panel */}
-        <div className="space-y-4">
-          {/* AI Configuration */}
-          <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-slate-900 mb-4">AI Configuration</h3>
-            <div className="flex items-center justify-between py-3 border-t border-slate-100">
-              <div>
-                <p className="text-sm font-medium text-slate-700">Inference</p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {modelSource === 'aws' ? 'AWS Bedrock' : 'Local model'}
-                </p>
-              </div>
-              <button
-                onClick={handleToggleModel}
-                className={`relative w-11 h-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                  modelSource === 'aws' ? 'bg-blue-600' : 'bg-slate-200'
-                }`}
-              >
-                <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all duration-200 ${
-                  modelSource === 'aws' ? 'left-5' : 'left-0.5'
-                }`} />
-              </button>
-            </div>
-            <p className="text-xs text-slate-400 mt-3 leading-relaxed">
-              Toggle between local model and AWS Bedrock for question generation.
-            </p>
-          </div>
-        </div>
       </div>
+
+      {/* Warnings / failure-reason popup for a paper's status badge */}
+      <Modal
+        isOpen={!!warningPaper}
+        onClose={() => setWarningPaper(null)}
+        title={warningPaper?.status === 'failed' ? 'Why this paper failed' : 'Things to check'}
+        size="lg"
+      >
+        {warningPaper && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+              <div className="w-9 h-9 bg-slate-100 border border-slate-200 rounded-md flex items-center justify-center text-slate-700 text-xs font-semibold shrink-0">
+                {warningPaper.class_name}
+              </div>
+              <div>
+                <p className="font-medium text-slate-900">{warningPaper.subject}</p>
+                <p className="text-xs text-slate-400">{warningPaper.pattern_name || 'Standard'}</p>
+              </div>
+            </div>
+
+            {warningPaper.status === 'failed' ? (
+              <div className="flex gap-2.5 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-800">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-red-500" />
+                <span className="break-words">{warningPaper.status_detail}</span>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-slate-600">
+                  The paper generated successfully, but a few things are worth a quick look before you hand it out:
+                </p>
+                <ul className="space-y-2">
+                  {parseWarnings(warningPaper.status_detail).map((w, i) => (
+                    <li
+                      key={i}
+                      className="flex gap-2.5 p-3 rounded-lg bg-amber-50 border border-amber-100 text-sm text-amber-900"
+                    >
+                      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
+                      <span className="break-words">{w}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-slate-400">
+                  Tip: use <span className="font-medium text-amber-600">Regenerate</span> to rebuild fresh
+                  questions from the pattern, or open the paper to edit it directly.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

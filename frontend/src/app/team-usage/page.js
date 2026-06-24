@@ -126,7 +126,7 @@ export default function TeamUsagePage() {
                   <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Username</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Role</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Subject</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Total Papers</th>
+                  <th title="Papers generated all-time (includes deleted papers)" className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Papers Generated</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Total Tokens</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Total Cost</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Monthly Tokens</th>
@@ -151,7 +151,12 @@ export default function TeamUsagePage() {
                         <span className="text-slate-300 text-xs">All</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right text-slate-700">{r.total_papers}</td>
+                    <td className="px-4 py-3 text-right text-slate-700">
+                      {r.total_papers}
+                      {typeof r.current_papers === 'number' && r.current_papers !== r.total_papers && (
+                        <span className="block text-[10px] text-slate-400 font-normal">{r.current_papers} current</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-right text-slate-700">{r.total_tokens.toLocaleString()}</td>
                     <td className="px-4 py-3 text-right text-slate-500 text-xs">₹{Number(r.total_cost).toFixed(4)}</td>
                     <td className="px-4 py-3 text-right text-slate-700">{r.monthly_tokens.toLocaleString()}</td>

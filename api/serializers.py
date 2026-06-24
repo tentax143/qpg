@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint
+from core.media_access import signed_file_url
 from django.contrib.auth.models import User
 
 
@@ -35,15 +36,19 @@ class QuestionPaperSerializer(serializers.ModelSerializer):
         write_only=True
     )
     created_by = UserSerializer(read_only=True)
-    
+    file = serializers.SerializerMethodField()
+
+    def get_file(self, obj):
+        return signed_file_url(self.context.get('request'), obj.file)
+
     class Meta:
         model = QuestionPaper
         fields = [
             'id', 'class_name', 'subject', 'pattern', 'pattern_id',
-            'chapters', 'difficulty', 'file', 'status', 'task_id',
+            'chapters', 'difficulty', 'file', 'status', 'status_detail', 'task_id',
             'edited_content', 'cost', 'created_by', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'file', 'status', 'task_id']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'status', 'status_detail', 'task_id']
 
 
 class QuestionPaperListSerializer(serializers.ModelSerializer):
@@ -51,25 +56,37 @@ class QuestionPaperListSerializer(serializers.ModelSerializer):
     pattern_name = serializers.CharField(source='pattern.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     has_paper_data = serializers.SerializerMethodField()
+    file = serializers.SerializerMethodField()
 
     def get_has_paper_data(self, obj):
         return obj.paper_data is not None
+
+    def get_file(self, obj):
+        return signed_file_url(self.context.get('request'), obj.file)
 
     class Meta:
         model = QuestionPaper
         fields = [
             'id', 'class_name', 'subject', 'pattern_name', 'difficulty',
-            'status', 'cost', 'created_by_name', 'created_at', 'file',
-            'has_paper_data'
+            'status', 'status_detail', 'cost', 'created_by_name', 'created_at',
+            'updated_at', 'file', 'has_paper_data'
         ]
-        read_only_fields = fields
+        read_only_fields = [
+            'id', 'class_name', 'subject', 'pattern_name', 'difficulty',
+            'status', 'status_detail', 'cost', 'created_by_name', 'created_at',
+            'updated_at', 'has_paper_data',
+        ]
 
 
 class MaterialSerializer(serializers.ModelSerializer):
     """Serializer for Material model"""
     uploaded_by = UserSerializer(read_only=True)
     type_display = serializers.CharField(source='get_type_display', read_only=True)
-    
+    file = serializers.SerializerMethodField()
+
+    def get_file(self, obj):
+        return signed_file_url(self.context.get('request'), obj.file)
+
     class Meta:
         model = Material
         fields = [

@@ -53,7 +53,7 @@ def converse(
     max_tokens: int = 4096,
     temperature: float = 0.7,
     system_prompt: str = None,
-    retries: int = 5,
+    retries: int = 3,
 ):
     """
     Call the Mantle Chat Completions endpoint.
@@ -82,7 +82,7 @@ def converse(
             "Authorization": f"Bearer {api_key}",
         }
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=300)
+            resp = requests.post(url, headers=headers, json=body, timeout=120)
             resp.raise_for_status()
             data = resp.json()
 

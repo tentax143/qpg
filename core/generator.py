@@ -1,5 +1,10 @@
-import os, re, json, random, time, traceback
+import os, re, json, random, time, traceback, threading
 import hashlib
+
+# Per-request storage for the last validated paper JSON.
+# Eliminates the shared temp_clean.json file, which caused cross-user data
+# contamination under concurrent Celery workers or gunicorn threads.
+_request_state = threading.local()
 import numpy as np
 from datetime import datetime
 from PyPDF2 import PdfReader, PdfWriter
@@ -32,6 +37,47 @@ def _qt_str(qt) -> str:
     if isinstance(qt, dict):
         return str(qt.get("type", "")).lower()
     return str(qt).lower()
+
+# Strip embedded LOWERCASE option label prefix from values (e.g. LLM writes "(a) text").
+# Lowercase-only: uppercase (A)-(D) in AR options ("A is true but R is false") must NOT be stripped.
+_STRIP_OPT_PREFIX = re.compile(r'^\([a-d]\)\s*')
+
+# Inline option list embedded in question text, e.g. "What is X? (a) foo (b) bar (c) baz".
+# LOWERCASE-only and requires whitespace + content after the marker, so it can NEVER match
+# the "(A):"/"(R):" markers inside Assertion-Reason statements (which are uppercase + colon).
+_INLINE_OPTS_RE = re.compile(r'\s*\([a-d]\)\s+\S.*$', re.DOTALL)
+
+
+def _is_ar_question(q, options) -> bool:
+    """True if this question is Assertion-Reason — by declared subtype or AR option content."""
+    if str(q.get("subtype", "")).strip().lower() == "assertion_reason":
+        return True
+    if isinstance(options, dict):
+        blob = " ".join(str(v).lower() for v in options.values())
+    elif isinstance(options, (list, tuple)):
+        blob = " ".join(str(v).lower() for v in options)
+    else:
+        blob = ""
+    return (
+        "both a and r" in blob
+        or ("a is true" in blob and "r is false" in blob)
+        or ("a is false" in blob and "r is true" in blob)
+    )
+
+
+def _strip_inline_options(text, options, q):
+    """
+    Remove an option list embedded in the question text when options also exist separately.
+
+    Skips Assertion-Reason questions entirely: their text legitimately contains "(A):" and
+    "(R):", which the old IGNORECASE [a-dA-D] regex (with DOTALL .*$) matched and deleted —
+    turning a full "Assertion (A): … Reason (R): …" into the bare word "Assertion".
+    """
+    if not (isinstance(options, list) and options and text):
+        return text
+    if _is_ar_question(q, options):
+        return text
+    return _INLINE_OPTS_RE.sub('', text).strip()
 
 
 # ------------------------------
@@ -571,8 +617,7 @@ def enforce_json(validated_json):
         f.write(validated_json)
 
     if data:
-        with open("temp_clean.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        _request_state.paper_data = data
         return data
 
     raise ValueError("Validator did not return valid JSON. Check temp_raw.json and temp_validated.json")
@@ -710,6 +755,170 @@ def draw_wrapped(can, text, x, y, max_width, font="Helvetica", size=11, line_hei
 # ------------------------------
 # Flexible renderer for English
 # ------------------------------
+# ── Type-grouped rendering ────────────────────────────────────────────────────
+# CBSE papers list questions grouped by type (all MCQs first, then VSA, SA, …), each
+# group under its own "I. / II. / III." sub-heading. The generator (especially the
+# single-prompt fallback) can emit questions out of type order and stamp the section
+# AVERAGE marks (e.g. 1.9) on every question. The helpers below regroup a section's
+# questions into canonical type order and restore the correct per-type marks from the
+# blueprint's subsections — so an SA never renders inside the MCQ block and a 1-mark
+# MCQ never shows "1.9 marks".
+_TYPE_GROUP_ORDER = [
+    ("mcq", "Multiple Choice Questions"),
+    ("ar",  "Assertion–Reason Questions"),
+    ("vsa", "Very Short Answer Questions"),
+    ("sa",  "Short Answer Questions"),
+    ("cbq", "Case-Based / Source-Based Questions"),
+    ("la",  "Long Answer Questions"),
+]
+_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"]
+
+
+def _coerce_float(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _question_category(q):
+    """Bucket a question dict into a canonical type category (mcq/ar/vsa/sa/cbq/la)."""
+    t = str(q.get("type", "")).lower()
+    st = str(q.get("subtype", "")).lower()
+    if "assertion" in st or "assertion" in t:
+        return "ar"
+    if st in ("source_based", "case_based", "image_based") or "cbq" in t or "case" in t or "source" in t:
+        return "cbq"
+    if "vsa" in t or "very short" in t:
+        return "vsa"
+    if t == "la" or "long" in t:
+        return "la"
+    if "mcq" in t or "multiple" in t or "objective" in t:
+        return "mcq"
+    if t == "sa" or "short" in t:
+        return "sa"
+    return "sa"
+
+
+def _section_type_marks(sec_info):
+    """{category: marks_each} from a blueprint section's subsections (compound papers)."""
+    out = {}
+    if not isinstance(sec_info, dict):
+        return out
+    for ss in (sec_info.get("subsections") or []):
+        if not isinstance(ss, dict):
+            continue
+        qts = ss.get("question_types") or [ss.get("name", "")]
+        cat = _question_category({"type": qts[0] if qts else ss.get("name", ""),
+                                  "subtype": ss.get("name", "")})
+        cnt = _coerce_float(ss.get("questions_count") or ss.get("questions"), 1) or 1
+        me = ss.get("marks_per_question")
+        if me in (None, "", "varies"):
+            me = _coerce_float(ss.get("marks"), 0) / cnt
+        me = _coerce_float(me, 0)
+        if me > 0:
+            out[cat] = me
+    return out
+
+
+def _exact_distribution_spec(blueprint_dict):
+    """Human-readable, per-section per-type count+marks spec for the fallback prompt.
+
+    The single-prompt fallback otherwise under-delivers (e.g. 4 MCQs when 7 are required),
+    so we spell out the exact distribution it must produce.
+    """
+    lines = []
+    for sec_name, sec in blueprint_dict.items():
+        if not isinstance(sec, dict):
+            continue
+        marks = sec.get("marks", 0)
+        subs = sec.get("subsections") or []
+        if subs:
+            total_q = sum(int(_coerce_float(s.get("questions_count") or s.get("questions"), 0))
+                          for s in subs if isinstance(s, dict))
+            lines.append(f"SECTION {sec_name} ({marks} marks) — generate EXACTLY {total_q} questions:")
+            for s in subs:
+                if not isinstance(s, dict):
+                    continue
+                qts = s.get("question_types") or [s.get("name", "")]
+                typ = qts[0] if qts else s.get("name", "")
+                cnt = int(_coerce_float(s.get("questions_count") or s.get("questions"), 1) or 1)
+                me = s.get("marks_per_question")
+                if me in (None, "", "varies"):
+                    me = _coerce_float(s.get("marks"), 0) / (cnt or 1)
+                me = _coerce_float(me, 0)
+                mestr = str(int(me)) if float(me).is_integer() else str(me)
+                lines.append(f"   - {cnt} × {typ} @ {mestr} mark{'s' if me != 1 else ''} each")
+        else:
+            qc = int(_coerce_float(sec.get("questions_count") or sec.get("questions"), 0))
+            qts = sec.get("question_types") or []
+            tnames = ", ".join(qt.get("type", str(qt)) if isinstance(qt, dict) else str(qt) for qt in qts)
+            lines.append(f"SECTION {sec_name} ({marks} marks) — {qc} questions; types: {tnames}")
+    return "\n".join(lines)
+
+
+def _regroup_section(questions_list, sec_info):
+    """Reorder questions into canonical type groups and fix per-type marks.
+
+    Returns a list of (group_label_or_None, [questions]). Group labels are only emitted
+    when the section genuinely mixes types, so single-type sections (and ordinary papers)
+    render exactly as before.
+    """
+    if not isinstance(questions_list, list):
+        return [(None, questions_list or [])]
+
+    type_marks = _section_type_marks(sec_info)
+    buckets, order_seen = {}, []
+    for q in questions_list:
+        cat = _question_category(q) if isinstance(q, dict) else "_str"
+        if isinstance(q, dict) and type_marks.get(cat):
+            m = type_marks[cat]
+            q["marks"] = int(m) if float(m).is_integer() else round(m, 2)
+        if cat not in buckets:
+            buckets[cat] = []
+            order_seen.append(cat)
+        buckets[cat].append(q)
+
+    multi = len([c for c in buckets if c != "_str"]) > 1
+    groups, roman_i, used = [], 0, set()
+    for cat, lbl in _TYPE_GROUP_ORDER:
+        if cat in buckets:
+            used.add(cat)
+            label = None
+            if multi:
+                note = " (answer all questions)" if cat in ("mcq", "ar", "vsa") else ""
+                label = f"{_ROMAN[roman_i]}. {lbl}{note}"
+                roman_i += 1
+            groups.append((label, buckets[cat]))
+    for cat in order_seen:               # any uncategorised / string questions, in place
+        if cat not in used:
+            groups.append((None, buckets[cat]))
+    return groups
+
+
+def _emit_section_questions(all_questions, questions_list, sec_info, q_counter,
+                            class_name=None, subject=None, chapters=None, paper_id=None):
+    """Render a section's questions grouped by type with correct per-type marks."""
+    for label, qs in _regroup_section(questions_list, sec_info):
+        if label:
+            all_questions.append(("subheader", label))
+        for q in qs:
+            if isinstance(q, dict):
+                q["qnum"] = q_counter
+                q_counter = process_question(all_questions, q, q_counter,
+                                             class_name, subject, chapters, paper_id)
+            else:
+                all_questions.append(("q", f"{q_counter}. {str(q)}"))
+                if class_name and subject:
+                    try:
+                        save_generated_question(str(q), class_name, subject,
+                                                chapters[0] if chapters else None, "", 1, paper_id)
+                    except Exception as e:
+                        print(f"[Variation] Error saving question: {e}")
+                q_counter += 1
+    return q_counter
+
+
 def render_section_questions(all_questions, data, blueprint, class_name=None, subject=None, chapters=None, paper_id=None):
     q_counter = 1
 
@@ -933,42 +1142,16 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                     questions_list = section_data['questions']
                     print(f"[DEBUG] Found questions list with {len(questions_list) if isinstance(questions_list, list) else 'N/A'} items")
                     if isinstance(questions_list, list):
-                        for q in questions_list:
-                            if isinstance(q, dict):
-                                q_counter = process_question(all_questions, q, q_counter, class_name, subject, chapters, paper_id)
-                            else:
-                                # Handle string questions
-                                all_questions.append(("q", f"{q_counter}. {str(q)}"))
-                                
-                                # Save question if metadata available
-                                if class_name and subject:
-                                    try:
-                                        chapter = chapters[0] if chapters else None
-                                        save_generated_question(str(q), class_name, subject, chapter, "", 1, paper_id)
-                                    except Exception as e:
-                                        print(f"[Variation] Error saving question: {e}")
-                                
-                                q_counter += 1
-                    else:
-                        pass
+                        # Regroup by type (MCQ → VSA → SA → CBQ → LA) with sub-headings and
+                        # restore per-type marks from the section blueprint.
+                        q_counter = _emit_section_questions(
+                            all_questions, questions_list, sec_info, q_counter,
+                            class_name, subject, chapters, paper_id)
                 elif isinstance(section_data, list):
                     # section_data is directly a list of questions
-                    for q in section_data:
-                        if isinstance(q, dict):
-                            q_counter = process_question(all_questions, q, q_counter, class_name, subject, chapters, paper_id)
-                        else:
-                            # Handle string questions
-                            all_questions.append(("q", f"{q_counter}. {str(q)}"))
-                            
-                            # Save question if metadata available
-                            if class_name and subject:
-                                try:
-                                    chapter = chapters[0] if chapters else None
-                                    save_generated_question(str(q), class_name, subject, chapter, "", 1, paper_id)
-                                except Exception as e:
-                                    print(f"[Variation] Error saving question: {e}")
-                            
-                            q_counter += 1
+                    q_counter = _emit_section_questions(
+                        all_questions, section_data, sec_info, q_counter,
+                        class_name, subject, chapters, paper_id)
                 else:
                     pass
         else:
@@ -990,6 +1173,57 @@ def _marks_suffix(marks_raw):
     int_val = int(val) if val == int(val) else val
     label = "mark" if int_val == 1 else "marks"
     return f" [{int_val} {label}]"
+
+
+# Models sometimes describe a diagram INLINE — "(Image description: a neuron with parts A, B, C…)"
+# — instead of emitting a structured image_prompt field, so no image gets generated. This catches
+# that parenthetical/bracketed description so we can render a real image and drop the stray text.
+_INLINE_IMG_RE = re.compile(
+    r'[\(\[]\s*(?:image\s*description|image|diagram|figure|picture|illustration)\b[:\-\s]*'
+    r'(.*?)[\)\]]',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+# A generic "observe / study the diagram and answer…" stem POINTS to an image, it does not
+# DESCRIBE one. Deriving an image prompt from such a stem makes the generator invent a random,
+# meaningless picture (e.g. a CEO/Manager org chart for a chemistry CBQ). The real image is
+# already supplied via the section's image_path or an explicit image_prompt — so these stems
+# must never be turned into image prompts.
+_GENERIC_IMG_STEM_RE = re.compile(
+    r'(observe|study|look\s+at|refer\s+to|examine|consider|based\s+on|using|from|read)\b'
+    r'[^.]{0,50}\b(diagram|figure|image|graph|picture|illustration|chart|map|flow\s*chart|'
+    r'table|setup|set-up|circuit|structure|source|case|passage|given|above|below|following)\b',
+    re.IGNORECASE,
+)
+
+
+def _is_generic_image_stem(text: str) -> bool:
+    """True if `text` merely points at an image/source rather than describing one to draw."""
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    if "answer the following" in t or "answer the question" in t:
+        return True
+    return bool(_GENERIC_IMG_STEM_RE.search(t))
+
+
+def _extract_inline_image(text):
+    """Return (clean_text, image_prompt_or_None). If the question text contains an inline
+    '(Image description: …)' style note, pull it out as an image prompt and strip it from
+    the visible text."""
+    if not text:
+        return text, None
+    m = _INLINE_IMG_RE.search(text)
+    if not m:
+        return text, None
+    desc = (m.group(1) or "").strip().strip(".")
+    clean = (text[:m.start()] + " " + text[m.end():])
+    clean = re.sub(r"\s{2,}", " ", clean).strip()
+    # Only treat it as an image if the description is substantive enough to render.
+    if len(desc) < 12:
+        return clean or text, None
+    return clean, desc
 
 
 def process_question(all_questions, q, q_counter, class_name=None, subject=None, chapters=None, paper_id=None):
@@ -1124,17 +1358,48 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         # Handle questions that have only "text" field (new structure)
         text_content = q.get("text", "")
         q_type = q.get("type", "")
+        q_subtype = str(q.get("subtype", "")).strip().lower()
         _raw_opts = q.get("options")
         # Normalize dict options {"a": "...", "b": "..."} → list (parallel pipeline format)
+        # Also strip any embedded "(x) " prefix the LLM sometimes writes in values —
+        # render_docx adds its own "(a)" prefix so we'd get "(a) (a) text" without this.
         if isinstance(_raw_opts, dict):
-            options = [str(v) for _, v in sorted(_raw_opts.items())]
+            options = [_STRIP_OPT_PREFIX.sub('', str(v)).strip() for _, v in sorted(_raw_opts.items())]
         else:
             options = _raw_opts
 
-        # If options exist separately, strip inline options from question text
-        if isinstance(options, list) and options and text_content:
-            inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE | re.DOTALL)
-            text_content = inline_pattern.sub('', text_content).strip()
+        # If options exist separately, strip inline options from question text.
+        # AR questions are skipped — their "(A):"/"(R):" markers are part of the statements.
+        text_content = _strip_inline_options(text_content, options, q)
+
+        # CBQ source passage lives on the question itself (NOT at section level), so it
+        # renders immediately before this question and is scoped to it alone.
+        _src_text = str(q.get("source_text", "") or "").strip()
+        if _src_text:
+            all_questions.append(("instruction", "Read the source/case and answer the questions that follow:"))
+            all_questions.append(("passage", _src_text))
+
+        # Image-based questions: render a diagram ABOVE the question. An image is produced when
+        # the model gives an image_prompt, OR writes an inline "(Image description: …)", OR simply
+        # tags the question subtype/type "image_based" — making the tag itself a reliable trigger.
+        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
+        _is_image_q = (str(q.get('subtype', '')).lower() == 'image_based'
+                       or _qt_str(q.get('type', '')) == 'image_based')
+        if not _img_p:
+            _orig_text = text_content
+            text_content, _inline = _extract_inline_image(text_content)
+            if _inline:
+                _img_p = _inline
+            elif _is_image_q:
+                # Tagged image_based but no prompt/description — derive a prompt from the
+                # question text, but ONLY if it actually describes a visual. A generic
+                # "observe the diagram and answer…" stem would generate a meaningless image
+                # (the real one comes from the section image_path / an explicit image_prompt).
+                _derived = re.sub(r'\s+', ' ', _orig_text or '').strip()
+                if not _is_generic_image_stem(_derived):
+                    _img_p = _derived
+        if _img_p and len(_img_p) > 10:
+            all_questions.append(('image_gen', _img_p))
 
         if text_content:
             marks_raw = q.get("marks")
@@ -1172,17 +1437,20 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
                 label = chr(96 + i)  # a, b, c, d
                 labeled.append(f"({label}) {str(opt).strip()}")
             all_questions.append(("opts_block", labeled))
-        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
-        if _img_p and len(_img_p) > 10:
-            all_questions.append(('image_gen', _img_p))
 
-        # M-04: map work note
+        # M-04: map work note — trigger on type, q_type field, OR subtype
         map_note = str(q.get('map_note', '') or '').strip()
-        if map_note or q_type == "map_work":
+        if map_note or q_type == "map_work" or q_subtype == "map_based":
             all_questions.append(("instruction", map_note or "[Attach outline map — examiner to supply]"))
 
-        # M-02: OR alternative for LA questions
-        or_alt = str(q.get('or_alternative', '') or '').strip()
+        # M-02: OR alternative for LA questions (or_alternative may be a string or dict)
+        _or_raw = q.get('or_alternative')
+        if isinstance(_or_raw, dict):
+            or_alt = str(_or_raw.get('text', '') or '').strip()
+        elif isinstance(_or_raw, str):
+            or_alt = _or_raw.strip()
+        else:
+            or_alt = ''
         if or_alt:
             all_questions.append(("or", "OR"))
             all_questions.append(("q", f"{qnum}. {or_alt}{_marks_suffix(q.get('marks'))}"))
@@ -1201,21 +1469,33 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         question_text = q.get("question", "")
         _raw_opts = q.get("options")
         if isinstance(_raw_opts, dict):
-            options = [str(v) for _, v in sorted(_raw_opts.items())]
+            options = [_STRIP_OPT_PREFIX.sub('', str(v)).strip() for _, v in sorted(_raw_opts.items())]
         else:
             options = _raw_opts
 
-        # If options exist separately, strip inline options from question text
-        if isinstance(options, list) and options and question_text:
-            inline_pattern = re.compile(r'\s*\([a-dA-D]\)\s*.*$', re.IGNORECASE | re.DOTALL)
-            question_text = inline_pattern.sub('', question_text).strip()
+        # If options exist separately, strip inline options from question text.
+        # AR questions are skipped — their "(A):"/"(R):" markers are part of the statements.
+        question_text = _strip_inline_options(question_text, options, q)
+
+        # Image-based questions: render a diagram ABOVE the question (see main branch above).
+        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
+        _is_image_q = (str(q.get('subtype', '')).lower() == 'image_based'
+                       or _qt_str(q.get('type', '')) == 'image_based')
+        if not _img_p:
+            _orig_text = question_text
+            question_text, _inline = _extract_inline_image(question_text)
+            if _inline:
+                _img_p = _inline
+            elif _is_image_q:
+                _derived = re.sub(r'\s+', ' ', _orig_text or '').strip()
+                if not _is_generic_image_stem(_derived):
+                    _img_p = _derived
+        if _img_p and len(_img_p) > 10:
+            all_questions.append(('image_gen', _img_p))
 
         if question_text:
             marks_suffix = _marks_suffix(q.get("marks"))
             all_questions.append(("q", f"{qnum}. {question_text}{marks_suffix}"))
-        _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
-        if _img_p and len(_img_p) > 10:
-            all_questions.append(('image_gen', _img_p))
 
         # Handle options for MCQ style
         if isinstance(options, list) and options:
@@ -1578,40 +1858,14 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
     print("=" * 50)
     print("USING DIRECT JSON APPROACH")
     print("=" * 50)
-    
-    # Write debug output to file
-    debug_file = "debug_render.txt"
-    with open(debug_file, "w", encoding="utf-8") as debug_f:
-        debug_f.write("=" * 50 + "\n")
-        debug_f.write("RENDER DEBUG LOG\n")
-        debug_f.write("=" * 50 + "\n")
-    
-    # Read the temp_clean.json file directly
-    try:
-        with open("temp_clean.json", "r", encoding="utf-8") as f:
-            direct_data = json.load(f)
-        print(f"[DIRECT] Successfully loaded temp_clean.json with keys: {list(direct_data.keys())}")
-        
-        with open(debug_file, "a", encoding="utf-8") as debug_f:
-            debug_f.write(f"Loaded temp_clean.json with keys: {list(direct_data.keys())}\n")
-        
-        # Use the direct data instead of the processed data
-        all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
-        print(f"[DIRECT] Generated {len(all_questions)} questions from temp_clean.json")
-        
-        with open(debug_file, "a", encoding="utf-8") as debug_f:
-            debug_f.write(f"Generated {len(all_questions)} questions\n")
-            debug_f.write("First 10 questions:\n")
-            for i, (typ, text) in enumerate(all_questions[:10]):
-                debug_f.write(f"  {i+1}. [{typ}] {text[:100]}...\n")
-        
-    except Exception as e:
-        print(f"[DIRECT] Error loading temp_clean.json: {e}")
-        with open(debug_file, "a", encoding="utf-8") as debug_f:
-            debug_f.write(f"Error: {e}\n")
-        # Fallback to original approach
-        all_questions = render_section_questions([], data, blueprint, class_name, subject, chapters, None)
-    
+
+    # Use in-memory paper data stored by enforce_json() — thread-safe and avoids
+    # the shared temp_clean.json file that caused cross-user data contamination.
+    direct_data = getattr(_request_state, 'paper_data', None) or data
+    print(f"[DIRECT] Using paper data with keys: {list(direct_data.keys())}")
+    all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
+    print(f"[DIRECT] Generated {len(all_questions)} questions")
+
     summary = {sec: {"title": sec_info["title"], "marks": sec_info["marks"]}
                for sec, sec_info in blueprint.items()}
     return render_docx(class_name, subject, chapters, all_questions, summary)
@@ -2059,6 +2313,53 @@ def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, is_tami
     return p
 
 
+def _parse_edited_text(text):
+    """
+    Parse AI-corrected plain text back into (type, text) tuples consumable by render_docx.
+
+    Detects:
+      header     — SECTION A / SECTION B … lines
+      q          — numbered questions  "1. ..."
+      subq       — roman sub-questions "(i) ..." / "(ii) ..."
+      opts       — MCQ options line    "(a) ... (b) ..."  or single "(a) ..."
+      or         — standalone OR
+      instruction — everything else (passage lead-ins, general instructions)
+    """
+    SECTION_RE  = re.compile(r'^SECTION\s+[A-Z]', re.IGNORECASE)
+    QUESTION_RE = re.compile(r'^\d+[\.\)]\s+\S')
+    ROMAN_RE    = re.compile(r'^\([ivxlIVXL]+\)\s+\S')
+    OPTION_RE   = re.compile(r'^\([a-dA-D]\)\s+\S')
+    OR_RE       = re.compile(r'^OR$', re.IGNORECASE)
+    IMGFILE_RE  = re.compile(r'\[IMG_FILE:\s*([^\]]+?)\]', re.IGNORECASE)
+
+    result = []
+    for raw_line in text.split('\n'):
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Image-file markers (from the editor round-trip) → ('image', path), kept in place
+        # so a diagram still renders above its question. Strip them, then classify the rest.
+        if IMGFILE_RE.search(line):
+            for _path in IMGFILE_RE.findall(line):
+                result.append(('image', _path.strip()))
+            line = IMGFILE_RE.sub('', line).strip()
+            if not line:
+                continue
+        if OR_RE.match(line):
+            result.append(('or', line))
+        elif SECTION_RE.match(line):
+            result.append(('header', line))
+        elif QUESTION_RE.match(line):
+            result.append(('q', line))
+        elif ROMAN_RE.match(line):
+            result.append(('subq', line))
+        elif OPTION_RE.match(line):
+            result.append(('opts', line))
+        else:
+            result.append(('instruction', line))
+    return result
+
+
 def render_docx(class_name, subject, chapters, all_questions, summary, header_meta=None):
     BASE_DOCX = os.path.join(os.path.dirname(__file__), 'data', 'base.docx')
 
@@ -2234,7 +2535,11 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
         elif typ == "image":
             try:
                 img_path = os.path.join(settings.MEDIA_ROOT, text_str) if not os.path.isabs(text_str) else text_str
-                doc.add_paragraph().add_run().add_picture(img_path, width=Inches(5.5))
+                # Smaller display width (source PNG is full-res, so quality is unchanged —
+                # a smaller box just raises the effective DPI). Centered above the question.
+                p = doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p.add_run().add_picture(img_path, width=Inches(3.0))
             except Exception as e:
                 print(f"[DOCX] Image insert failed: {e}")
 
@@ -2252,10 +2557,103 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
 # ------------------------------
 # Image generation helpers
 # ------------------------------
-def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_scale: float = 8.0) -> str:
-    """Generate an image via Together AI (google/flash-image-2.5) and save under MEDIA_ROOT/generated_images.
-    Returns relative media path."""
-    import base64, hashlib, requests as _requests
+def _openai_image_size(width: int, height: int) -> str:
+    """Map requested dimensions to a gpt-image-1 supported size string."""
+    if width > height:
+        return "1536x1024"
+    if height > width:
+        return "1024x1536"
+    return "1024x1024"
+
+
+# Number of OpenAI attempts before falling back to Together AI → Pollinations.
+IMAGE_OPENAI_ATTEMPTS = int(os.environ.get("IMAGE_OPENAI_ATTEMPTS", "2"))
+
+
+class ImageNotCached(Exception):
+    """Raised when an image is requested in cache-only mode but isn't already on disk.
+
+    Synchronous endpoints (re-render, AI-edit re-render, restore) run in a web request
+    and must never make the slow external image-generation calls (OpenAI/Together can
+    block for minutes per image → the page times out). Images are already generated and
+    cached during the async Celery generation, so those endpoints reuse the cache and
+    skip anything missing instead of regenerating it."""
+
+
+def _decode_image_item(item, _requests):
+    """Pull image bytes from a Together/OpenAI 'data' item (b64 or url)."""
+    b64 = item.get("b64_json") or item.get("b64")
+    if b64:
+        import base64
+        return base64.b64decode(b64)
+    if item.get("url"):
+        return _requests.get(item["url"], timeout=60).content
+    return None
+
+
+def _openai_image_bytes(prompt: str, size: str, _requests) -> bytes:
+    api_key = os.environ.get('OPENAI_API_KEY') or getattr(settings, 'OPENAI_API_KEY', '')
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set in environment")
+    model_id = getattr(settings, 'OPENAI_IMAGE_MODEL', 'gpt-image-1')
+    resp = _requests.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model_id, "prompt": prompt, "n": 1, "size": size},
+        timeout=180,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"OpenAI image HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json().get("data") or []
+    if not data:
+        raise RuntimeError("No data in OpenAI image response")
+    img = _decode_image_item(data[0], _requests)
+    if img is None:
+        raise RuntimeError("No image data in OpenAI response item")
+    return img
+
+
+def _together_image_bytes(prompt: str, width: int, height: int, _requests) -> bytes:
+    key = os.environ.get('TOGETHER_API_KEY') or getattr(settings, 'TOGETHER_API_KEY', '')
+    if not key:
+        raise RuntimeError("TOGETHER_API_KEY not set in environment")
+    model_id = getattr(settings, 'TOGETHER_IMAGE_MODEL', 'google/flash-image-2.5')
+    resp = _requests.post(
+        "https://api.together.ai/v1/images/generations",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"model": model_id, "prompt": prompt, "n": 1, "width": width, "height": height},
+        timeout=120,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Together AI HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json().get("data") or []
+    if not data:
+        raise RuntimeError("No data in Together AI response")
+    img = _decode_image_item(data[0], _requests)
+    if img is None:
+        raise RuntimeError("No image data in Together AI response item")
+    return img
+
+
+def _pollinations_image_bytes(prompt: str, _requests) -> bytes:
+    import urllib.parse
+    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
+    params = {"width": 1024, "height": 1024, "nologo": "true", "private": "true"}
+    pk = os.environ.get("POLLINATIONS_API_KEY", "").strip()
+    if pk:
+        params["token"] = pk
+    resp = _requests.get(url, params=params, timeout=120)
+    resp.raise_for_status()
+    return resp.content
+
+
+def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_scale: float = 8.0, cache_only: bool = False) -> str:
+    """Generate an image and save under MEDIA_ROOT/generated_images. Returns relative media path.
+
+    Provider chain: OpenAI gpt-image-1 (primary, IMAGE_OPENAI_ATTEMPTS tries) →
+    Together AI → Pollinations (fallbacks, only after OpenAI exhausts its retries).
+    (cfg_scale kept for signature compatibility; unused.)"""
+    import hashlib, requests as _requests
     output_dir = getattr(settings, 'IMAGE_OUTPUT_DIR', os.path.join(settings.MEDIA_ROOT, 'generated_images'))
     os.makedirs(output_dir, exist_ok=True)
     if not prompt or not str(prompt).strip():
@@ -2265,48 +2663,56 @@ def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_sc
     abs_path = os.path.join(settings.MEDIA_ROOT, rel_path)
     if os.path.exists(abs_path):
         return rel_path
+    if cache_only:
+        # Web-request re-render path: the image isn't cached and we must not block the
+        # request on a slow external API call. Skip it (raise → caller drops the image).
+        raise ImageNotCached(str(prompt)[:80])
 
-    together_api_key = os.environ.get('TOGETHER_API_KEY') or getattr(settings, 'TOGETHER_API_KEY', '')
-    if not together_api_key:
-        raise RuntimeError("TOGETHER_API_KEY not set in environment")
+    size = _openai_image_size(width, height)
+    img_bytes = None
+    last_err = None
 
-    model_id = getattr(settings, 'TOGETHER_IMAGE_MODEL', 'google/flash-image-2.5')
-    key_preview = together_api_key[:8] + "..." if len(together_api_key) > 8 else "(too short)"
-    print(f"[ImageGen] Calling Together AI {model_id} | key={key_preview} | prompt={prompt[:80]}... | size={width}x{height}")
+    # ── Primary: OpenAI gpt-image-1, with retries ───────────────────────────────
+    for attempt in range(1, IMAGE_OPENAI_ATTEMPTS + 1):
+        try:
+            print(f"[ImageGen] OpenAI gpt-image-1 attempt {attempt}/{IMAGE_OPENAI_ATTEMPTS} | "
+                  f"prompt={prompt[:70]}... | size={size}")
+            img_bytes = _openai_image_bytes(prompt, size, _requests)
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[ImageGen] OpenAI attempt {attempt} failed: {e}")
 
-    resp = _requests.post(
-        "https://api.together.ai/v1/images/generations",
-        headers={"Authorization": f"Bearer {together_api_key}"},
-        json={"model": model_id, "prompt": prompt, "n": 1, "width": width, "height": height},
-        timeout=120,
-    )
-    if not resp.ok:
-        raise RuntimeError(f"Together AI HTTP {resp.status_code}: {resp.text[:300]}")
+    # ── Fallback 1: Together AI ──────────────────────────────────────────────────
+    if img_bytes is None:
+        try:
+            print("[ImageGen] OpenAI exhausted — falling back to Together AI")
+            img_bytes = _together_image_bytes(prompt, width, height, _requests)
+        except Exception as e:
+            print(f"[ImageGen] Together AI fallback failed: {e}")
 
-    result = resp.json()
-    data = result.get("data") or []
-    if not data:
-        raise RuntimeError(f"No data in Together AI response: {list(result.keys())}")
+    # ── Fallback 2: Pollinations ─────────────────────────────────────────────────
+    if img_bytes is None:
+        try:
+            print("[ImageGen] Together unavailable — falling back to Pollinations")
+            img_bytes = _pollinations_image_bytes(prompt, _requests)
+        except Exception as e:
+            print(f"[ImageGen] Pollinations fallback failed: {e}")
 
-    first = data[0]
-    b64 = first.get("b64_json") or first.get("b64")
-    if not b64 and first.get("url"):
-        img_bytes = _requests.get(first["url"], timeout=60).content
-        with open(abs_path, 'wb') as f:
-            f.write(img_bytes)
-        return rel_path
-
-    if not b64:
-        raise RuntimeError(f"No image data in Together AI response item: {list(first.keys())}")
+    if img_bytes is None:
+        raise RuntimeError(f"All image providers failed (last OpenAI error: {last_err})")
 
     with open(abs_path, 'wb') as f:
-        f.write(base64.b64decode(b64))
+        f.write(img_bytes)
     return rel_path
 
 
-def materialize_images(all_questions, allow=True):
+def materialize_images(all_questions, allow=True, cache_only=False):
     """Convert ('image_gen', prompt) and [IMAGE:/[Picture:/[Diagram:] markers (case-insensitive) to ('image', rel_path).
-    Supports markers embedded in any text type (q, subq, instruction, passage)."""
+    Supports markers embedded in any text type (q, subq, instruction, passage).
+
+    cache_only=True (synchronous re-render path): reuse images already on disk but never
+    call the external image APIs — uncached images are skipped, keeping the request fast."""
     if not allow:
         return all_questions
     import re
@@ -2318,8 +2724,11 @@ def materialize_images(all_questions, allow=True):
             # Direct generation tuple
             if typ == 'image_gen':
                 print(f"[ImageGen] image_prompt detected: {str(text)[:120]}...")
-                rel = generate_ai_image(str(text))
-                out.append(('image', rel))
+                try:
+                    rel = generate_ai_image(str(text), cache_only=cache_only)
+                    out.append(('image', rel))
+                except ImageNotCached:
+                    print(f"[ImageGen] cache-only re-render: skipping uncached image ({str(text)[:60]})")
                 continue
 
             if isinstance(text, str):
@@ -2346,9 +2755,11 @@ def materialize_images(all_questions, allow=True):
 
                         print(f"[ImageGen] marker detected: {_kind} | {prompt_clean[:120]}...")
                         try:
-                            rel = generate_ai_image(prompt_clean)
+                            rel = generate_ai_image(prompt_clean, cache_only=cache_only)
                             out.append(('image', rel))
                             generated_any = True
+                        except ImageNotCached:
+                            print(f"[ImageGen] cache-only re-render: skipping uncached image ({prompt_clean[:60]})")
                         except Exception as ge:
                             print(f"[ImageGen] Generation failed for prompt '{prompt_clean[:60]}': {ge}")
 
@@ -2370,21 +2781,35 @@ def materialize_images(all_questions, allow=True):
 _COST_PER_INPUT_1K  = 0.49   # INR per 1k input tokens
 _COST_PER_OUTPUT_1K = 1.47   # INR per 1k output tokens
 
-def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters, additional_context, pattern, total_input_tokens=0, total_output_tokens=0, allow_images=True):
+def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters, additional_context, pattern, total_input_tokens=0, total_output_tokens=0, allow_images=True, cache_only=False):
     """
     Render a pre-generated paper_data dict to DOCX.
     Used by the parallel pipeline after generate_paper_parallel() succeeds.
     Returns (file_path, summary, total_cost, total_input_tokens, total_output_tokens).
     """
-    import json as _json
+    # Store paper data in thread-local state so tasks.py can persist it
+    # without reading from a shared temp file (avoids cross-user data contamination).
+    _request_state.paper_data = paper_data
 
-    with open("temp_clean.json", "w", encoding="utf-8") as _f:
-        _json.dump(paper_data, _f, ensure_ascii=False, indent=2)
+    # Strip internal pipeline metadata fields (prefixed with _) before rendering
+    # These hold validation reports and warnings and must not appear in the DOCX
+    _INTERNAL_KEYS = {
+        "_competency_report", "_coherence_report", "_final_audit",
+        "_uniqueness_warnings", "_mcq_answer_warnings", "_mcq_answer_corrections", "_quality_flags",
+        "_grounding_issues", "_cbq_passage_issues", "_cross_section_duplicates",
+        "_partial", "_errors", "_chapter_plan", "_dropped_wrong_type", "_topped_up",
+    }
+    render_data = {}
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__"):  # sentinel keys e.g. __context_by_type__
+            continue
+        clean_sec = {k: v for k, v in sec_data.items() if k not in _INTERNAL_KEYS}
+        render_data[sec_name] = clean_sec
 
-    all_questions = render_section_questions([], paper_data, blueprint, class_name, subject, chapters, None)
-    all_questions = materialize_images(all_questions, allow=allow_images)
+    all_questions = render_section_questions([], render_data, blueprint, class_name, subject, chapters, None)
+    all_questions = materialize_images(all_questions, allow=allow_images, cache_only=cache_only)
 
-    summary = {sec: {"title": sec, "marks": paper_data.get(sec, {}).get("marks", 0)} for sec in paper_data.keys()}
+    summary = {sec: {"title": sec, "marks": render_data.get(sec, {}).get("marks", 0)} for sec in render_data.keys()}
 
     header_meta = {
         "class_name": class_name,
@@ -2658,6 +3083,66 @@ def generate_with_universal_prompt(class_name, subject, chapters, difficulty, pa
         compound_subject_spec = "\n".join(lines)
         print(f"[Universal-Prompt] Compound subject detected: {[s.get('subject') for s in pattern_sections]}")
 
+    # ── Fallback: detect discipline from section title/name when 'subject' field is absent ──
+    # Handles Social Science (History/Geography/PolSci/Economics) and Science (Phy/Chem/Bio)
+    if not compound_subject_spec and pattern_sections:
+        _DISC_RE = re.compile(
+            r'\b(history|geography|political[\s\-]science|economics|civics|'
+            r'physics|chemistry|biology)\b',
+            re.IGNORECASE,
+        )
+        # Keywords that classify a chapter into a discipline
+        _DISC_CHAPTER_KW = {
+            'History':            ['nationalism', 'global world', 'globalworld', 'industriali',
+                                   'print culture', 'rise of', 'making of', 'age of', 'work life',
+                                   'indo-china', 'indo china'],
+            'Geography':          ['resource', 'agriculture', 'water', 'forest', 'wildlife',
+                                   'mineral', 'manufacturing', 'lifeline', 'land', 'soil', 'energy',
+                                   'crops', 'irrigation'],
+            'Political Science':  ['power sharing', 'federali', 'democracy', 'gender', 'religion',
+                                   'political part', 'struggle', 'outcome', 'challenge', 'caste'],
+            'Civics':             ['power sharing', 'federali', 'democracy', 'gender', 'religion',
+                                   'political part', 'struggle', 'outcome', 'challenge', 'caste'],
+            'Economics':          ['development', 'sector', 'money', 'credit', 'globalisa',
+                                   'globaliza', 'consumer', 'income', 'poverty', 'employment'],
+            'Physics':            ['motion', 'force', 'gravit', 'electricity', 'magnetis',
+                                   'light', 'optic', 'nuclear', 'current', 'refraction'],
+            'Chemistry':          ['chemical', 'acid', 'base', 'salt', 'metal', 'carbon',
+                                   'periodic', 'reaction', 'compound', 'oxide'],
+            'Biology':            ['life process', 'reproduction', 'heredit', 'evolution',
+                                   'control', 'nervous', 'environment', 'ecosystem', 'organism'],
+        }
+
+        def _chapters_for_disc(disc, all_chapters):
+            kws = _DISC_CHAPTER_KW.get(disc, [])
+            matched = [c for c in all_chapters
+                       if any(kw in c.lower() for kw in kws)]
+            return matched or all_chapters  # fallback: all chapters
+
+        routed = []
+        for sec in pattern_sections:
+            title_raw = sec.get('title', '') or sec.get('name', '') or ''
+            m = _DISC_RE.search(title_raw)
+            if m:
+                routed.append((sec, m.group(1).title()))
+
+        if routed:
+            lines = [
+                "IMPORTANT: This paper covers multiple sub-disciplines. "
+                "Each section corresponds to exactly ONE sub-discipline. "
+                "You MUST generate questions for each section ONLY from the chapters listed for that section. "
+                "DO NOT cross-pollinate — Geography questions must never appear in the History section, etc.",
+            ]
+            for sec, disc in routed:
+                sec_name = sec.get('name', '')
+                sec_marks = sec.get('marks', 0)
+                relevant = _chapters_for_disc(disc, chapters) if chapters else []
+                ch_hint = f" | chapters: {', '.join(relevant)}" if relevant else ""
+                lines.append(f"  Section {sec_name} → {disc} ({sec_marks} marks){ch_hint}")
+            compound_subject_spec = "\n".join(lines)
+            print(f"[Universal-Prompt] Title-based compound subject routing: "
+                  f"{[(s.get('name',''), d) for s, d in routed]}")
+
     # Extract passage and extract instructions from pattern sections
     passage_instructions = ""
     if hasattr(pattern, 'sections') and pattern.sections:
@@ -2789,9 +3274,26 @@ You MUST spread questions across ALL {len(chapters) if chapters else 1} chapter(
 {chr(10).join(f'  Chapter {i+1}: {c}' for i, c in enumerate(chapters)) if chapters else ''}
 Do NOT take all or most questions from a single chapter. Each chapter must contribute at least one question.
 Aim for roughly equal representation: ~{max(1, round((blueprint and sum(v.get('marks',0) for v in blueprint.values() if isinstance(v,dict)) or 20) / max(1, len(chapters))))} marks per chapter.
+{"STRICT SECTION-CHAPTER ROUTING: Each section above lists its allowed chapters. You MUST only use those chapters for that section. A Geography chapter (e.g. Agriculture, Water Resources) MUST NOT appear in a History section and vice versa." if compound_subject_spec else ""}
 
 QUESTION PAPER STRUCTURE:
 {sections_spec}
+
+EXACT QUESTION DISTRIBUTION (MANDATORY — match these counts and marks precisely):
+{_exact_distribution_spec(blueprint_dict)}
+RULES FOR THE DISTRIBUTION ABOVE:
+- Generate EXACTLY the number of each question type shown — do not merge, drop, add, or re-balance types.
+- Each question's "marks" MUST equal the per-type marks shown (NEVER the section average).
+- Each question MUST include a "type" field (one of: MCQ, VSA, SA, LA, CBQ) AND a "subtype" field:
+  use "assertion_reason" for Assertion-Reason questions, "source_based" for case/source-based,
+  "image_based" for diagram questions, otherwise "standard".
+- The per-type marks across each section MUST sum to that section's total marks.
+
+IMAGE-BASED QUESTIONS:
+- When the distribution/instructions call for an image- or diagram-based question, add an
+  "image_prompt" field to that question: a self-contained visual description (20-40 words)
+  an AI image model can render. The image is placed ABOVE the question, so phrase the text
+  like "Study the diagram above and answer:". Only add "image_prompt" to questions that need it.
 
 BLUEPRINT SCHEMA (Follow this exact structure):
 {blueprint_schema}
@@ -2835,7 +3337,7 @@ CRITICAL JSON OUTPUT INSTRUCTIONS:
 4. For sections with extracts: Include "extract" key with extract text BEFORE questions
 5. Each section MUST have ONLY these keys: "marks", "questions_count", "question_types", "instructions", "constraints", "passage" (if applicable), "extract" (if applicable), "questions"
 6. NO other keys allowed - do not add LIT_EXTRACT_SR, LIT_EXTRACT_PM or any other nested keys
-7. Each question must have: {{"qnum": (number or string), "text": "question text", "marks": marks_value}}
+7. Each question must have: {{"qnum": (number or string), "type": "MCQ|VSA|SA|LA|CBQ", "subtype": "standard|assertion_reason|source_based|image_based", "text": "question text", "marks": marks_value}}
 8. Flatten ALL questions into the "questions" array - no subsections, no nested structures
 9. Do NOT include markdown, explanations, or any text - ONLY JSON
 
@@ -2984,59 +3486,46 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
         print("=" * 50)
         print("USING DIRECT JSON APPROACH")
         print("=" * 50)
-        
-        # Write debug output to file
-        debug_file = "debug_render.txt"
-        with open(debug_file, "w", encoding="utf-8") as debug_f:
-            debug_f.write("=" * 50 + "\n")
-            debug_f.write("RENDER DEBUG LOG\n")
-            debug_f.write("=" * 50 + "\n")
-        
-        # Read the temp_clean.json file directly
+
+        # Use in-memory paper data stored by enforce_json() — thread-safe and avoids
+        # the shared temp_clean.json file that caused cross-user data contamination.
+        direct_data = getattr(_request_state, 'paper_data', None) or paper_data
+        print(f"[DIRECT] Using paper data with keys: {list(direct_data.keys())}")
+
+        # The fallback skips the parallel pipeline's validation chain. Run at least V1 structural
+        # validation per section so broken MCQs / wrong counts / missing fields are caught and
+        # recorded (attached as _errors/_partial → visible in paper_data & temp_questions.json),
+        # instead of an unvalidated paper silently reaching a teacher.
         try:
-            with open("temp_clean.json", "r", encoding="utf-8") as f:
-                direct_data = json.load(f)
-            print(f"[DIRECT] Successfully loaded temp_clean.json with keys: {list(direct_data.keys())}")
-            
-            with open(debug_file, "a", encoding="utf-8") as debug_f:
-                debug_f.write(f"Loaded temp_clean.json with keys: {list(direct_data.keys())}\n")
-            
-            # Use the direct data instead of the processed data
-            all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
-            # Attach AI-generated images if prompts/markers present
-            allow_images = True
-            try:
-                if additional_context:
-                    ctx = json.loads(additional_context) if isinstance(additional_context, str) else {}
-                    if isinstance(ctx, dict):
-                        allow_images = ctx.get('allow_ai_images', True) is not False
-            except Exception:
-                pass
-            all_questions = materialize_images(all_questions, allow=allow_images)
-            try:
-                num_imgs = sum(1 for t, _ in all_questions if t == 'image')
-                print(f"[ImageGen] Images attached: {num_imgs}")
-            except Exception:
-                pass
-            print(f"[DIRECT] Generated {len(all_questions)} questions from temp_clean.json")
-            
-            with open(debug_file, "a", encoding="utf-8") as debug_f:
-                debug_f.write(f"Generated {len(all_questions)} questions\n")
-                for i, (typ, text) in enumerate(all_questions[:10]):
-                    debug_f.write(f"  {i+1}. [{typ}] {text[:100]}...\n")
-            
-        except Exception as e:
-            print(f"[DIRECT] Error loading temp_clean.json: {e}")
-            with open(debug_file, "a", encoding="utf-8") as debug_f:
-                debug_f.write(f"Error: {e}\n")
-            # Fallback to original approach - use paper_data instead of undefined 'data'
-            all_questions = render_section_questions([], paper_data, blueprint, class_name, subject, chapters, None)
-            all_questions = materialize_images(all_questions)
-            try:
-                num_imgs = sum(1 for t, _ in all_questions if t == 'image')
-                print(f"[ImageGen] Images attached (fallback): {num_imgs}")
-            except Exception:
-                pass
+            from .section_generator import build_work_orders, validate_section_output
+            for _wo in build_work_orders(blueprint, pattern, {}, difficulty, class_name, subject, chapters):
+                _sec = direct_data.get(_wo.section_name)
+                if isinstance(_sec, dict) and isinstance(_sec.get("questions"), list) and _sec["questions"]:
+                    _errs = validate_section_output({"questions": _sec["questions"]}, _wo)
+                    if _errs:
+                        _sec["_errors"] = _errs
+                        _sec["_partial"] = True
+                        print(f"[Fallback-Validate] '{_wo.section_name}': {len(_errs)} issue(s) — {_errs[:3]}")
+        except Exception as _ve:
+            print(f"[Fallback-Validate] skipped ({_ve})")
+
+        all_questions = render_section_questions([], direct_data, blueprint, class_name, subject, chapters, None)
+        # Attach AI-generated images if prompts/markers present
+        allow_images = True
+        try:
+            if additional_context:
+                ctx = json.loads(additional_context) if isinstance(additional_context, str) else {}
+                if isinstance(ctx, dict):
+                    allow_images = ctx.get('allow_ai_images', True) is not False
+        except Exception:
+            pass
+        all_questions = materialize_images(all_questions, allow=allow_images)
+        try:
+            num_imgs = sum(1 for t, _ in all_questions if t == 'image')
+            print(f"[ImageGen] Images attached: {num_imgs}")
+        except Exception:
+            pass
+        print(f"[DIRECT] Generated {len(all_questions)} questions")
         
         summary = {sec: {"title": sec, "marks": paper_data.get(sec, {}).get('marks', 0)}
                    for sec in paper_data.keys()}

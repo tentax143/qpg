@@ -1,10 +1,49 @@
 from celery import shared_task
 from .models import QuestionPaper, ExamPattern, School
 from . import generator, embeddings
-from django.core.files import File
 from django.conf import settings
 from django.db.models import F
 import os
+
+
+def _fill_section_counts(sections):
+    """Fill questions_count / marks_per_question for any section that has marks but left
+    them blank — the AI pattern generator sometimes omits them, which would otherwise make
+    the section generate zero questions. Compound sections (with subsections) are left alone."""
+    def typical(types):
+        text = " ".join(str(t).lower() for t in (types or []))
+        if "long answer" in text:
+            return 5.0
+        if "very short" in text:
+            return 2.0
+        if "short answer" in text:
+            return 3.0
+        if any(k in text for k in ("case", "source", "cbq")):
+            return 4.0
+        return 1.0
+
+    def _num(v, default=0):
+        try:
+            return type(default)(v) if v not in (None, "", "varies") else default
+        except (TypeError, ValueError):
+            return default
+
+    for s in sections or []:
+        if not isinstance(s, dict) or s.get("subsections"):
+            continue
+        marks = _num(s.get("marks"), 0)
+        qc = _num(s.get("questions_count") or s.get("questions"), 0)
+        mpq = _num(s.get("marks_per_question"), 0.0)
+        if mpq <= 0:
+            mpq = round(marks / qc, 1) if qc else typical(s.get("question_types"))
+        if qc <= 0 and marks and mpq:
+            qc = max(1, round(marks / mpq))
+        if qc:
+            s["questions_count"] = qc
+        if mpq:
+            s["marks_per_question"] = mpq
+    return sections
+
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=60)
 def generate_pattern_task(self, pattern_id):
@@ -29,7 +68,7 @@ def generate_pattern_task(self, pattern_id):
             subject=pattern.subject,
             exam_name=pattern.name,
         )
-        pattern.sections       = pattern_data.get('sections', [])
+        pattern.sections       = _fill_section_counts(pattern_data.get('sections', []))
         pattern.total_marks    = pattern_data.get('total_marks', 0)
         pattern.total_questions = pattern_data.get('total_questions', 0)
         pattern.status = 'done'
@@ -108,6 +147,7 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
     paper = QuestionPaper.objects.get(id=paper_id)
     paper.status = "generating"
     paper.task_id = self.request.id  # Store the actual task ID
+    paper.status_detail = ""         # clear any prior failure reason / warning
     paper.save()
 
     try:
@@ -117,10 +157,14 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         if "-" in class_name:
             class_name, section = class_name.split("-", 1)
         
-        # Resolve school for vector store routing
+        # Resolve school for vector store routing + paper header.
         school_id = None
+        school_name = ""
         try:
-            school_id = paper.created_by.profile.school.id
+            _school = paper.created_by.profile.school
+            if _school:
+                school_id = _school.id
+                school_name = _school.name or ""
         except Exception:
             pass
 
@@ -132,6 +176,12 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
             extra_meta = _json.loads(additional_context) if additional_context else {}
         except Exception:
             pass
+
+        # Always stamp the paper's school on the header. The create-flow meta can arrive empty
+        # (e.g. session quirks) and the header would otherwise render with no school name.
+        if school_name and not extra_meta.get("school_name"):
+            extra_meta["school_name"] = school_name
+            additional_context = _json.dumps(extra_meta)
 
         if pattern_obj and pattern_obj.pattern_source == 'one_mark_test':
             n = int(extra_meta.get('num_one_mark_questions') or 20)
@@ -167,27 +217,63 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         )
 
         # file_path is relative like "question_papers/filename.docx"
-        # Construct full path and save using File object to ensure proper extension
+        # Point the FileField at the already-saved disk file.
+        # Do NOT use paper.file.save() — Django renames to avoid collisions,
+        # storing a different path in the DB than what's on disk → 404 on download.
         full_path = os.path.join(settings.MEDIA_ROOT, file_path)
         if os.path.exists(full_path):
-            with open(full_path, 'rb') as f:
-                filename = os.path.basename(file_path)
-                paper.file.save(filename, File(f), save=False)
+            paper.file.name = file_path
 
         paper.cost = total_cost
         paper.input_tokens = input_tokens
         paper.output_tokens = output_tokens
         paper.status = "done"
-        # Persist the raw generated JSON so we can re-render later without calling the LLM
+        # Persist the raw generated JSON so we can re-render later without calling the LLM.
+        # Read from thread-local state set by generator.enforce_json() or
+        # generator._render_paper_from_data() — avoids the shared temp_clean.json race condition.
         try:
-            import json as _json
-            with open("temp_clean.json", "r", encoding="utf-8") as _f:
-                paper.paper_data = _json.load(_f)
+            paper.paper_data = getattr(generator._request_state, 'paper_data', None)
+            if paper.paper_data is None:
+                print(f"[Task] paper_data not available in request state; paper_data will be empty")
         except Exception as _e:
             print(f"[Task] Could not save paper_data: {_e}")
+
+        # Teacher-facing note: warn if generated without materials (#8) and if the whole-paper
+        # marks total drifts from the pattern total (#9).
+        notes = []
+        try:
+            from .models import Material
+            cls_num = (class_name or '').split('-')[0]
+            if not Material.objects.filter(class_name=cls_num, subject__iexact=paper.subject).exists():
+                notes.append("Generated without uploaded materials for this class/subject — "
+                             "verify the questions against the syllabus.")
+        except Exception:
+            pass
+        try:
+            # OR-aware, per-section marks audit: sum per-question marks (an OR /
+            # internal-choice pair counts once) and compare to the pattern, section
+            # by section, so a mismatch names the exact section and cause.
+            from .paper_audit import audit_paper_marks, summary_line
+            if paper.pattern:
+                result = audit_paper_marks(paper.paper_data or {}, paper.pattern)
+                if not result["ok"]:
+                    notes.append("Marks check — " + summary_line(result))
+        except Exception:
+            pass
+        try:
+            # Chapter-coverage audit: did every planned (weighted) chapter get a question?
+            from .paper_audit import audit_chapter_coverage, coverage_summary_line
+            cov = audit_chapter_coverage(paper.paper_data or {})
+            cov_line = coverage_summary_line(cov)
+            if cov_line:
+                notes.append("Coverage — " + cov_line)
+        except Exception:
+            pass
+        paper.status_detail = " ".join(notes)
         paper.save()
 
         # Update school cumulative usage (atomic — persists even after paper is deleted)
+        school = None
         try:
             school = paper.created_by.profile.school
             if school:
@@ -200,11 +286,23 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         except Exception as _se:
             print(f"[Task] Could not update school cumulative stats: {_se}")
 
+        # Per-user usage log — survives paper deletion, so the team-usage page stays accurate
+        # (a regenerate re-runs this task and correctly logs another event).
+        try:
+            from .models import UsageEvent
+            UsageEvent.record(
+                user=paper.created_by, school=school, paper_id=paper.id, kind="generate",
+                input_tokens=input_tokens, output_tokens=output_tokens, cost=total_cost or 0,
+            )
+        except Exception as _ue:
+            print(f"[Task] Could not record usage event: {_ue}")
+
         return summary
         
     except Exception as e:
-        # Mark the paper as failed (no auto-retry)
+        # Mark the paper as failed (no auto-retry) and record a short reason for the teacher.
         paper.status = "failed"
+        paper.status_detail = str(e)[:500]
         paper.save()
 
         # Log the error and let the task fail once
