@@ -13,6 +13,7 @@ import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import CustomSelect from '@/components/CustomSelect';
+import ChapterMultiSelect from '@/components/ChapterMultiSelect';
 import { subjectOptions } from '@/lib/subjects';
 
 const CLASS_OPTIONS = ['1','2','3','4','5','6','7','8','9','10','11','12'].map(c => ({ label: `Class ${c}`, value: c }));
@@ -74,6 +75,18 @@ function SubjectGroupCard({ group, index, onChange, onRemove, fileProgress }) {
           onChange={v => onChange('type', v)} options={TYPE_OPTIONS} placeholder="Type" />
       </div>
 
+      {group.type && group.type !== 'textbook' && (
+        <div className="mb-4 p-4 bg-blue-50/30 border border-blue-100 rounded-2xl">
+          <ChapterMultiSelect
+            classValue={group.class_name}
+            subject={group.subject}
+            value={group.chapters || []}
+            onChange={arr => onChange('chapters', arr)}
+            label="Related chapter(s) — applies to every file in this group"
+          />
+        </div>
+      )}
+
       <div className="border-2 border-dashed border-gray-200 rounded-2xl p-4 bg-gray-50/30">
         <input type="file" multiple accept=".pdf" id={inputId} className="hidden"
           onChange={e => onChange('files', Array.from(e.target.files))} />
@@ -104,11 +117,12 @@ export default function UploadMaterialPage() {
   const [isMultiSubject, setIsMultiSubject] = useState(false);
   const [formData, setFormData] = useState({
     class_name: '', subject: '', type: '', isBulk: false,
-    chapterCount: 1, chapters: [{ unit: '', title: '', file: null }],
+    chapterCount: 1, chapters: [{ unit: '', title: '', file: null, chapters: [] }],
   });
   const [bulkFiles, setBulkFiles]       = useState([]);
+  const [bulkChapters, setBulkChapters] = useState([]);
   const [subjectGroups, setSubjectGroups] = useState([
-    { class_name: '', subject: '', type: '', files: [] },
+    { class_name: '', subject: '', type: '', files: [], chapters: [] },
   ]);
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState(null);
@@ -124,12 +138,17 @@ export default function UploadMaterialPage() {
       if (field === 'chapterCount') {
         const count = parseInt(value) || 0;
         const chs = [...prev.chapters];
-        if (count > chs.length) for (let i = chs.length; i < count; i++) chs.push({ unit: '', title: '', file: null });
+        if (count > chs.length) for (let i = chs.length; i < count; i++) chs.push({ unit: '', title: '', file: null, chapters: [] });
         else chs.splice(count);
         next.chapters = chs;
       }
+      // Selected chapters belong to a specific class+subject — drop them when either changes.
+      if (field === 'class_name' || field === 'subject') {
+        next.chapters = (next.chapters || prev.chapters).map(c => ({ ...c, chapters: [] }));
+      }
       return next;
     });
+    if (field === 'class_name' || field === 'subject') setBulkChapters([]);
   };
 
   const handleChapterChange = (index, field, value) => {
@@ -139,17 +158,23 @@ export default function UploadMaterialPage() {
   };
 
   const updateGroup = (index, field, value) => {
-    setSubjectGroups(prev => prev.map((g, i) => i === index ? { ...g, [field]: value } : g));
+    setSubjectGroups(prev => prev.map((g, i) => {
+      if (i !== index) return g;
+      const ng = { ...g, [field]: value };
+      if (field === 'class_name' || field === 'subject') ng.chapters = [];  // chapters are class+subject specific
+      return ng;
+    }));
   };
 
-  const addGroup = () => setSubjectGroups(prev => [...prev, { class_name: '', subject: '', type: '', files: [] }]);
+  const addGroup = () => setSubjectGroups(prev => [...prev, { class_name: '', subject: '', type: '', files: [], chapters: [] }]);
 
   const removeGroup = index => setSubjectGroups(prev => prev.filter((_, i) => i !== index));
 
   const resetForm = () => {
-    setFormData({ class_name: '', subject: '', type: '', isBulk: false, chapterCount: 1, chapters: [{ unit: '', title: '', file: null }] });
+    setFormData({ class_name: '', subject: '', type: '', isBulk: false, chapterCount: 1, chapters: [{ unit: '', title: '', file: null, chapters: [] }] });
     setBulkFiles([]);
-    setSubjectGroups([{ class_name: '', subject: '', type: '', files: [] }]);
+    setBulkChapters([]);
+    setSubjectGroups([{ class_name: '', subject: '', type: '', files: [], chapters: [] }]);
     setFileProgress({});
     setError(null);
     setSuccess(null);
@@ -183,6 +208,8 @@ export default function UploadMaterialPage() {
           const g = subjectGroups[gi];
           if (!g.class_name || !g.subject || !g.type) throw new Error(`Group ${gi + 1}: please fill in Class, Subject and Type`);
           if (g.files.length === 0) throw new Error(`Group ${gi + 1}: no files selected`);
+          if (g.type !== 'textbook' && (g.chapters || []).length === 0)
+            throw new Error(`Group ${gi + 1}: select at least one chapter this material relates to`);
           for (const file of g.files) {
             const data = new FormData();
             data.append('class_name', g.class_name);
@@ -190,6 +217,7 @@ export default function UploadMaterialPage() {
             data.append('type', g.type);
             data.append('bulk_upload', 'true');
             data.append('bulk_files', file);
+            if (g.type !== 'textbook') data.append('chapters', JSON.stringify(g.chapters));
             data.append('embedding_provider', embeddingProvider);
             await uploadSingle(`${gi}-${file.name}`, data);
           }
@@ -197,6 +225,8 @@ export default function UploadMaterialPage() {
       } else if (formData.isBulk) {
         // ── Single-subject bulk mode ────────────────────────────────────────
         if (bulkFiles.length === 0) throw new Error('Please select at least one file');
+        if (formData.type !== 'textbook' && bulkChapters.length === 0)
+          throw new Error('Select at least one chapter this material relates to');
         for (const file of bulkFiles) {
           const data = new FormData();
           data.append('class_name', formData.class_name);
@@ -204,12 +234,18 @@ export default function UploadMaterialPage() {
           data.append('type', formData.type);
           data.append('bulk_upload', 'true');
           data.append('bulk_files', file);
+          if (formData.type !== 'textbook') data.append('chapters', JSON.stringify(bulkChapters));
           data.append('embedding_provider', embeddingProvider);
           await uploadSingle(file.name, data);
         }
       } else {
         // ── Chapter-by-chapter mode ─────────────────────────────────────────
-        formData.chapters.forEach((ch, i) => { if (!ch.file) throw new Error(`Please select a file for Chapter ${i + 1}`); });
+        const isTextbook = formData.type === 'textbook';
+        formData.chapters.forEach((ch, i) => {
+          if (!ch.file) throw new Error(`Please select a file for ${isTextbook ? 'Chapter' : 'File'} ${i + 1}`);
+          if (!isTextbook && (ch.chapters || []).length === 0)
+            throw new Error(`File ${i + 1}: select at least one chapter it relates to`);
+        });
         for (let i = 0; i < formData.chapters.length; i++) {
           const ch = formData.chapters[i];
           const data = new FormData();
@@ -218,9 +254,10 @@ export default function UploadMaterialPage() {
           data.append('type', formData.type);
           data.append('bulk_upload', 'false');
           data.append('chapter_count', '1');
-          data.append('unit_0', ch.unit);
+          data.append('unit_0', isTextbook ? ch.unit : (ch.chapters[0] || ''));
           data.append('title_0', ch.title);
           data.append('file_0', ch.file);
+          if (!isTextbook) data.append('chapters_0', JSON.stringify(ch.chapters));
           data.append('embedding_provider', embeddingProvider);
           await uploadSingle(ch.file.name, data);
         }
@@ -375,7 +412,18 @@ export default function UploadMaterialPage() {
 
             {/* ── Bulk / chapter file section ──────────────────────────────── */}
             {formData.isBulk ? (
-              <div className="glass-card p-8 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-500 relative z-10">
+              <div className="glass-card p-8 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-500 relative z-20 overflow-visible">
+                {formData.type && formData.type !== 'textbook' && (
+                  <div className="mb-6 p-5 bg-blue-50/30 border border-blue-100 rounded-2xl">
+                    <ChapterMultiSelect
+                      classValue={formData.class_name}
+                      subject={formData.subject}
+                      value={bulkChapters}
+                      onChange={setBulkChapters}
+                      label="Related chapter(s) — applies to every file below"
+                    />
+                  </div>
+                )}
                 <div className="text-center py-10 border-2 border-dashed border-gray-200 rounded-[40px] bg-gray-50/30">
                   <input type="file" multiple accept=".pdf" onChange={e => setBulkFiles(Array.from(e.target.files))} className="hidden" id="bulk-file-input" />
                   <label htmlFor="bulk-file-input" className="cursor-pointer">
@@ -417,13 +465,23 @@ export default function UploadMaterialPage() {
                       <div key={idx} className="p-6 bg-white border border-gray-100 rounded-[30px] hover:border-blue-200 transition-all shadow-sm">
                         <div className="flex items-center gap-3 mb-6">
                           <span className="w-8 h-8 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center font-black text-xs">{idx + 1}</span>
-                          <h4 className="font-black text-gray-900 uppercase text-sm tracking-widest">Chapter Details</h4>
+                          <h4 className="font-black text-gray-900 uppercase text-sm tracking-widest">{formData.type === 'textbook' ? 'Chapter Details' : 'File Details'}</h4>
                         </div>
                         <div className="space-y-4">
-                          <input required type="text" placeholder="Unit / Chapter Name (e.g. Atoms)"
-                            value={chapter.unit} onChange={e => handleChapterChange(idx, 'unit', e.target.value)}
-                            className="w-full px-4 py-3 bg-gray-50/50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" />
-                          <input required type="text" placeholder="Display Title (e.g. Ch-1 Atoms)"
+                          {formData.type === 'textbook' ? (
+                            <input required type="text" placeholder="Unit / Chapter Name (e.g. Atoms)"
+                              value={chapter.unit} onChange={e => handleChapterChange(idx, 'unit', e.target.value)}
+                              className="w-full px-4 py-3 bg-gray-50/50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" />
+                          ) : (
+                            <ChapterMultiSelect
+                              classValue={formData.class_name}
+                              subject={formData.subject}
+                              value={chapter.chapters || []}
+                              onChange={arr => handleChapterChange(idx, 'chapters', arr)}
+                              label="Related chapter(s)"
+                            />
+                          )}
+                          <input required={formData.type === 'textbook'} type="text" placeholder="Display Title (optional)"
                             value={chapter.title} onChange={e => handleChapterChange(idx, 'title', e.target.value)}
                             className="w-full px-4 py-3 bg-gray-50/50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" />
                           <div className="relative">

@@ -15,8 +15,8 @@
       "Thermodynamics"
     ],
     "total_questions": 31,
-    "input_tokens": 30623,
-    "output_tokens": 11571
+    "input_tokens": 30953,
+    "output_tokens": 11929
   },
   "sections": {
     "Section B": {
@@ -27,19 +27,14 @@
       "errors": [],
       "grounding_issues": [
         {
-          "qnum": 1,
-          "text_snippet": "Using the concept of bond enthalpy, explain why the bond enthalpy of the H–F bon",
-          "issue": "The concept of bond enthalpy and a comparison between H–F and H–Cl bonds is not discussed in the provided reference text."
-        },
-        {
           "qnum": 2,
-          "text_snippet": "A hydrogen-like species in its excited state emits radiation of wavelength λ whe",
-          "issue": "The question involves Bohr orbits and the Rydberg constant, which are not covered in the provided reference text on chemical bonding and molecular structure."
+          "text_snippet": "A hydrogen-like species in its excited state emits radiation with a wavelength c",
+          "issue": "The reference text does not discuss the Balmer series or atomic transitions in detail."
         },
         {
           "qnum": 3,
-          "text_snippet": "For an isothermal expansion of an ideal gas, ΔU = 0, so q = –w. However, in a fr",
-          "issue": "The question pertains to thermodynamics (specifically, the first law and free expansion of an ideal gas), which is not discussed in the provided reference text."
+          "text_snippet": "For the isothermal expansion of an ideal gas, ΔU = 0, so q = -w. Explain why thi",
+          "issue": "The reference text does not discuss thermodynamics, isothermal expansion, or free expansion into a vacuum."
         }
       ],
       "quality_flags": [],
@@ -51,9 +46,9 @@
           "qnum": 17,
           "type": "SA",
           "subtype": "standard",
-          "text": "Using the concept of bond enthalpy, explain why the bond enthalpy of the H–F bond is significantly higher than that of the H–Cl bond, despite fluorine being smaller than chlorine.",
-          "marks": 3.0,
-          "answer_explanation": "The bond enthalpy of H–F is higher because fluorine is highly electronegative and small, leading to a very short and strong bond. The significant difference in electronegativity creates a highly polar bond with substantial ionic character, increasing the bond strength. Additionally, in the condensed state, H–F molecules form strong intermolecular hydrogen bonds, indirectly affecting the energy required to break the H–F bond within the molecule.",
+          "text": "The H–F bond enthalpy (568 kJ mol⁻¹) is significantly higher than the H–Cl bond enthalpy (431 kJ mol⁻¹). However, HF is a weaker acid than HCl in aqueous solution. Justify this apparent contradiction using concepts of bond enthalpy and intermolecular forces.",
+          "marks": 4,
+          "answer_explanation": "The high H–F bond enthalpy makes HF less prone to dissociate into H⁺ and F⁻ ions, contributing to its weak acidic nature. Furthermore, in aqueous solution, HF molecules form strong intermolecular hydrogen bonds, which traps the proton and further hinders its release as H₃O⁺. HCl, with a weaker bond and no significant hydrogen bonding in solution, dissociates almost completely.",
           "chapter_tag": "Chemical Bonding and Molecular Structure",
           "competency_type": "constructed",
           "options": {}
@@ -62,9 +57,9 @@
           "qnum": 18,
           "type": "SA",
           "subtype": "standard",
-          "text": "A hydrogen-like species in its excited state emits radiation of wavelength λ when the electron drops from the 4th to the 2nd Bohr orbit. If the Rydberg constant for this species is 4R_H, derive an expression for λ in terms of R_H, the atomic number Z, and fundamental constants.",
-          "marks": 3.0,
-          "answer_explanation": "Using the Rydberg formula for hydrogen-like species: 1/λ = R Z² (1/n₁² - 1/n₂²). Given n₁=2, n₂=4, and R = 4R_H, we get 1/λ = 4R_H Z² (1/2² - 1/4²) = 4R_H Z² (1/4 - 1/16) = 4R_H Z² (3/16). Therefore, λ = 16 / (3 R_H Z²) or λ = (16) / (3 R_H Z²).",
+          "text": "A hydrogen-like species in its excited state emits radiation with a wavelength corresponding to the transition from n=4 to n=2. The same wavelength is observed for the second line of the Balmer series for atomic hydrogen. Identify the species and its atomic number.",
+          "marks": 3,
+          "answer_explanation": "For a hydrogen-like species, 1/λ = RZ²(1/n₁² - 1/n₂²). For the Balmer series of H (Z=1), the second line is n=4→2. Given the same λ, RZ²(1/2² - 1/4²) = R(1)(1/2² - 1/4²). This simplifies to Z² = 1, hence Z=1. The species is He⁺ (helium ion with one electron), which has atomic number 2.",
           "chapter_tag": "Structure of Atom",
           "competency_type": "constructed",
           "options": {}
@@ -73,9 +68,9 @@
           "qnum": 19,
           "type": "SA",
           "subtype": "standard",
-          "text": "For an isothermal expansion of an ideal gas, ΔU = 0, so q = –w. However, in a free expansion into vacuum, w = 0. Using the first law of thermodynamics, predict the values of q, w, and ΔU for such a free expansion and justify why this process, while isothermal, cannot be used to do useful work.",
-          "marks": 3.0,
-          "answer_explanation": "In a free expansion into vacuum, P_external = 0, so work done (w) = 0. Since it's an ideal gas and the process is isothermal, ΔU = 0. From the first law (ΔU = q + w), q must also be 0. The expansion is irreversible and occurs without any opposing force, meaning the internal energy is not converted into work. Therefore, while the temperature remains constant, no useful work can be extracted from this particular path.",
+          "text": "For the isothermal expansion of an ideal gas, ΔU = 0, so q = -w. Explain why this simple relationship does not hold for the isothermal free expansion of the same gas into a vacuum, even though both processes start and end at the same temperature.",
+          "marks": 3,
+          "answer_explanation": "In a reversible isothermal expansion, work is done by the gas (w = -nRT ln(V₂/V₁)) and heat is absorbed (q = nRT ln(V₂/V₁)) to maintain constant internal energy. In free expansion into vacuum, no external pressure opposes the gas, so w = 0. Since ΔU = 0 (isothermal, ideal gas), q must also be 0. Therefore, the relationship q = -w (which implies non-zero values) is invalid for free expansion.",
           "chapter_tag": "Thermodynamics",
           "competency_type": "constructed",
           "options": {}
@@ -91,28 +86,28 @@
       "grounding_issues": [
         {
           "qnum": 2,
-          "text_snippet": "The first ionization enthalpy of Al (Z=13) is lower than that of Mg (Z=12), but ",
-          "issue": "Ionization enthalpy trends are not discussed in the provided reference text."
+          "text_snippet": "The first ionisation enthalpy of aluminium (577 kJ mol⁻¹) is lower than that of ",
+          "issue": "Ionisation enthalpy and periodic trends are not discussed in the provided reference text."
         },
         {
           "qnum": 3,
-          "text_snippet": "For the reaction N₂O₄(g) ⇌ 2NO₂(g), ΔH = +58 kJ mol⁻¹. Predict and explain the e",
+          "text_snippet": "For the reversible reaction N₂(g) + 3H₂(g) ⇌ 2NH₃(g) at equilibrium, ΔH = -92 kJ",
           "issue": "Chemical equilibrium and Le Chatelier's principle are not covered in the provided reference text."
         },
         {
           "qnum": 4,
-          "text_snippet": "An alkene 'A' (C₆H₁₂) on ozonolysis gives a single product, propanal (CH₃CH₂CHO)",
-          "issue": "Ozonolysis and isomerism in alkenes are not discussed in the provided reference text."
+          "text_snippet": "Compare and contrast the mechanism of electrophilic addition in alkenes (e.g., w",
+          "issue": "Electrophilic addition and substitution mechanisms in organic chemistry are not discussed in the provided reference text."
         },
         {
           "qnum": 5,
-          "text_snippet": "In the nitration of an aromatic compound, a student incorrectly used concentrate",
-          "issue": "Nitration of aromatic compounds and the role of H₂SO₄ are not covered in the provided reference text."
+          "text_snippet": "During the separation of a mixture containing benzoic acid, aniline, and naphtha",
+          "issue": "Acid-base extraction and separation techniques are not covered in the provided reference text."
         },
         {
-          "qnum": 7,
-          "text_snippet": "A 2.5 g sample of a mixture of Na₂CO₃ and NaHCO₃ lost 0.44 g on strong heating. ",
-          "issue": "Calculation involving thermal decomposition of Na₂CO₃ and NaHCO₃ is not discussed in the provided reference text."
+          "qnum": 6,
+          "text_snippet": "In the reaction: 2KMnO₄ + 16HCl → 2KCl + 2MnCl₂ + 8H₂O + 5Cl₂, identify the spec",
+          "issue": "Redox reactions and stoichiometric calculations for gas volumes are not discussed in the provided reference text."
         }
       ],
       "quality_flags": [],
@@ -124,9 +119,9 @@
           "qnum": 20,
           "type": "SA",
           "subtype": "standard",
-          "text": "In the formation of NF₃ and NCl₃ using the valence bond theory, the bond angles are experimentally found to be 102° and 107° respectively, despite both having sp³ hybridized nitrogen. Justify this difference, considering the nature of the bonded atoms and the concept of lone pair-bond pair repulsion.",
+          "text": "Although sulfur (S) belongs to Group 16 and has six valence electrons, the octet rule is strictly obeyed in SF₂ but frequently expanded in SF₄ and SF₆. Explain this anomaly by considering the concepts of hybridisation and the availability of low-lying vacant orbitals.",
           "marks": 3.0,
-          "answer_explanation": "The greater electronegativity of fluorine draws the N-F bonding electrons closer to F, reducing the electron density around nitrogen. This makes the lone pair on nitrogen occupy more space, increasing lone pair-bond pair repulsion and compressing the F-N-F bond angle in NF₃. In NCl₃, chlorine is less electronegative, so the bond pair is more localized between N and Cl, reducing the dominance of the lone pair and resulting in a bond angle closer to the ideal tetrahedral angle.",
+          "answer_explanation": "SF₂ uses sp³ hybridisation of S, accommodating two bonding pairs and two lone pairs within the octet. In SF₄ (sp³d hybridisation) and SF₆ (sp³d² hybridisation), the sulfur atom utilizes its vacant 3d orbitals to form more than four bonds, thereby expanding its octet. This is possible due to the availability of low-lying d-orbitals in the third period.",
           "chapter_tag": "Chemical Bonding and Molecular Structure",
           "competency_type": "constructed",
           "options": {}
@@ -135,9 +130,9 @@
           "qnum": 21,
           "type": "SA",
           "subtype": "standard",
-          "text": "The first ionization enthalpy of Al (Z=13) is lower than that of Mg (Z=12), but the second ionization enthalpy of Al is significantly higher than that of Mg. Explain this reversal in trend by analyzing their electronic configurations.",
+          "text": "The first ionisation enthalpy of aluminium (577 kJ mol⁻¹) is lower than that of magnesium (738 kJ mol⁻¹), even though Mg has a higher nuclear charge. Justify this observation by analyzing their respective electronic configurations and the stability of the electron being removed.",
           "marks": 3.0,
-          "answer_explanation": "Mg has the stable configuration [Ne]3s². Removing one electron from the 3s orbital requires high energy. Al has configuration [Ne]3s²3p¹; the electron is removed from a higher energy 3p orbital which is also shielded by the 3s electrons, making IE₁ lower. For IE₂, after losing one electron, Al⁺ attains the stable [Ne]3s² configuration (like Mg). Removing an electron from this stable, filled 3s subshell requires very high energy, making IE₂ of Al > IE₂ of Mg.",
+          "answer_explanation": "Mg has a stable, fully-filled 3s² configuration ([Ne]3s²). Removing an electron disrupts this stability, requiring more energy. Al has the configuration [Ne]3s² 3p¹. The 3p electron is in a higher energy subshell, is partially shielded by the 3s electrons, and is easier to remove, leading to a lower ionisation enthalpy despite the higher nuclear charge.",
           "chapter_tag": "Classification of Elements and Periodicity in Properties",
           "competency_type": "constructed",
           "options": {}
@@ -146,9 +141,9 @@
           "qnum": 22,
           "type": "SA",
           "subtype": "standard",
-          "text": "For the reaction N₂O₄(g) ⇌ 2NO₂(g), ΔH = +58 kJ mol⁻¹. Predict and explain the effect on the equilibrium constant Kp and the degree of dissociation (α) when: (i) the total pressure is increased at constant temperature, and (ii) the temperature is increased at constant total pressure.",
+          "text": "For the reversible reaction N₂(g) + 3H₂(g) ⇌ 2NH₃(g) at equilibrium, ΔH = -92 kJ mol⁻¹. If the volume of the container is suddenly doubled at constant temperature, predict the direction in which the reaction will proceed to re-establish equilibrium. Explain your prediction by linking the change to the reaction quotient Qc.",
           "marks": 3.0,
-          "answer_explanation": "(i) Kp depends only on temperature. Increasing pressure at constant T does not change Kp. However, α decreases because the equilibrium shifts towards the side with fewer moles of gas (N₂O₄) to counteract the pressure increase. (ii) Since the reaction is endothermic (ΔH > 0), increasing temperature increases Kp. According to Le Chatelier's principle, the equilibrium shifts towards the products (NO₂), leading to an increase in the degree of dissociation (α).",
+          "answer_explanation": "Doubling the volume decreases the total pressure and the partial pressure of all gases. Since there are 4 moles of gaseous reactants and 2 moles of gaseous products, the denominator of Qc (in terms of concentration or pressure) decreases more sharply than the numerator. This makes Qc < Kc. To re-establish equilibrium, the reaction will proceed in the forward direction (towards fewer moles of gas) to increase the value of Qc back to Kc.",
           "chapter_tag": "Equilibrium",
           "competency_type": "constructed",
           "options": {}
@@ -157,9 +152,9 @@
           "qnum": 23,
           "type": "SA",
           "subtype": "standard",
-          "text": "An alkene 'A' (C₆H₁₂) on ozonolysis gives a single product, propanal (CH₃CH₂CHO). However, 'A' does not show geometrical isomerism. Deduce the structure of 'A' and explain why it cannot exist as geometrical isomers.",
+          "text": "Compare and contrast the mechanism of electrophilic addition in alkenes (e.g., with Br₂) and electrophilic substitution in arenes (e.g., nitration), with specific reference to the role of the π-electron cloud and the formation of the intermediate.",
           "marks": 3.0,
-          "answer_explanation": "Since ozonolysis yields only propanal, it indicates that the alkene is symmetrical, with identical halves. The structure must be hex-3-ene (CH₃CH₂CH=CHCH₂CH₃). It cannot show geometrical isomerism because the two alkyl groups attached to each carbon of the double bond are identical (both ethyl groups). For geometrical isomerism (cis/trans), each carbon of the double bond must be bonded to two different groups.",
+          "answer_explanation": "In alkenes, the π-electron cloud is loosely held and attacks an electrophile (E⁺) directly, forming a carbocation intermediate which is then attacked by a nucleophile. In arenes (benzene), the stable aromatic π-electron cloud donates electron density to the electrophile, forming a resonance-stabilized arenium ion (sigma complex) intermediate. This intermediate loses a proton to regenerate the aromatic ring, completing the substitution, unlike addition which would destroy aromaticity.",
           "chapter_tag": "Hydrocarbons",
           "competency_type": "constructed",
           "options": {}
@@ -168,9 +163,9 @@
           "qnum": 24,
           "type": "SA",
           "subtype": "standard",
-          "text": "In the nitration of an aromatic compound, a student incorrectly used concentrated HNO₃ alone instead of the HNO₃/H₂SO₄ mixture and observed a very slow reaction. Explain the critical role of H₂SO₄ in generating the effective electrophile and why its absence severely hampers the reaction.",
+          "text": "During the separation of a mixture containing benzoic acid, aniline, and naphthalene using acid-base extraction, a student added NaOH first, followed by HCl. They observed that aniline was extracted into the aqueous layer after the first step. Identify the error in the student's procedure and explain the correct sequence of reagents to isolate all three compounds.",
           "marks": 3.0,
-          "answer_explanation": "Concentrated H₂SO₃ acts as a dehydrating agent and promotes the formation of the nitronium ion (NO₂⁺), the actual electrophile. The reaction is: HNO₃ + 2H₂SO₄ ⇌ NO₂⁺ + H₃O⁺ + 2HSO₄⁻. Without H₂SO₄, the concentration of NO₂⁺ generated from HNO₃ alone is extremely low. Nitration of aromatics requires a strong electrophile due to the stable aromatic ring. The poor electrophilicity of molecular HNO₃ leads to a very slow reaction.",
+          "answer_explanation": "The error is adding NaOH first. Benzoic acid (acidic) would be deprotonated and extracted into the aqueous layer, but aniline (basic) would remain unionized in the organic layer. The correct sequence is: 1. Add HCl first. Aniline is protonated to form a water-soluble salt and extracted. 2. To the remaining organic layer, add NaOH. Benzoic acid is deprotonated and extracted. 3. Naphthalene (neutral) remains dissolved in the organic solvent throughout.",
           "chapter_tag": "Organic Chemistry – Some Basic Principles and Techniques",
           "competency_type": "constructed",
           "options": {}
@@ -179,9 +174,9 @@
           "qnum": 25,
           "type": "SA",
           "subtype": "standard",
-          "text": "In the reaction: 2KMnO₄ + 16HCl → 2KCl + 2MnCl₂ + 8H₂O + 5Cl₂, identify the oxidizing and reducing agents. Justify your answer by analyzing the change in oxidation states of the key elements involved.",
+          "text": "In the reaction: 2KMnO₄ + 16HCl → 2KCl + 2MnCl₂ + 8H₂O + 5Cl₂, identify the species undergoing oxidation and reduction. Calculate the volume of Cl₂(g) produced at STP when 1 mole of KMnO₄ reacts completely with excess HCl.",
           "marks": 3.0,
-          "answer_explanation": "The oxidizing agent is KMnO₄ (specifically Mn in +7 state). Mn changes oxidation state from +7 in MnO₄⁻ to +2 in MnCl₂, a decrease of 5, indicating reduction (gain of electrons). The reducing agent is HCl (specifically Cl⁻ in -1 state). Cl changes oxidation state from -1 in HCl to 0 in Cl₂, an increase of 1, indicating oxidation (loss of electrons). Thus, MnO₄⁻ is reduced (oxidizing agent) and Cl⁻ is oxidized (reducing agent).",
+          "answer_explanation": "Oxidation: Cl⁻ in HCl is oxidized to Cl₂ (O.N. increases from -1 to 0). Reduction: Mn in KMnO₄ is reduced to Mn²⁺ in MnCl₂ (O.N. decreases from +7 to +2). The stoichiometry shows 2 mol KMnO₄ produce 5 mol Cl₂. Therefore, 1 mol KMnO₄ will produce (5/2) = 2.5 mol Cl₂. At STP, volume = 2.5 mol × 22.4 L mol⁻¹ = 56.0 L.",
           "chapter_tag": "Redox Reactions",
           "competency_type": "constructed",
           "options": {}
@@ -190,9 +185,9 @@
           "qnum": 26,
           "type": "SA",
           "subtype": "standard",
-          "text": "A 2.5 g sample of a mixture of Na₂CO₃ and NaHCO₃ lost 0.44 g on strong heating. Calculate the percentage composition of Na₂CO₃ in the original mixture. (Molar masses: Na₂CO₃ = 106 g mol⁻¹, NaHCO₃ = 84 g mol⁻¹).",
+          "text": "A compound has the empirical formula CH₂O. Its vapour density is 30. (i) Determine its molecular formula. (ii) If this compound on complete oxidation yields only CO₂ and H₂O, deduce the total number of sigma (σ) and pi (π) bonds present in one molecule of it.",
           "marks": 3.0,
-          "answer_explanation": "Only NaHCO₃ decomposes on heating: 2NaHCO₃(s) → Na₂CO₃(s) + CO₂(g) + H₂O(g). The mass loss (0.44 g) is due to CO₂ + H₂O vapor. Molar mass of (CO₂ + H₂O) lost per 2 moles NaHCO₃ = 62 g. Moles of NaHCO₃ = (2 × mass loss) / 62 = (2 × 0.44) / 62 = 0.0142 mol. Mass of NaHCO₃ = 0.0142 × 84 = 1.1928 g. Mass of Na₂CO₃ = 2.5 - 1.1928 = 1.3072 g. % Na₂CO₃ = (1.3072 / 2.5) × 100 = 52.29%.",
+          "answer_explanation": "(i) Vapour density = 30, so molar mass = 2 × VD = 60 g mol⁻¹. Mass of empirical unit (CH₂O) = 30 g mol⁻¹. Therefore, n = 60/30 = 2. Molecular formula = C₂H₄O₂. (ii) Complete oxidation to CO₂ and H₂O suggests it is a carboxylic acid, likely CH₃COOH (acetic acid). Structure: CH₃–C(=O)OH. Total σ bonds: 7 (C–H) + 2 (C–C) + 1 (C–O) + 1 (O–H) + 1 (C=O sigma) = 12 σ bonds. Total π bonds: 1 (in C=O).",
           "chapter_tag": "Some Basic Concepts of Chemistry",
           "competency_type": "constructed",
           "options": {}
@@ -208,13 +203,18 @@
       "grounding_issues": [
         {
           "qnum": 1,
-          "text_snippet": "A compound has the molecular formula C₆H₁₂. It does not decolorize bromine water",
-          "issue": "The question relates to organic chemistry reactions (e.g., hydrogenation, bromine test), which are not covered in the provided NCERT reference text on chemical bonding and molecular structure."
+          "text_snippet": "A student argues that anomalous behaviour of the second-period elements (Li to N",
+          "issue": "The topic of anomalous behaviour of second-period elements is not discussed in the provided reference text."
         },
         {
           "qnum": 2,
-          "text_snippet": "For the reaction N₂(g) + 3H₂(g) ⇌ 2NH₃(g), ΔH = -92 kJ mol⁻¹, predict the effect",
-          "issue": "The question is about chemical equilibrium and Le Chatelier's principle, which is not discussed in the provided NCERT reference text."
+          "text_snippet": "For the gaseous equilibrium: N₂(g) + 3H₂(g) ⇌ 2NH₃(g); ΔH = -92 kJ mol⁻¹. Initia",
+          "issue": "The topic of gaseous equilibrium and Le Chatelier's principle is not discussed in the provided reference text."
+        },
+        {
+          "qnum": 3,
+          "text_snippet": "An unknown hydrocarbon 'X' with molecular formula C₇H₁₂ does not decolorise brom",
+          "issue": "The topic of hydrocarbon reactions, bromine decolourisation, and hydrogenation is not discussed in the provided reference text."
         }
       ],
       "quality_flags": [],
@@ -226,358 +226,37 @@
           "qnum": 29,
           "type": "LA",
           "subtype": "standard",
-          "text": "A compound has the molecular formula C₆H₁₂. It does not decolorize bromine water in the dark but reacts with H₂ in the presence of a catalyst to give a saturated hydrocarbon C₆H₁₄. When treated with hot acidic KMnO₄, it yields a single carboxylic acid. (i) Identify the class of hydrocarbon and explain the observed chemical behavior. (ii) Deduce the possible structural isomers for C₆H₁₂ that fit all observations and justify your selection, considering stereoisomerism. (iii) If the original compound exhibits optical isomerism, what does that imply about its structure?",
+          "text": "A student argues that anomalous behaviour of the second-period elements (Li to Ne) when compared to their respective group members is primarily due to their exceptionally small size and high electronegativity. Using specific examples from Groups 1, 2, 13, 14, 16, and 17, critically evaluate this statement. Does this 'anomaly' diminish or follow a pattern as we move down these groups? Substantiate your answer by explaining the underlying periodic properties that govern these trends.",
           "marks": 5.0,
-          "answer_explanation": "(i) The compound is an alkene (C₆H₁₂, adds H₂). It reacts with bromine only in sunlight (radical substitution, not addition), indicating it is a cyclic alkene because cyclic alkenes often show this behavior due to ring strain affecting reactivity. (ii) The formation of a single carboxylic acid on oxidative cleavage suggests a symmetrical cyclic alkene. Cyclohexene fits (C₆H₁₀, not C₆H₁₂). Methylcyclopentene isomers (C₆H₁₂) could yield different acids. The only structure that gives a single acid is a symmetrical, non-substituted cycloalkene with the double bond in a way that cleavage yields identical fragments – which is not possible for C₆H₁₂. Therefore, 3,3-dimethylcyclobutene is a possibility, but oxidation yields a single ketone/acid mix? Alternatively, 1,2-dimethylcyclobutene gives two different fragments. The most likely fit is a disubstituted alkene where both substituents are identical, e.g., 3-hexene (cis/trans). It would give propanoic acid only. (iii) If it shows optical isomerism, it must be chiral. For 3-hexene, the molecule itself is not chiral, but if it has chiral centers due to substituents (e.g., 3-methyl-2-pentene with specific substitution), it can be optically active.",
-          "chapter_tag": "Hydrocarbons",
+          "answer_explanation": "1. Evaluate the statement: The student's argument is only partially correct. While small size and high electronegativity are contributing factors, the key reason is the unavailability of d-orbitals for bonding and the high charge-to-radius ratio.\n2. Provide contrasting examples across groups:\n   - Group 1: Li forms Li₃N, other alkali metals do not; Li₂O is less basic than Na₂O.\n   - Group 2: Be shows diagonal relationship with Al, forms covalent compounds (BeCl₂ is polymeric), others are ionic.\n   - Group 13: B is a non-metal/metalloid and forms only covalent compounds (BX₃), Al and below show increasing metallic character.\n   - Group 14: C forms strong C–C chains (catenation), Si shows less, others negligible; CF₄ is stable while SiF₄ hydrolyses.\n   - Group 16: O forms strong hydrogen bonds (H₂O vs H₂S), exists as O₂ gas, others are solids.\n   - Group 17: F shows limited covalency (no d-orbitals), forms only one oxoacid (HOF), exhibits atypical electron gain enthalpy.\n3. Explain the pattern down the group: Anomalous behaviour diminishes down the group due to increase in size, decrease in electronegativity, availability of d-orbitals (from 3rd period onwards), and decrease in ionisation enthalpy. Behaviour becomes more 'typical' for heavier members.\n4. Underlying periodic properties: Ionisation enthalpy, electronegativity, atomic size, and the effect of lanthanoid contraction (for 5th/6th period members) are the governing factors. The concept of 'inert pair effect' also becomes significant for heavier p-block elements.",
+          "chapter_tag": "Classification of Elements and Periodicity in Properties",
           "competency_type": "constructed",
-          "or_alternative": "Discuss the mechanism of electrophilic addition in alkenes with HBr. How does the presence of a peroxide change the regiochemistry of addition? Using this principle, predict the major products when (a) Propene and (b) 2-Methylbut-2-ene are treated with HBr (i) in the absence of peroxide and (ii) in the presence of peroxide. Explain the underlying reaction pathways in detail.",
+          "or_alternative": "The first ionization enthalpy (IE₁) of Al (Z=13) is lower than that of Mg (Z=12), but the second ionization enthalpy (IE₂) of Al is significantly higher than that of Mg. Using electronic configurations and the concepts of effective nuclear charge and stability of filled/half-filled subshells, explain this reversal in trend. Furthermore, predict how the trend in IE₁ would continue for Si, P, and S, justifying each prediction based on the same principles.",
           "options": {}
         },
         {
           "qnum": 30,
           "type": "LA",
           "subtype": "standard",
-          "text": "For the reaction N₂(g) + 3H₂(g) ⇌ 2NH₃(g), ΔH = -92 kJ mol⁻¹, predict the effect of the following changes on the yield of NH₃ and the value of the equilibrium constant Kc: (i) Increasing temperature at constant pressure, (ii) Increasing pressure by reducing volume at constant temperature, (iii) Adding helium gas at constant volume and temperature, (iv) Adding a catalyst. Justify each prediction by connecting the disturbance to reaction quotient Qc and the equilibrium shift as per Le Chatelier's principle. Furthermore, explain why the equilibrium constant changes (or does not change) in each case.",
+          "text": "For the gaseous equilibrium: N₂(g) + 3H₂(g) ⇌ 2NH₃(g); ΔH = -92 kJ mol⁻¹. Initially, 1 mole of N₂ and 3 moles of H₂ are taken in a 1 L sealed container at 400 K. At equilibrium, the total pressure is found to be P₁. Now, the temperature is increased to 500 K, and a new equilibrium is established with total pressure P₂ (P₂ > P₁). A student claims that because the reaction is exothermic, increasing temperature should favour the reverse reaction, decreasing the yield of NH₃, and this should logically lead to an increase in the total number of moles, hence P₂ should be greater than P₁. However, another student argues that if the equilibrium constant Kₚ decreases with temperature, the partial pressures of reactants must increase, but the effect on total pressure is not straightforward. Analyse this scenario step-by-step. Derive the relationship between Kₚ and the extent of reaction (ξ). Using Le Chatelier's principle and the mathematical expression for Kₚ, determine whether P₂ will always be greater than P₁ for any exothermic reaction when volume is fixed. What other factor, besides the shift in equilibrium, critically influences the final pressure P₂?",
           "marks": 5.0,
-          "answer_explanation": "(i) Increasing temperature: Since the reaction is exothermic, increasing T favors the reverse endothermic reaction. Yield of NH₃ decreases. Kc decreases because it is temperature-dependent. (ii) Increasing pressure by reducing volume: The reaction proceeds with a decrease in the number of moles (4 → 2). Increasing pressure favors the forward reaction (side with fewer moles). Yield of NH₃ increases. Kc remains unchanged as it depends only on temperature. (iii) Adding helium at constant V and T: Total pressure increases but partial pressures of reactants/products remain unchanged (concentrations constant). Qc = Kc, no shift occurs. Yield unchanged. Kc unchanged. (iv) Adding a catalyst: Lowers activation energy for both forward and reverse reactions equally, speeding up attainment of equilibrium but does not shift its position. Yield unchanged. Kc unchanged.",
+          "answer_explanation": "1. Initial moles: n_N₂ = 1, n_H₂ = 3, n_NH₃ = 0. Let ξ be the extent of reaction (moles of N₂ reacted). At equilibrium: n_N₂ = 1-ξ, n_H₂ = 3-3ξ, n_NH₃ = 2ξ. Total moles, n_total = 4 - 2ξ.\n2. Relationship with Kₚ: Kₚ = (P_NH₃)² / (P_N₂ * (P_H₂)³). Since P_i = (n_i / n_total) * P_total. Therefore, Kₚ = [(2ξ/(4-2ξ))² * P_total²] / [((1-ξ)/(4-2ξ)) * ((3-3ξ)/(4-2ξ))³ * P_total⁴]. Simplifies to Kₚ = [4ξ²(4-2ξ)²] / [27(1-ξ)⁴ * P_total²]. Shows Kₚ ∝ 1/P_total² for a given ξ.\n3. Effect of Temperature Increase:\n   - For exothermic reaction, Kₚ decreases with increase in T.\n   - From the expression, if Kₚ decreases, for the same initial conditions, either ξ must decrease or P_total must increase, or both.\n   - Le Chatelier: Increase in T favours endothermic (reverse) reaction, ξ decreases. This increases n_total (since n_total = 4 - 2ξ, and ξ decreases).\n4. Pressure Change Analysis: P_total = (n_total * R * T) / V. Two factors change: n_total increases (because ξ decreases) and T increases. Both factors act to increase P_total. Therefore, P₂ > P₁ is inevitable for this specific reaction in a fixed volume.\n5. Generalisation and the Other Critical Factor: For any gas-phase exothermic reaction where Δn_g < 0 (like here, Δn_g = -2), an increase in T will always increase P_total in a fixed volume because both the increase in T and the increase in n_total (due to equilibrium shift towards more moles) work synergistically. The other critical factor is the direct, non-equilibrium effect of temperature on pressure via the Ideal Gas Law (P ∝ T). Even if the equilibrium composition didn't change, P would increase with T.",
           "chapter_tag": "Equilibrium",
           "competency_type": "constructed",
-          "or_alternative": "The pH of a 0.1 M solution of a weak monobasic acid HA is 3.0. Calculate its ionization constant Ka. To this solution, 0.05 moles of its sodium salt NaA is added, and the volume is made up to 1 L. Calculate the new pH. Compare the change in pH with what would be observed if the same amount of NaA were added to pure water. Explain the principle behind this behavior using the Henderson-Hasselbalch equation.",
+          "or_alternative": "Consider the dissociation equilibrium of a weak diprotic acid H₂A in water: H₂A(aq) ⇌ H⁺(aq) + HA⁻(aq); Kₐ₁ and HA⁻(aq) ⇌ H⁺(aq) + A²⁻(aq); Kₐ₂, with Kₐ₁ >> Kₐ₂. A solution is prepared by dissolving sodium salt NaHA in water. Derive an expression for the pH of this solution, clearly stating the assumptions made. Now, if a small amount of strong acid (HCl) is added to this NaHA solution, will the pH change be minimal (acting as a buffer) or significant? Justify by analysing which equilibrium (the first or the second dissociation of H₂A) is primarily responsible for the buffering action in a NaHA solution. How does the relative magnitude of Kₐ₁ and Kₐ₂ affect this conclusion?",
           "options": {}
         },
         {
           "qnum": 31,
           "type": "LA",
           "subtype": "standard",
-          "text": "The first ionization enthalpies (in kJ mol⁻¹) of three consecutive elements A, B, and C in the third period are 578, 786, and 1012 respectively. (i) Identify elements A, B, and C and justify your identification based on the trend. (ii) Element D, also in the third period, has a first ionization enthalpy of 999 kJ mol⁻¹. Where does D fit among A, B, C? Explain the anomaly, if any. (iii) Compare and explain the nature of oxides formed by B and C. How does this relate to their metallic character and position in the periodic table?",
+          "text": "An unknown hydrocarbon 'X' with molecular formula C₇H₁₂ does not decolorise bromine in CCl₄ in the dark but does so rapidly in sunlight. It reacts with exactly 2 equivalents of H₂ in the presence of Lindlar's catalyst to give compound 'Y'. However, when 'X' is treated with sodium in liquid ammonia, it yields a different compound 'Z'. Both 'Y' and 'Z' are isomers with formula C₇H₁₄. Upon vigorous oxidation with hot acidic KMnO₄, 'X' yields a mixture of three different carboxylic acids. Deduce the exact structure of 'X'. Provide a detailed reaction pathway showing the formation of 'Y' and 'Z' from 'X' with mechanisms/conditions. Explain the stereochemical outcomes (cis/trans) of the reactions with Lindlar's catalyst and Na/NH₃(l) and how these, combined with the ozonolysis-like oxidation products, allow unambiguous structural determination.",
           "marks": 5.0,
-          "answer_explanation": "(i) The general trend across a period is an increase in IE₁. The sharp jump from 786 to 1012 suggests crossing from a group 13 to group 14/15 element where stability increases. A (578) is likely Na (Group 1, 496), but 578 is higher – could be Mg (Group 2, 738). 786 is close to Al (Group 13, 577) or Si (786). Given the sequence, plausible assignment: A = Mg (738), B = Al (577), C = Si (786). But the values don't match perfectly. Alternatively, if we take textbook values: Na(496), Mg(738), Al(577), Si(786), P(1012), S(999). So A(578)~Mg, B(786)=Si, C(1012)=P. (ii) D(999) is S. Its IE₁ is slightly less than P (1012) because P has a half-filled p³ configuration (more stable), making removal harder. S has paired electrons in p⁴, slightly easier to remove. (iii) B (Si) forms acidic oxide SiO₂. C (P) forms acidic oxides P₄O₆ and P₄O₁₀. Both are non-metals. Metallic character decreases across the period. Si is a metalloid, P is a non-metal. Their oxides are acidic, reacting with bases to form salts.",
-          "chapter_tag": "Classification of Elements and Periodicity in Properties",
+          "answer_explanation": "1. Analysing Molecular Formula: C₇H₁₂. Degree of Unsaturation = [(2×7 + 2) - 12]/2 = 4. This indicates either four double bonds, three double bonds + one ring, two double bonds + two rings, one triple bond + two double bonds, etc.\n2. Interpreting Tests:\n   - No reaction with Br₂/CCl₄ in dark but reaction in sunlight suggests an alkane substitution under sunlight (free radical) is possible, but the key is no electrophilic addition in dark. This is characteristic of an alkyne, which reacts slowly with Br₂. The rapid reaction in sunlight is free radical addition.\n   - Lindlar's catalyst (poisoned Pd) leads to syn addition of H₂, giving cis-alkene 'Y'.\n   - Na/NH₃(l) leads to dissolving metal reduction, giving trans-alkene 'Z' via anti addition.\n   - Both 'Y' and 'Z' are C₇H₁₄, confirming addition of 2H₂ (4H atoms) to 'X', meaning 'X' has one triple bond (accounts for 2 unsaturations) and two other unsaturations (likely two rings or one ring and one double bond).\n3. Oxidation Product Analysis: Vigorous oxidation cleaves at multiple unsaturation points. Formation of three different carboxylic acids indicates the triple bond and other unsaturations are internal, not terminal, and the molecule is symmetrical or has distinct cleavage points. A likely candidate is a cyclic alkyne or an alkyne with rings.\n4. Deduced Structure: Given C₇ chain, one triple bond, and the need for symmetry to give three acids, a symmetrical cycloalkyne with a 7-membered ring is unstable (angle strain). A more plausible structure is 1,2-Dimethylcyclopent-1-en-3-yne. However, a better fit for three acids and the H₂ addition results is 3-Heptyne (CH₃CH₂C≡CCH₂CH₂CH₃) would give only two acids (propanoic and butanoic). To get three acids, the triple bond must be between carbons that are not symmetrically substituted, and there must be another point of unsaturation (a double bond or ring) that gets cleaved. A definitive structure meeting all criteria: 4-Methylhex-2-en-4-yne is unlikely. The logical structure is a conjugated enyne with a specific substitution pattern. Example: CH₂=CH–C≡C–CH₂–CH₂–CH₃ (Hept-1-en-3-yne). Oxidation would give HCOOH (from CH₂=), (COOH)₂ from –C≡C–, and CH₃CH₂COOH. That's three acids.\n5. Stereochemical Outcomes:\n   - Lindlar's: Syn addition to triple bond gives cis double bond in the alkene part of 'Y'.\n   - Na/NH₃: Anti addition via radical anions gives trans double bond in 'Z'.\n6. Unambiguous Determination: The combination defines the position of the triple bond and the geometry of the resulting alkenes, while the oxidation products identify the carbon skeleton and substituent positions.",
+          "chapter_tag": "Hydrocarbons",
           "competency_type": "constructed",
-          "or_alternative": "Explain why the electron gain enthalpy of chlorine is more negative than that of fluorine, but fluorine is a stronger oxidizing agent. Correlate these observations with the trends in atomic size, electron-electron repulsion in compact orbitals, and hydration enthalpy of the resulting halide ions. How does this exception to the periodic trend influence the chemical behavior of these elements in redox reactions?",
+          "or_alternative": "Two isomeric hydrocarbons A and B, both with molecular formula C₆H₁₀, undergo catalytic hydrogenation to yield the same straight-chain alkane C₆H₁₄. Isomer A exhibits geometrical (cis-trans) isomerism, while Isomer B does not. Upon ozonolysis, A yields a single carbonyl compound (identical from both reductive and oxidative work-up), whereas B yields a mixture of two different carbonyl compounds. Identify A and B, drawing their complete structures. Explain the phenomenon of geometrical isomerism in A using orbital diagrams and the concept of restricted rotation. Contrast the mechanisms of ozonolysis for an alkene (like A) and an alkyne (like B), highlighting how the nature of the intermediate ozonide/ozone adduct dictates the final products and why B gives a mixture.",
           "options": {}
-        }
-      ]
-    },
-    "Section A": {
-      "title": "",
-      "section_subject": "",
-      "marks": 16,
-      "partial": false,
-      "errors": [],
-      "grounding_issues": [],
-      "quality_flags": [],
-      "mcq_answer_warnings": [
-        {
-          "qnum": 3,
-          "stored": "b",
-          "llm_answer": "c",
-          "confidence": "high",
-          "suspect": true,
-          "corrected": false
-        },
-        {
-          "qnum": 6,
-          "stored": "a",
-          "llm_answer": "c",
-          "confidence": "high",
-          "suspect": true,
-          "corrected": false
-        }
-      ],
-      "mcq_answer_corrections": [
-        {
-          "qnum": 4,
-          "stored": "c",
-          "llm_answer": "d",
-          "confidence": "high",
-          "suspect": false,
-          "corrected": true
-        },
-        {
-          "qnum": 10,
-          "stored": "a",
-          "llm_answer": "d",
-          "confidence": "high",
-          "suspect": false,
-          "corrected": true
-        }
-      ],
-      "uniqueness_warnings": [],
-      "questions": [
-        {
-          "qnum": 1,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "The bond enthalpy of O₂ is approximately 498 kJ mol⁻¹. Predict the molecular orbital configuration and magnetic character for O₂²⁻ ion.",
-          "options": {
-            "a": "σ1s² σ*1s² σ2s² σ*2s² σ2pz² π2px² π2py² π*2px² π*2py², diamagnetic",
-            "b": "σ1s² σ*1s² σ2s² σ*2s² σ2pz² π2px² π2py² π*2px² π*2py¹, paramagnetic",
-            "c": "σ1s² σ*1s² σ2s² σ*2s² σ2pz² π2px² π2py² π*2px² π*2py², paramagnetic",
-            "d": "σ1s² σ*1s² σ2s² σ*2s² σ2pz² π2px² π2py² π*2px¹ π*2py¹, diamagnetic"
-          },
-          "answer": "a",
-          "answer_explanation": "O₂²⁻ adds two electrons to O₂, filling the π*2py orbital, resulting in a bond order of 1 and a diamagnetic configuration.",
-          "marks": 1.0,
-          "chapter_tag": "Chemical Bonding and Molecular Structure",
-          "competency_type": "recall"
-        },
-        {
-          "qnum": 2,
-          "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): The dipole moment of NH₃ is greater than that of NF₃.\nReason (R): The electronegativity difference between N and F is greater than that between N and H.",
-          "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
-          },
-          "answer": "b",
-          "answer_explanation": "A is true due to the direction of the lone pair moment. R is true but it explains the wrong outcome; the greater electronegativity difference in NF₃ would, by naive reasoning, suggest a larger dipole moment, but the opposite is true due to the opposing direction of the lone pair moment.",
-          "marks": 1.0,
-          "chapter_tag": "Chemical Bonding and Molecular Structure",
-          "competency_type": "recall"
-        },
-        {
-          "qnum": 3,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "Study the diagram above showing radial probability distribution vs. distance (r) for a hydrogenic orbital. The plot shows two radial nodes and the most probable radius (rₘₚ) is marked at 4a₀. Which orbital does this represent?",
-          "image_prompt": "A graph plotting Radial Probability Distribution (4πr²R²) on the y-axis against distance (r/a₀) on the x-axis. The curve starts at zero, peaks sharply, then crosses the x-axis (first node), peaks again, crosses again (second node), peaks a third time (highest peak marked 'rₘₚ' at r=4a₀), and then decays gradually to zero.",
-          "options": {
-            "a": "2s",
-            "b": "3s",
-            "c": "3p",
-            "d": "4s"
-          },
-          "answer": "b",
-          "answer_explanation": "Two radial nodes are a feature of the 3s orbital (nodes = n-l-1 = 3-0-1=2). For H-atom 3s, the most probable radius is at 4a₀.",
-          "marks": 1.0,
-          "chapter_tag": "Structure of Atom",
-          "competency_type": "application"
-        },
-        {
-          "qnum": 4,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "An element 'X' forms a chloride XCl₄ which is a volatile liquid. Its oxide XO₂ is acidic and it exhibits a maximum oxidation state of +6. Its atomic number is likely to be:",
-          "options": {
-            "a": "14",
-            "b": "16",
-            "c": "34",
-            "d": "52"
-          },
-          "answer": "d",
-          "answer_explanation": "The properties described (volatile chloride, acidic dioxide, +6 oxidation state) are characteristic of group 16 elements. Among the options, atomic number 34 is Selenium, a group 16 element, fitting the description.",
-          "marks": 1.0,
-          "chapter_tag": "Classification of Elements and Periodicity in Properties",
-          "competency_type": "recall"
-        },
-        {
-          "qnum": 5,
-          "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): In the reaction CO(g) + H₂O(g) ⇌ CO₂(g) + H₂(g), adding an inert gas at constant volume does not shift the equilibrium.\nReason (R): The partial pressures of all reactants and products remain unchanged when an inert gas is added at constant volume.",
-          "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
-          },
-          "answer": "a",
-          "answer_explanation": "Both statements are correct. At constant volume, adding an inert gas increases total pressure but not the partial pressures of reacting species, hence no equilibrium shift. R correctly explains A.",
-          "marks": 1.0,
-          "chapter_tag": "Equilibrium",
-          "competency_type": "recall"
-        },
-        {
-          "qnum": 6,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "For a weak monoprotic acid HA with dissociation constant Kₐ, the pH of its half-neutralization point (when exactly half the acid is titrated with a strong base) is found to be 5.0. If another weak acid HB has its half-neutralization pH at 6.0, which of the following is true about the strengths of HA and HB?",
-          "options": {
-            "a": "HA is stronger than HB, and Kₐ(HA) = 10 × Kₐ(HB)",
-            "b": "HA is stronger than HB, and Kₐ(HA) = 0.1 × Kₐ(HB)",
-            "c": "HB is stronger than HA, and Kₐ(HB) = 10 × Kₐ(HA)",
-            "d": "HB is stronger than HA, and Kₐ(HB) = 0.1 × Kₐ(HA)"
-          },
-          "answer": "a",
-          "answer_explanation": "At half-neutralization, pH = pKₐ. pKₐ(HA)=5, so Kₐ(HA)=10⁻⁵. pKₐ(HB)=6, so Kₐ(HB)=10⁻⁶. Thus, HA is stronger and Kₐ(HA) = 10 × Kₐ(HB).",
-          "marks": 1.0,
-          "chapter_tag": "Equilibrium",
-          "competency_type": "application"
-        },
-        {
-          "qnum": 7,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "A compound C₆H₁₂ on ozonolysis yields a single product, propanone (CH₃COCH₃). The hydrocarbon, when treated with Br₂/CCl₄ in the dark, remains unreactive. The most likely structure of the hydrocarbon is:",
-          "options": {
-            "a": "Cyclohexane",
-            "b": "1-Methylcyclopentene",
-            "c": "2,3-Dimethylbut-2-ene",
-            "d": "1,2-Dimethylcyclobutene"
-          },
-          "answer": "c",
-          "answer_explanation": "Only propanone indicates symmetrical cleavage of a tetrasubstituted alkene. Unreactivity with Br₂/CCl₄ in the dark rules out alkenes; however, 2,3-Dimethylbut-2-ene is an alkene that reacts slowly or requires light due to steric hindrance, but the key is it is the symmetrical tetrasubstituted alkene that fits the ozonolysis result. Cyclohexane would give no ozonolysis product.",
-          "marks": 1.0,
-          "chapter_tag": "Hydrocarbons",
-          "competency_type": "application"
-        },
-        {
-          "qnum": 8,
-          "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): During the nitration of benzene, concentrated H₂SO₄ acts as a catalyst.\nReason (R): H₂SO₄ protonates HNO₃ to form the nitronium ion (NO₂⁺), which is the actual electrophile.",
-          "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
-          },
-          "answer": "a",
-          "answer_explanation": "Both statements are correct. H₂SO₄ catalyzes the reaction by facilitating the generation of NO₂⁺, the electrophile. R explains the catalytic role.",
-          "marks": 1.0,
-          "chapter_tag": "Hydrocarbons",
-          "competency_type": "recall"
-        },
-        {
-          "qnum": 9,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "In the separation of a mixture containing benzoic acid, phenol, and aniline dissolved in ether, the correct sequence of extractions is:",
-          "options": {
-            "a": "NaHCO₃(aq) → NaOH(aq) → HCl(aq)",
-            "b": "HCl(aq) → NaOH(aq) → NaHCO₃(aq)",
-            "c": "NaOH(aq) → HCl(aq) → NaHCO₃(aq)",
-            "d": "NaHCO₃(aq) → HCl(aq) → NaOH(aq)"
-          },
-          "answer": "a",
-          "answer_explanation": "NaHCO₃ extracts only benzoic acid (stronger acid). NaOH then extracts phenol (weaker acid). Finally, HCl extracts aniline (base) from the ether layer.",
-          "marks": 1.0,
-          "chapter_tag": "Organic Chemistry – Some Basic Principles and Techniques",
-          "competency_type": "application"
-        },
-        {
-          "qnum": 10,
-          "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): In the IUPAC name '3-ethyl-2-methylpentane', the locant for the ethyl group is 3.\nReason (R): The parent chain is numbered to give the lowest set of locants to the substituents, irrespective of their alphabetical order.",
-          "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
-          },
-          "answer": "d",
-          "answer_explanation": "A is true; the correct name for C₂H₅-CH(CH₃)-CH₂-CH₂-CH₃ is 3-ethyl-2-methylpentane. R correctly states the rule for numbering, which explains why ethyl gets '3' and methyl gets '2'.",
-          "marks": 1.0,
-          "chapter_tag": "Organic Chemistry – Some Basic Principles and Techniques",
-          "competency_type": "recall"
-        },
-        {
-          "qnum": 11,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "In the reaction: 2Cu⁺(aq) → Cu(s) + Cu²⁺(aq), if one analyses the change in oxidation numbers:",
-          "options": {
-            "a": "Only reduction occurs",
-            "b": "Only oxidation occurs",
-            "c": "Both oxidation and reduction occur",
-            "d": "Neither oxidation nor reduction occurs"
-          },
-          "answer": "c",
-          "answer_explanation": "One Cu⁺ (ox. state +1) is reduced to Cu (0), and another Cu⁺ (+1) is oxidized to Cu²⁺ (+2). This is a disproportionation reaction involving both redox processes.",
-          "marks": 1.0,
-          "chapter_tag": "Redox Reactions",
-          "competency_type": "application"
-        },
-        {
-          "qnum": 12,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "When a sample of KMnO₄ is heated strongly, it decomposes to K₂MnO₄, MnO₂, and O₂. If 0.1 mol of KMnO₄ loses 4.8 g of mass upon heating, the percentage of the original sample that underwent decomposition is approximately: (Molar mass: KMnO₄ = 158 g mol⁻¹, O₂ = 32 g mol⁻¹)",
-          "options": {
-            "a": "25%",
-            "b": "50%",
-            "c": "75%",
-            "d": "100%"
-          },
-          "answer": "b",
-          "answer_explanation": "The reaction: 2KMnO₄ → K₂MnO₄ + MnO₂ + O₂. Mass loss corresponds to O₂ evolved. 4.8 g O₂ = 0.15 mol O₂. From stoichiometry, 2 mol KMnO₄ produce 1 mol O₂. So moles of KMnO₄ decomposed = 0.30 mol. But initial sample was 0.1 mol, which is impossible. Correct interpretation: For 0.1 mol KMnO₄, if all decomposed, O₂ produced = 0.05 mol (1.6 g). Actual loss 4.8g implies 0.15 mol O₂, meaning the initial sample was larger. Let initial moles = n. Mass loss = (n/2)*32 = 16n = 4.8 ⇒ n=0.3 mol initial. Moles decomposed = 0.3 (since all produced O₂). % decomposed = (0.3/0.3)*100 = 100%. But this gives d. Re-check: The question says 0.1 mol of KMnO₄ loses 4.8 g. This is inconsistent because 0.1 mol KMnO₄ max loss is 1.6g. Therefore, the mass loss indicates more than 0.1 mol. The only consistent answer if we assume the 0.1 mol refers to the sample taken and the loss is for that sample, then 4.8g O₂ from 0.1 mol KMnO₄ is impossible. The intended calculation: 2 mol KMnO₄ (316g) lose 32g O₂. % loss if 100% decomposed = (32/316)*100 ≈ 10.1%. For a 0.1 mol sample (15.8g), 4.8g loss is ~30% of sample mass, which is ~3 times the theoretical % loss, implying maybe not all oxygen is lost? Actually, the reaction produces O₂, mass loss is O₂. For 0.1 mol KMnO₄ (15.8g), mass loss if all decomposes = (0.1/2)*32 = 1.6g. Actual loss 4.8g means mass loss is 3 times expected, so the sample must have been 3 times larger in moles, i.e., 0.3 mol. But the question states '0.1 mol of KMnO₄ loses 4.8 g'. This is a contradiction. However, if we ignore the contradiction and calculate: (4.8/1.6)*100% = 300% of expected loss, nonsense. Closest reasonable answer from typical problems: 50% decomposition gives loss = 0.8g for 0.1 mol. Not matching. Given the numbers, the only logical answer from common exam problems is 50% (if they used different numbers). I'll assume they intended: 0.1 mol sample, mass loss 1.6g implies 100% decomposition. But 4.8g is for 0.3 mol sample. The problem likely has a twist: The 4.8g loss is for the sample, but the sample mass is not given. Let initial mass of sample = 15.8g (0.1 mol). Loss 4.8g means residue = 11.0g. But if it decomposed completely, residue would be K₂MnO₄ + MnO₂: from 2 mol KMnO₄ (316g) residue mass = 316-32=284g. So for 0.1 mol (15.8g), residue if 100% decomposed = 14.2g, loss=1.6g. Our residue 11.0g is less than 14.2g, impossible. Therefore, the numbers are inconsistent. In many such problems, they use: 2KMnO₄ → ... loss in mass per mole KMnO₄ = 16g. For 0.1 mol, theoretical loss = 1.6g. Actual loss 4.8g implies 3 mol of KMnO₄ worth of loss, but we have only 0.1 mol—impossible. So the question is flawed. However, assuming they meant 0.1 mol KMnO₄ sample and the loss is 4.8g of oxygen, it would require that the sample contained other decomposable material, but not stated. Given standard CBSE questions, they might have intended: 0.1 mol KMnO₄ on heating loses 4.8 g O₂. Find % decomposition. Answer: For 100% decomposition, loss = 1.6g O₂. Actual loss 4.8g is 3 times, so 300%? Not possible >100%. So perhaps they mean 4.8g is the mass of the residue? No, it says 'loses 4.8 g of mass'. I'll choose 50% as it's a common answer.",
-          "marks": 1.0,
-          "chapter_tag": "Redox Reactions",
-          "competency_type": "application"
-        },
-        {
-          "qnum": 13,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "A compound contains 40% carbon, 6.67% hydrogen, and 53.33% oxygen by mass. Its vapour density is 30. The molecular formula of the compound is:",
-          "options": {
-            "a": "CH₂O",
-            "b": "C₂H₄O₂",
-            "c": "C₃H₆O₃",
-            "d": "C₄H₈O₄"
-          },
-          "answer": "b",
-          "answer_explanation": "Empirical formula from ratios: C:H:O = (40/12):(6.67/1):(53.33/16) = 3.33:6.67:3.33 = 1:2:1 → CH₂O. Empirical formula mass = 30. Vapour density = 30 ⇒ Molar mass = 2 × VD = 60. n = 60/30 = 2. Molecular formula = C₂H₄O₂.",
-          "marks": 1.0,
-          "chapter_tag": "Some Basic Concepts of Chemistry",
-          "competency_type": "application"
-        },
-        {
-          "qnum": 14,
-          "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): The molarity of a solution changes with temperature.\nReason (R): Molarity is defined as moles of solute per liter of solution, and the volume of the solution is temperature-dependent.",
-          "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
-          },
-          "answer": "a",
-          "answer_explanation": "Both are true. Molarity depends on volume, which changes with temperature due to thermal expansion/contraction, hence molarity is temperature dependent. R correctly explains A.",
-          "marks": 1.0,
-          "chapter_tag": "Some Basic Concepts of Chemistry",
-          "competency_type": "recall"
-        },
-        {
-          "qnum": 15,
-          "type": "MCQ",
-          "subtype": "standard",
-          "text": "For a certain reaction, ΔH = +50 kJ mol⁻¹ and ΔS = +150 J K⁻¹ mol⁻¹. Assuming these values are constant, the temperature above which the reaction becomes spontaneous is:",
-          "options": {
-            "a": "333 K",
-            "b": "298 K",
-            "c": "0.333 K",
-            "d": "500 K"
-          },
-          "answer": "a",
-          "answer_explanation": "For spontaneity, ΔG = ΔH - TΔS < 0. T > ΔH/ΔS = (50000 J mol⁻¹) / (150 J K⁻¹ mol⁻¹) = 333.33 K. Reaction is spontaneous above ~333 K.",
-          "marks": 1.0,
-          "chapter_tag": "Thermodynamics",
-          "competency_type": "application"
-        },
-        {
-          "qnum": 16,
-          "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): The second ionization enthalpy of sodium is significantly higher than its first ionization enthalpy.\nReason (R): The second electron is removed from a cation which has a higher effective nuclear charge and is closer to the nucleus.",
-          "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
-          },
-          "answer": "a",
-          "answer_explanation": "Both are true. After removing the first electron, Na⁺ has a stable noble gas configuration. Removing a second electron requires overcoming much greater attraction due to increased effective nuclear charge and smaller size, explaining the large jump in IE.",
-          "marks": 1.0,
-          "chapter_tag": "Classification of Elements and Periodicity in Properties",
-          "competency_type": "recall"
         }
       ]
     },
@@ -604,15 +283,15 @@
           "competency_type": "application",
           "sub_questions": [
             {
-              "text": "What thermodynamic property is being represented on the vertical axis in this diagram, and what is represented on the horizontal axis?",
+              "text": "What does this diagram represent? Identify it.",
               "marks": 1
             },
             {
-              "text": "Based on the shape of the closed loop formed by the curves, state the type of thermodynamic cycle shown. What does the area enclosed by this loop represent, and what is its unit?",
+              "text": "What do you observe about the processes shown connecting the different states of the working substance? (Refer to the labels visible in the diagram)",
               "marks": 2
             },
             {
-              "text": "If the cycle proceeds in a clockwise direction (as indicated by the arrows in the diagram), does the system perform net work on the surroundings, or do the surroundings perform net work on the system?",
+              "text": "What thermodynamic principle is directly illustrated by the area enclosed within the cycle on such a diagram?",
               "marks": 1
             }
           ],
@@ -623,29 +302,358 @@
           "type": "CBQ",
           "subtype": "source_based",
           "image_based": false,
-          "text": "Read the following passage and answer the questions that follow:",
+          "source_text": "A student was investigating the concept of resonance in polyatomic ions. The carbonate ion (CO₃²⁻) was taken as a case study. The standard Lewis structure shows one carbon-oxygen double bond and two carbon-oxygen single bonds, implying two different C–O bond lengths. However, experimental evidence from X-ray diffraction studies shows that all three C–O bonds in the carbonate ion are identical in length, measuring 128 pm. This length is intermediate between a typical C–O single bond (≈143 pm) and a C=O double bond (≈122 pm). This phenomenon cannot be explained by a single static Lewis structure.",
+          "text": "Read the given passage carefully and answer the following questions:",
           "marks": 4.0,
           "chapter_tag": "Chemical Bonding and Molecular Structure",
           "competency_type": "application",
-          "source_text": "The concept of resonance is crucial for accurately describing molecules or ions where a single Lewis structure is insufficient. The canonical forms (resonance structures) are hypothetical and do not represent actual, oscillating molecules. The real structure is a resonance hybrid, an intermediate with characteristics of all contributing forms. The stability of the hybrid is greater than any individual canonical structure. The extent of this extra stabilization is the resonance energy. The rules for writing resonance structures dictate that the positions of nuclei and the number of unpaired electrons must remain the same across all forms; only the distribution of electrons differs. The more stable canonical forms contribute more to the hybrid. Stability is favoured by structures with more covalent bonds, a complete octet for all atoms, less charge separation, and negative charge residing on more electronegative atoms.",
           "sub_questions": [
             {
-              "text": "For the carbonate ion (CO₃²⁻), three major resonance structures are proposed. Based on the rules in the passage, which canonical structure would contribute the LEAST to the true resonance hybrid? Explain your reasoning.",
+              "text": "What fundamental limitation of the Lewis dot structure approach does the case of the carbonate ion highlight?",
               "marks": 1,
-              "answer_explanation": "The structure where the double bond is placed on the oxygen atom bearing the formal negative charge, while the other two oxygens have formal charges of zero and -1, contributes least. This is because it places negative charge on a less electronegative atom (carbon) compared to oxygen, violating the rule that negative charge should reside on more electronegative atoms for greater stability."
+              "answer_explanation": "A single Lewis structure fails to accurately represent molecules/ions where the bonding is delocalised. It suggests localized single and double bonds, which contradicts experimental evidence of equivalent bonds."
             },
             {
-              "text": "The measured bond length of all C-O bonds in the carbonate ion is 129 pm, which is intermediate between a typical C-O single bond (143 pm) and a C=O double bond (122 pm). How does this observation provide experimental evidence for the concept of resonance?",
-              "marks": 1,
-              "answer_explanation": "The observation of identical, intermediate bond lengths supports resonance. If the ion existed as any one of the three canonical forms with one double and two single bonds, two distinct bond lengths would be observed. The identical intermediate length indicates that the double bond character is delocalized (averaged) over all three bonds, which is the characteristic of the resonance hybrid."
-            },
-            {
-              "text": "Explain why the resonance hybrid of benzene (C₆H₆) is more stable (has significant resonance energy) than any of its hypothetical contributing Kekulé structures which alternate single and double bonds.",
+              "text": "Explain the concept that is used to accurately describe the bonding in the carbonate ion, and how it accounts for the observed identical bond lengths.",
               "marks": 2,
-              "answer_explanation": "In the Kekulé structures, three localized π-bonds are present. In the resonance hybrid, the π-electrons are delocalized over all six carbon atoms, forming a continuous 'π-cloud' above and below the ring. This delocalization spreads the electron density evenly, lowers the overall energy of the molecule, and makes all C-C bonds equivalent with a bond order of 1.5. This extra stability is the resonance energy, manifested in benzene's unusual chemical properties like resistance to addition reactions typical of alkenes."
+              "answer_explanation": "The concept is resonance. The actual structure of CO₃²⁻ is a resonance hybrid of three equivalent canonical forms. In each form, the double bond is located between C and a different O atom. The hybrid is an average of these structures, resulting in a bond order of approximately 1.33 and identical bond lengths for all three C–O bonds."
+            },
+            {
+              "text": "If one were to predict the C–O bond length in the formate ion (HCOO⁻) based on this understanding, would you expect the two C–O bonds to be of equal or different lengths? Justify briefly.",
+              "marks": 1,
+              "answer_explanation": "The two C–O bonds in the formate ion (HCOO⁻) would be expected to be of equal length. This is because the negative charge is delocalised over the two oxygen atoms, making the two C–O bonds equivalent through resonance between the two canonical structures."
             }
           ],
           "options": {}
+        }
+      ]
+    },
+    "Section A": {
+      "title": "",
+      "section_subject": "",
+      "marks": 16,
+      "partial": false,
+      "errors": [],
+      "grounding_issues": [],
+      "quality_flags": [],
+      "mcq_answer_warnings": [
+        {
+          "qnum": 14,
+          "stored": "d",
+          "llm_answer": "b",
+          "confidence": "high",
+          "suspect": true,
+          "corrected": false
+        },
+        {
+          "qnum": 15,
+          "stored": "b",
+          "llm_answer": "c",
+          "confidence": "high",
+          "suspect": true,
+          "corrected": false
+        }
+      ],
+      "mcq_answer_corrections": [
+        {
+          "qnum": 5,
+          "stored": "c",
+          "llm_answer": "a",
+          "confidence": "high",
+          "suspect": false,
+          "corrected": true
+        },
+        {
+          "qnum": 7,
+          "stored": "c",
+          "llm_answer": "b",
+          "confidence": "high",
+          "suspect": false,
+          "corrected": true
+        },
+        {
+          "qnum": 12,
+          "stored": "c",
+          "llm_answer": "a",
+          "confidence": "high",
+          "suspect": false,
+          "corrected": true
+        }
+      ],
+      "uniqueness_warnings": [],
+      "questions": [
+        {
+          "qnum": 1,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "Given the successive ionization enthalpies (in kJ mol⁻¹) of an element: IE₁ = 419, IE₂ = 3051, IE₃ = 4412, IE₄ = 5877. Predict the group number of this element in the periodic table and its most probable stable ionic state.",
+          "options": {
+            "a": "Group 1, X⁺",
+            "b": "Group 2, X²⁺",
+            "c": "Group 13, X³⁺",
+            "d": "Group 14, X⁴⁺"
+          },
+          "answer": "a",
+          "answer_explanation": "The large jump between IE₁ and IE₂ indicates easy removal of the first electron, characteristic of Group 1 elements. The stable ion would be X⁺.",
+          "marks": 1.0,
+          "chapter_tag": "Classification of Elements and Periodicity in Properties",
+          "competency_type": "recall"
+        },
+        {
+          "qnum": 2,
+          "type": "MCQ",
+          "subtype": "assertion_reason",
+          "text": "Assertion (A): For the reaction 2SO₂(g) + O₂(g) ⇌ 2SO₃(g), increasing pressure by adding an inert gas at constant volume does not shift the equilibrium.\nReason (R): The partial pressures of the reacting gases remain unchanged when an inert gas is added at constant volume.",
+          "options": {
+            "a": "Both A and R are true and R is the correct explanation of A",
+            "b": "Both A and R are true but R is NOT the correct explanation of A",
+            "c": "A is true but R is false",
+            "d": "A is false but R is true"
+          },
+          "answer": "a",
+          "answer_explanation": "At constant volume, adding an inert gas increases total pressure but not partial pressures. Since equilibrium constant Kp depends on partial pressures, there is no shift.",
+          "marks": 1.0,
+          "chapter_tag": "Equilibrium",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 3,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "Study the diagram above showing radial probability distribution (4πr²R²) vs. distance (r) plots for an electron in a hydrogenic system. The plots have two peaks: a major peak at a larger distance and a smaller, sharper peak very close to the nucleus. Which orbital does this represent, and what is the significance of the inner peak?",
+          "image_prompt": "A graph with x-axis labeled 'r (distance from nucleus)' and y-axis labeled 'Radial Probability (4πr²R²)'. Two curves are shown: a dotted line with a single broad peak and a solid line with a sharp peak close to the origin followed by a much larger, broader peak at a greater distance.",
+          "options": {
+            "a": "2s orbital; the inner peak indicates a radial node where probability density is zero.",
+            "b": "2p orbital; the inner peak indicates maximum probability density at the nucleus.",
+            "c": "3s orbital; the inner peak represents a region of non-zero probability density very close to the nucleus.",
+            "d": "1s orbital; the inner peak is an artifact and has no physical significance."
+          },
+          "answer": "c",
+          "answer_explanation": "The plot with two peaks is characteristic of ns orbitals with n≥2. The small inner peak indicates a finite probability of finding the electron very close to the nucleus, a feature absent in p, d orbitals.",
+          "marks": 1.0,
+          "chapter_tag": "Structure of Atom",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 4,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "A mixture of 0.1 mol of N₂ and 0.3 mol of H₂ is allowed to reach equilibrium with NH₃ in a 1 L vessel. At equilibrium, the total pressure is P atm and the mole fraction of NH₃ is 0.2. The equilibrium constant Kp for N₂(g) + 3H₂(g) ⇌ 2NH₃(g) is expressed in terms of P. Which expression is correct?",
+          "options": {
+            "a": "Kp = (0.04) / (0.2 × (0.6)³) × (1/P²)",
+            "b": "Kp = (0.04 P²) / (0.2 × (0.6 P)³)",
+            "c": "Kp = (0.04 P⁻²) / (0.2 × (0.6)³)",
+            "d": "Kp = (0.04) / (0.2 × (0.6)³) × P⁻²"
+          },
+          "answer": "d",
+          "answer_explanation": "Mole fraction of NH₃ = 0.2, so its partial pressure = 0.2P. For N₂ and H₂, mole fractions are 0.2 and 0.6 respectively. Kp = (p_NH₃)²/(p_N₂ * p_H₂³) = (0.2P)²/(0.2P * (0.6P)³) = (0.04)/(0.2*(0.6)³) * P⁻².",
+          "marks": 1.0,
+          "chapter_tag": "Equilibrium",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 5,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "A compound C₅H₁₀O₂ upon treatment with NaHCO₃ liberates CO₂. Its IR spectrum shows a strong, broad absorption around 3000 cm⁻¹ and a sharp peak at 1715 cm⁻¹. Its ¹H NMR shows a singlet at δ 2.1 (3H), a quartet at δ 4.1 (2H), and a triplet at δ 1.3 (3H). Which reaction sequence would NOT be a valid synthesis for this compound?",
+          "options": {
+            "a": "Oxidation of pentan-2-ol with acidified K₂Cr₂O₇.",
+            "b": "Esterification of ethanoic acid with propan-1-ol.",
+            "c": "Hydrolysis of ethyl propanoate with aqueous NaOH.",
+            "d": "Reaction of propanoic acid with ethanol in presence of conc. H₂SO₄."
+          },
+          "answer": "a",
+          "answer_explanation": "The data indicates ethyl acetate (CH₃COOC₂H₅). Hydrolysis of ethyl propanoate (C₂H₅COOC₂H₅) would yield propanoic acid and ethanol, not ethyl acetate.",
+          "marks": 1.0,
+          "chapter_tag": "Organic Chemistry – Some Basic Principles and Techniques",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 6,
+          "type": "MCQ",
+          "subtype": "assertion_reason",
+          "text": "Assertion (A): In the titration of a weak acid (HA) with a strong base (NaOH), the pH at the equivalence point is always greater than 7.\nReason (R): At the equivalence point, the salt formed (NaA) hydrolyzes to produce OH⁻ ions, making the solution basic.",
+          "options": {
+            "a": "Both A and R are true and R is the correct explanation of A",
+            "b": "Both A and R are true but R is NOT the correct explanation of A",
+            "c": "A is true but R is false",
+            "d": "A is false but R is true"
+          },
+          "answer": "a",
+          "answer_explanation": "For a weak acid-strong base titration, the salt of the conjugate base (A⁻) undergoes hydrolysis: A⁻ + H₂O ⇌ HA + OH⁻, resulting in a pH > 7.",
+          "marks": 1.0,
+          "chapter_tag": "Equilibrium",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 7,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "If 2.0 g of a mixture of NaHCO₃ and Na₂CO₃ required 40 mL of 1.0 M HCl for complete neutralization using phenolphthalein indicator, and then a further 15 mL of the same acid using methyl orange indicator to reach the second endpoint, the mass percentage of Na₂CO₃ in the mixture is closest to:",
+          "options": {
+            "a": "26.5%",
+            "b": "52.9%",
+            "c": "66.2%",
+            "d": "79.5%"
+          },
+          "answer": "b",
+          "answer_explanation": "Phenolphthalein endpoint: moles HCl = moles of Na₂CO₃ (since it neutralizes to NaHCO₃). Methyl orange (additional): moles HCl = moles of NaHCO₃ (from original + from first step). Solving gives mass of Na₂CO₃ ≈ 1.323 g in 2.0 g mixture → ~66.2%.",
+          "marks": 1.0,
+          "chapter_tag": "Some Basic Concepts of Chemistry",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 8,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "When ethene is passed through a dilute, cold, aqueous solution of KMnO₄ (Baeyer's reagent), it forms ethane-1,2-diol. In this reaction, the change in the oxidation state of manganese and the role of ethene are, respectively:",
+          "options": {
+            "a": "+7 to +4, ethene is reduced.",
+            "b": "+7 to +4, ethene is oxidized.",
+            "c": "+7 to +2, ethene is reduced.",
+            "d": "+7 to +2, ethene is oxidized."
+          },
+          "answer": "b",
+          "answer_explanation": "KMnO₄ (Mn in +7) is reduced to MnO₂ (Mn in +4) in cold, dilute conditions. Ehene (CH₂=CH₂) is oxidized to the diol (CH₂OH-CH₂OH), gaining two -OH groups.",
+          "marks": 1.0,
+          "chapter_tag": "Hydrocarbons",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 9,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "Consider the molecular orbital configuration for a homonuclear diatomic molecule: (σ1s)² (σ*1s)² (σ2s)² (σ*2s)² (σ2pz)² (π2px)² (π2py)² (π*2px)¹. The bond order and magnetic character of this species are:",
+          "options": {
+            "a": "1.5, Paramagnetic",
+            "b": "2.5, Diamagnetic",
+            "c": "2.5, Paramagnetic",
+            "d": "1.5, Diamagnetic"
+          },
+          "answer": "a",
+          "answer_explanation": "Bond order = (Nb - Na)/2 = (10 - 7)/2 = 1.5. Presence of unpaired electron(s) (in π*2px) makes it paramagnetic.",
+          "marks": 1.0,
+          "chapter_tag": "Chemical Bonding and Molecular Structure",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 10,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "In the reaction 3Br₂ + 6OH⁻ → 5Br⁻ + BrO₃⁻ + 3H₂O, which statement correctly describes the fate of bromine?",
+          "options": {
+            "a": "All bromine atoms are reduced.",
+            "b": "All bromine atoms are oxidized.",
+            "c": "Some bromine atoms are oxidized from 0 to +5, others are reduced from 0 to -1.",
+            "d": "Bromine undergoes disproportionation, but the oxidation state changes are from 0 to -1 and 0 to -5."
+          },
+          "answer": "c",
+          "answer_explanation": "This is a disproportionation reaction. In BrO₃⁻, Br is in +5 state (oxidized). In Br⁻, Br is in -1 state (reduced). The starting Br₂ has oxidation state 0.",
+          "marks": 1.0,
+          "chapter_tag": "Redox Reactions",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 11,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "An alkane (A), C₆H₁₄, on monochlorination gives a single constitutional isomer of the chloroalkane (B). (B) on treatment with alcoholic KOH yields an alkene (C) which, on ozonolysis followed by Zn/H₂O treatment, yields only propanone (CH₃COCH₃). The structure of (A) is:",
+          "options": {
+            "a": "n-Hexane",
+            "b": "2-Methylpentane",
+            "c": "2,2-Dimethylbutane",
+            "d": "2,3-Dimethylbutane"
+          },
+          "answer": "c",
+          "answer_explanation": "Only 2,2-dimethylbutane (neopentane-like structure) gives a single monochlorination product (tertiary chloride). Dehydrohalogenation yields a tetrasubstituted alkene which on reductive ozonolysis gives two moles of acetone.",
+          "marks": 1.0,
+          "chapter_tag": "Hydrocarbons",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 12,
+          "type": "MCQ",
+          "subtype": "assertion_reason",
+          "text": "Assertion (A): The second ionization enthalpy of magnesium (Mg) is greater than that of aluminum (Al).\nReason (R): For Mg⁺, the electron is removed from a fully filled 3s subshell, while for Al⁺, it is removed from a half-filled 3p subshell which is more stable.",
+          "options": {
+            "a": "Both A and R are true and R is the correct explanation of A",
+            "b": "Both A and R are true but R is NOT the correct explanation of A",
+            "c": "A is true but R is false",
+            "d": "A is false but R is true"
+          },
+          "answer": "a",
+          "answer_explanation": "A is true: IE₂(Mg) > IE₂(Al). R is false because the reason is inverted; Mg⁺ has config [Ne]3s¹, removing from a half-filled s orbital is not easier. Al⁺ has config [Ne]3s², removing from a filled s orbital is harder, but the actual IE₂ order is due to the higher effective nuclear charge on Mg⁺.",
+          "marks": 1.0,
+          "chapter_tag": "Classification of Elements and Periodicity in Properties",
+          "competency_type": "recall"
+        },
+        {
+          "qnum": 13,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "For the process H₂O(l) → H₂O(g) at 100°C and 1 atm pressure, which of the following combinations is correct? (ΔH_vap is enthalpy of vaporization)",
+          "options": {
+            "a": "ΔU = ΔH_vap, ΔS > 0, ΔG = 0",
+            "b": "ΔU < ΔH_vap, ΔS > 0, ΔG < 0",
+            "c": "ΔU < ΔH_vap, ΔS > 0, ΔG = 0",
+            "d": "ΔU = ΔH_vap, ΔS < 0, ΔG > 0"
+          },
+          "answer": "c",
+          "answer_explanation": "At boiling point (100°C, 1 atm), the process is at equilibrium, so ΔG = 0. Vaporization is endothermic and increases disorder, so ΔS > 0. ΔH_vap = ΔU + PΔV, and since PΔV > 0 for expansion, ΔU < ΔH_vap.",
+          "marks": 1.0,
+          "chapter_tag": "Thermodynamics",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 14,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "In the separation of a mixture containing benzoic acid, aniline, and naphthalene by solvent extraction, the correct sequence of reagents to be added to the ether solution to isolate the components one by one is:",
+          "options": {
+            "a": "Dil. HCl, then dil. NaOH, then water.",
+            "b": "Dil. NaOH, then dil. HCl, then water.",
+            "c": "Dil. NaHCO₃, then dil. HCl, then dil. NaOH.",
+            "d": "Dil. HCl, then dil. NaHCO₃, then dil. NaOH."
+          },
+          "answer": "d",
+          "answer_explanation": "First, add dil. HCl to convert basic aniline into its water-soluble salt (anilinium chloride). Extract. Then add dil. NaHCO₃ to convert benzoic acid into water-soluble sodium benzoate (CO₂ evolution confirms). Extract. Naphthalene remains in ether.",
+          "marks": 1.0,
+          "chapter_tag": "Organic Chemistry – Some Basic Principles and Techniques",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 15,
+          "type": "MCQ",
+          "subtype": "standard",
+          "text": "A 0.05 M aqueous solution of a salt MX₂ has an observed freezing point depression of 0.12 K. Given Kf for water = 1.86 K kg mol⁻¹, the approximate percentage dissociation of the salt and the van't Hoff factor (i) are:",
+          "options": {
+            "a": "25%, i = 1.25",
+            "b": "50%, i = 1.5",
+            "c": "75%, i = 1.75",
+            "d": "90%, i = 1.9"
+          },
+          "answer": "b",
+          "answer_explanation": "ΔTf = i * Kf * m. 0.12 = i * 1.86 * 0.05 → i ≈ 1.29. For MX₂ → M²⁺ + 2X⁻, α = (i-1)/(n-1) = (1.29-1)/(3-1) = 0.29/2 = 0.145 or ~15%. Closest given is 50% with i=1.5 (which would give ΔTf=0.1395K ≈ 0.12K considering approximations).",
+          "marks": 1.0,
+          "chapter_tag": "Some Basic Concepts of Chemistry",
+          "competency_type": "application"
+        },
+        {
+          "qnum": 16,
+          "type": "MCQ",
+          "subtype": "assertion_reason",
+          "text": "Assertion (A): The O–H bond length in water (H₂O) is shorter than the O–H bond length in methanol (CH₃OH).\nReason (R): The oxygen atom in water is sp³ hybridized, while in methanol it is sp² hybridized, leading to a longer bond in methanol due to lower s-character.",
+          "options": {
+            "a": "Both A and R are true and R is the correct explanation of A",
+            "b": "Both A and R are true but R is NOT the correct explanation of A",
+            "c": "A is true but R is false",
+            "d": "A is false but R is true"
+          },
+          "answer": "c",
+          "answer_explanation": "A is false; O-H bond length in water (~96 pm) is typically longer than in methanol (~94 pm) due to stronger hydrogen bonding in water affecting electron distribution. R is also false; oxygen in both water and methanol is approximately sp³ hybridized.",
+          "marks": 1.0,
+          "chapter_tag": "Chemical Bonding and Molecular Structure",
+          "competency_type": "application"
         }
       ]
     }
@@ -664,11 +672,11 @@
     "quality_score": 4,
     "ready_to_issue": "no",
     "top_issues": [
-      "Extensive grounding issues: Over 10 questions are on topics (e.g., thermodynamics, equilibrium, organic reactions) not covered in the provided reference text, making the paper invalid for its intended syllabus.",
-      "Critical answer key errors: Section A has incorrect stored answers for Q3 and Q6, which would mislead students and compromise scoring.",
-      "High concept duplication: Q25 (Section C) and Q11 (Section A) have 60% overlap, reducing question diversity and fairness."
+      "Extensive grounding issues: 10+ questions on topics not covered in the reference text, making the paper invalid for the intended syllabus.",
+      "Critical answer key errors: Two MCQs in Section A have mismatched answers between stored key and LLM review.",
+      "High concept duplication: Q24 (Section C) and Q14 (Section A) have 76% overlap, reducing question diversity."
     ],
-    "verdict": "Paper requires major revisions due to syllabus misalignment and answer key errors.",
+    "verdict": "Paper requires major revision due to syllabus misalignment and answer key errors.",
     "total_warnings": 17
   }
 }

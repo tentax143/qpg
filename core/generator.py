@@ -2246,7 +2246,7 @@ def _add_passage_box(doc, text, script_font=None):
     cell.text = ""
     para = cell.paragraphs[0]
     run = para.add_run(text)
-    run.font.size = Pt(10.5)
+    run.font.size = Pt(14)
     if script_font:
         set_tamil_font(run, script_font)
     else:
@@ -2272,7 +2272,7 @@ def _add_or_separator(doc):
     p = doc.add_paragraph()
     r = p.add_run("OR")
     r.bold = True
-    r.font.size = Pt(11)
+    r.font.size = Pt(14)
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     pPr = p._element.get_or_add_pPr()
@@ -2287,57 +2287,74 @@ def _add_or_separator(doc):
     pPr.append(pBdr)
 
 
-def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, script_font=None):
-    """Add a question paragraph with marks right-aligned if present."""
+def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, script_font=None,
+                             right_tab_twips=8280):
+    """Add a question paragraph.
+
+    The leading number/label ("8.", "(i)") is set in a HANGING INDENT so it sits alone in a
+    narrow left column and every line of the question body — the first line and all wrapped
+    lines — aligns at a common position to the RIGHT of the number (no continuation line ever
+    wraps back underneath the number). Marks, if present, are right-aligned to
+    ``right_tab_twips`` (the real text-area width, so they sit flush at the right margin)."""
     match = marks_pattern.search(text)
     marks_str = f"[{match.group(1)}]" if match else ""
     clean_text = marks_pattern.sub("", text).rstrip()
 
     p = doc.add_paragraph()
-    if left_indent:
-        p.paragraph_format.left_indent = left_indent
     p.paragraph_format.space_after = Pt(6)
     p.paragraph_format.space_before = Pt(2)
 
     def _qrun(run):
-        run.font.size = Pt(11)
+        run.font.size = Pt(14)
         if script_font:
             set_tamil_font(run, script_font)
         else:
             run.font.name = 'Times New Roman'
 
-    # Split leading number/label (e.g. "1. ", "(i) ", "Q3. ") to bold it separately
+    # Split the leading number/label ("1. ", "(i) ", "Q3. ") so we can bold it and hang-indent
+    # the body. rstrip the captured whitespace — a tab now separates the number from the text.
     num_match = re.match(r'^(\([a-zA-Z0-9]+\)\s*|[ivxIVX]+\.\s*|[0-9]+[.)]\s*)', clean_text)
     if num_match:
-        num_part = num_match.group(1)
-        rest_part = clean_text[len(num_part):]
+        num_part = num_match.group(1).rstrip()
+        rest_part = clean_text[num_match.end():]
     else:
         num_part = ""
         rest_part = clean_text
 
-    if marks_str:
-        pPr = p._element.get_or_add_pPr()
-        tabs = OxmlElement('w:tabs')
-        tab = OxmlElement('w:tab')
-        tab.set(qn('w:val'), 'right')
-        tab.set(qn('w:pos'), '8280')
-        tabs.append(tab)
-        pPr.append(tabs)
+    base_inches = left_indent.inches if left_indent else 0.0
+    HANG_IN = 0.35   # width of the number column / hanging indent
 
-        if num_part:
-            r_num = p.add_run(num_part)
-            r_num.bold = True
-            _qrun(r_num)
-        _add_math_runs(p, rest_part, _qrun)
+    if num_part:
+        # Hanging indent: number at base_inches, body text (+ every wrap) at base_inches + HANG.
+        p.paragraph_format.left_indent = Inches(base_inches + HANG_IN)
+        p.paragraph_format.first_line_indent = Inches(-HANG_IN)
+    elif left_indent:
+        p.paragraph_format.left_indent = left_indent
+
+    # Tab stops: a LEFT tab at the hang position aligns the body text after the number; a RIGHT
+    # tab at the margin right-aligns the marks. Use python-docx's API (not a manual append) so
+    # the <w:tabs> element is inserted at its schema-correct position in <w:pPr> — appending it
+    # after <w:ind> produces invalid OOXML that Word silently mishandles (the left tab is
+    # dropped, throwing the first line far to the right).
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    from docx.shared import Twips
+    tstops = p.paragraph_format.tab_stops
+    if num_part:
+        tstops.add_tab_stop(Twips(int(round((base_inches + HANG_IN) * 1440))), WD_TAB_ALIGNMENT.LEFT)
+    if marks_str:
+        tstops.add_tab_stop(Twips(int(right_tab_twips)), WD_TAB_ALIGNMENT.RIGHT)
+
+    if num_part:
+        r_num = p.add_run(f"{num_part}\t")   # number + tab → body text snaps to the hang column
+        r_num.bold = True
+        _qrun(r_num)
+    _add_math_runs(p, rest_part, _qrun)
+    if marks_str:
         r_marks = p.add_run(f"\t{marks_str}")
         r_marks.bold = True
         _qrun(r_marks)
-    else:
-        if num_part:
-            r_num = p.add_run(num_part)
-            r_num.bold = True
-            _qrun(r_num)
-        _add_math_runs(p, rest_part, _qrun)
+
+    return p
 
     return p
 
@@ -2438,6 +2455,27 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
     section.left_margin = Inches(0.75)
     section.right_margin = Inches(0.75)
 
+    # Right-tab position for per-question marks = the actual text-area width, so marks sit flush
+    # at the right margin (the old fixed 5.75" left them floating ~1.25" short of the edge).
+    # OOXML tab positions are twips; 635 EMU = 1 twip. Small epsilon keeps them off the very edge.
+    try:
+        _usable_emu = int(section.page_width) - int(section.left_margin) - int(section.right_margin)
+        marks_tab_twips = max(1440, int(_usable_emu / 635) - 12)
+    except Exception:
+        marks_tab_twips = 8280
+
+    # Body typography: Times New Roman, 14pt, 1.15 line spacing. Applied to the Normal style so
+    # EVERY paragraph inherits the 1.15 spacing (the code doesn't set line_spacing per paragraph);
+    # the explicit run sizes below set 14pt directly. For Tamil/Hindi keep the script font.
+    try:
+        _normal = doc.styles['Normal']
+        _normal.font.size = Pt(14)
+        _normal.paragraph_format.line_spacing = 1.15
+        if not is_tamil:
+            _normal.font.name = 'Times New Roman'
+    except Exception as _e:
+        print(f"[DOCX] Normal-style typography setup failed: {_e}")
+
     # Restrict the school header to the first page only.
     # In OOXML: add <w:titlePg/> to sectPr (enables different first-page header),
     # then change any type="default" headerReference to type="first" so pages 2+
@@ -2464,7 +2502,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
             p = doc.add_paragraph()
             r = p.add_run(text_str)
             r.bold = True
-            r.font.size = Pt(12)
+            r.font.size = Pt(16)   # section header — larger than the 14pt body
             if not is_tamil:
                 r.font.name = 'Times New Roman'
             if is_tamil:
@@ -2485,7 +2523,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
             p = doc.add_paragraph()
             r = p.add_run(text_str)
             r.bold = True
-            r.font.size = Pt(11)
+            r.font.size = Pt(14)
             if not is_tamil:
                 r.font.name = 'Times New Roman'
             if is_tamil:
@@ -2495,7 +2533,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
         elif typ == "instruction":
             p = doc.add_paragraph()
             r = p.add_run(text_str)
-            r.font.size = Pt(11)
+            r.font.size = Pt(14)
             r.italic = True
             if not is_tamil:
                 r.font.name = 'Times New Roman'
@@ -2504,16 +2542,17 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
             p.paragraph_format.space_after = Pt(4)
         elif typ in ("q", "subq"):
             indent = Inches(0.25) if typ == "subq" else None
-            _add_question_with_marks(doc, text_str, marks_pattern, indent, script_font)
+            _add_question_with_marks(doc, text_str, marks_pattern, indent, script_font,
+                                     right_tab_twips=marks_tab_twips)
         elif typ == "opts":
             p = doc.add_paragraph()
             r = p.add_run(text_str)
-            r.font.size = Pt(11)
+            r.font.size = Pt(14)
             if not is_tamil:
                 r.font.name = 'Times New Roman'
             if is_tamil:
                 set_tamil_font(r, script_font)
-            p.paragraph_format.left_indent = Inches(0.25)
+            p.paragraph_format.left_indent = Inches(0.6)   # options nest INSIDE the 0.35in question-body column
             p.paragraph_format.space_after = Pt(4)
         elif typ == "opts_block":
             try:
@@ -2524,7 +2563,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
                 step = 2 if two_col else 1
                 for row_start in range(0, len(opts), step):
                     p = doc.add_paragraph()
-                    p.paragraph_format.left_indent = Inches(0.25)
+                    p.paragraph_format.left_indent = Inches(0.6)   # options nest INSIDE the 0.35in question-body column
                     p.paragraph_format.space_after = Pt(2)
                     p.paragraph_format.space_before = Pt(0)
                     if two_col:
@@ -2537,7 +2576,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
                         pPr.append(tabs)
                     opt1 = opts[row_start]
                     r1 = p.add_run(opt1)
-                    r1.font.size = Pt(11)
+                    r1.font.size = Pt(14)
                     if not is_tamil:
                         r1.font.name = 'Times New Roman'
                     if is_tamil:
@@ -2545,7 +2584,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
                     if two_col and row_start + 1 < len(opts):
                         opt2 = opts[row_start + 1]
                         r2 = p.add_run(f"\t{opt2}")
-                        r2.font.size = Pt(11)
+                        r2.font.size = Pt(14)
                         if not is_tamil:
                             r2.font.name = 'Times New Roman'
                         if is_tamil:
@@ -2881,9 +2920,17 @@ def pattern_sections_to_blueprint_dict(pattern):
             or 0
         )
 
-        # CBSE-seeded sections store type in 'title' ("MCQ + Assertion-Reason");
-        # parse it into a list when 'question_types' is empty/absent.
+        # Resolve the section's question type(s), tolerating every shape a pattern can carry:
+        #   1. 'question_types' — the canonical plural list
+        #   2. 'question_type'  — singular string/list (the shape the generate-page form saves);
+        #      without this fallback the type is LOST, leaving the section unconstrained so the
+        #      model freely mixes types (MCQs landing in a Short-Answer section, etc.)
+        #   3. 'title'          — CBSE-seeded sections store the type there ("MCQ + Assertion-Reason")
         qt = section.get('question_types') or []
+        if not qt:
+            single = section.get('question_type')
+            if single:
+                qt = [single] if isinstance(single, str) else list(single)
         if not qt and title:
             qt = [t.strip() for t in re.split(r'[,+&/]|\band\b', title) if t.strip()]
 

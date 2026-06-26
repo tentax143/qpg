@@ -12,6 +12,7 @@ import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import CustomSelect from '@/components/CustomSelect';
+import ChapterMultiSelect from '@/components/ChapterMultiSelect';
 import { subjectOptions } from '@/lib/subjects';
 
 export default function EditMaterialPage() {
@@ -23,6 +24,7 @@ export default function EditMaterialPage() {
     unit: '',
     title: '',
     type: 'textbook',
+    chapters: [],
   });
   const [currentFile, setCurrentFile] = useState(null);
   const [newFile, setNewFile] = useState(null);
@@ -46,6 +48,7 @@ export default function EditMaterialPage() {
         unit: data.unit || '',
         title: data.title,
         type: data.type,
+        chapters: (data.metadata && Array.isArray(data.metadata.chapters)) ? data.metadata.chapters : [],
       });
       setCurrentFile(data.file);
     } catch (err) {
@@ -66,19 +69,27 @@ export default function EditMaterialPage() {
     setSuccess(null);
 
     try {
+      const isTextbook = formData.type === 'textbook';
+      if (!isTextbook && formData.chapters.length === 0) {
+        setError('Select at least one chapter this material relates to.');
+        setSaving(false);
+        return;
+      }
+
       const data = new FormData();
       data.append('class_name', formData.class_name);
       data.append('subject', formData.subject);
-      data.append('unit', formData.unit);
+      data.append('unit', isTextbook ? formData.unit : (formData.chapters[0] || ''));
       data.append('title', formData.title);
       data.append('type', formData.type);
-      
+      if (!isTextbook) data.append('chapters', JSON.stringify(formData.chapters));
+
       if (newFile) {
         data.append('file', newFile);
       }
 
       await apiClient.patch(`/materials/${id}/`, data);
-      setSuccess('Material updated successfully!');
+      setSuccess(isTextbook ? 'Material updated successfully!' : 'Material updated — re-indexing its chapters in the background.');
       
       setTimeout(() => {
         router.push('/materials');
@@ -151,19 +162,32 @@ export default function EditMaterialPage() {
                 className="space-y-2"
               />
 
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-[10px] font-black text-gray-700 uppercase tracking-widest ml-1">
-                  <Info size={14} className="text-[#1e293b]" /> Lesson / Chapter Name
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={formData.unit}
-                  onChange={(e) => handleFieldChange('unit', e.target.value)}
-                  placeholder="e.g. Unit 1: Introduction"
-                  className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-4 focus:ring-[#1e293b]/5 focus:border-[#1e293b] outline-none transition-all font-bold text-gray-700"
-                />
-              </div>
+              {formData.type === 'textbook' ? (
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-[10px] font-black text-gray-700 uppercase tracking-widest ml-1">
+                    <Info size={14} className="text-[#1e293b]" /> Lesson / Chapter Name
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={formData.unit}
+                    onChange={(e) => handleFieldChange('unit', e.target.value)}
+                    placeholder="e.g. Unit 1: Introduction"
+                    className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-4 focus:ring-[#1e293b]/5 focus:border-[#1e293b] outline-none transition-all font-bold text-gray-700"
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <ChapterMultiSelect
+                    classValue={formData.class_name}
+                    subject={formData.subject}
+                    value={formData.chapters}
+                    onChange={(arr) => handleFieldChange('chapters', arr)}
+                    label="Related Chapter(s)"
+                  />
+                  <p className="text-[10px] text-gray-400 font-bold ml-1">Changing these re-indexes the file for the new chapters.</p>
+                </div>
+              )}
 
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-[10px] font-black text-gray-700 uppercase tracking-widest ml-1">

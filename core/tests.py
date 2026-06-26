@@ -19,6 +19,7 @@ from django.contrib.auth.models import User
 from core.models import ExamPattern, School, ExamBlueprint
 from core import section_generator as sg
 from core import generator as sg_gen
+from core import paper_edit as pe
 from api.views import _scoped_blueprints
 
 
@@ -533,6 +534,215 @@ class V5L2DuplicateReplacementTypeTest(TestCase):
         self.assertEqual(out[1]["type"], "MCQ")
         self.assertIn("radix", out[1]["text"])               # replacement applied
         self.assertEqual(remaining, [])                       # warning resolved
+
+
+class SingularQuestionTypeTest(TestCase):
+    """Patterns saved by the generate-page form store the type as singular 'question_type'
+    (not the plural 'question_types' list). It must still reach the work order — otherwise the
+    section carries no type and the model mixes MCQs into a Short-Answer section, etc."""
+
+    SECTIONS = [
+        {"id": "A", "name": "Section A", "marks": 10, "question_type": "MCQ",
+         "questions_count": 10, "marks_per_question": 1},
+        {"id": "B", "name": "Section B", "marks": 8, "question_type": "Short Answer",
+         "questions_count": 4, "marks_per_question": 2},
+        {"id": "C", "name": "Section C", "marks": 4, "question_type": "Long Answer",
+         "questions_count": 1, "marks_per_question": 4},
+    ]
+
+    def test_blueprint_maps_singular_question_type(self):
+        pattern = ExamPattern(name="singular", sections=self.SECTIONS)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        self.assertEqual(bp["Section A"]["question_types"], ["MCQ"])
+        self.assertEqual(bp["Section B"]["question_types"], ["Short Answer"])
+        self.assertEqual(bp["Section C"]["question_types"], ["Long Answer"])
+
+    def test_work_orders_carry_type_and_enforce_it(self):
+        pattern = ExamPattern(name="singular2", sections=self.SECTIONS)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        wos = sg.build_work_orders(bp, pattern, {}, "medium", "5", "Mathematics", ["Patterns"])
+        by_name = {w.section_name: w for w in wos}
+        self.assertEqual(by_name["Section A"].question_types, ["MCQ"])
+        self.assertEqual(by_name["Section B"].question_types, ["Short Answer"])
+        # The type constraint is now actually enforced: an MCQ in the SA section is rejected.
+        mcq = {"qnum": 1, "type": "MCQ", "subtype": "standard", "text": "Pick", "marks": 2,
+               "options": {"a": "1", "b": "2", "c": "3", "d": "4"}, "answer": "a"}
+        errs = sg.validate_section_output({"questions": [mcq]}, by_name["Section B"])
+        self.assertTrue(any("Wrong question type" in e for e in errs), errs)
+
+    def test_build_work_orders_reads_singular_when_blueprint_lacks_plural(self):
+        # A blueprint dict carrying only the singular field must still yield a typed work order.
+        bp = {"Section B": {"id": "B", "name": "Section B", "marks": 8,
+                            "question_type": "Short Answer", "questions_count": 4,
+                            "marks_per_question": 2}}
+        wos = sg.build_work_orders(bp, None, {}, "medium", "5", "Mathematics", ["Patterns"])
+        self.assertEqual(wos[0].question_types, ["Short Answer"])
+
+
+class PaperEditOperationsTest(TestCase):
+    """The operation-based AI editor: move/delete/swap/set/add/edit + renumber. These are the
+    deterministic guts of 'full control' — verified without any model call via a fake generator."""
+
+    def _paper(self):
+        return {
+            "Section A": {"section_name": "Section A", "section_id": "A", "questions": [
+                {"qnum": 1, "type": "MCQ", "marks": 1, "text": "A-one",
+                 "options": {"a": "1", "b": "2", "c": "3", "d": "4"}, "answer": "a"},
+                {"qnum": 2, "type": "MCQ", "marks": 1, "text": "A-two",
+                 "options": {"a": "1", "b": "2", "c": "3", "d": "4"}, "answer": "b"},
+            ]},
+            "Section B": {"section_name": "Section B", "section_id": "B", "questions": [
+                {"qnum": 3, "type": "SA", "marks": 3, "text": "B-one", "answer_explanation": "…"},
+                {"qnum": 4, "type": "SA", "marks": 3, "text": "B-two", "answer_explanation": "…"},
+            ]},
+        }
+
+    def _qtexts(self, pd, section):
+        return [q["text"] for q in pd[section]["questions"]]
+
+    def test_move_question_across_sections(self):
+        pd, applied, notes = pe.apply_operations(
+            self._paper(), [{"action": "move", "qnum": 1, "to_section": "Section B"}])
+        self.assertNotIn("A-one", self._qtexts(pd, "Section A"))
+        self.assertIn("A-one", self._qtexts(pd, "Section B"))
+        self.assertTrue(any("moved" in a for a in applied))
+
+    def test_move_resolves_section_by_letter(self):
+        # "Section B" target given simply as "B" must still resolve via section_id.
+        pd, applied, _ = pe.apply_operations(
+            self._paper(), [{"action": "move", "qnum": 1, "to_section": "B"}])
+        self.assertIn("A-one", self._qtexts(pd, "Section B"))
+
+    def test_delete_question(self):
+        pd, applied, _ = pe.apply_operations(self._paper(), [{"action": "delete", "qnum": 2}])
+        self.assertNotIn("A-two", self._qtexts(pd, "Section A"))
+        self.assertEqual(len(pd["Section A"]["questions"]), 1)
+
+    def test_set_marks_field(self):
+        pd, applied, _ = pe.apply_operations(
+            self._paper(), [{"action": "set", "qnum": 3, "fields": {"marks": 5}}])
+        self.assertEqual(pd["Section B"]["questions"][0]["marks"], 5)
+
+    def test_set_flat_form(self):
+        # Tolerate the flat shape {"action":"set","qnum":3,"marks":5} (no nested "fields").
+        pd, _a, _n = pe.apply_operations(self._paper(), [{"action": "set", "qnum": 3, "marks": 5}])
+        self.assertEqual(pd["Section B"]["questions"][0]["marks"], 5)
+
+    def test_swap_questions(self):
+        pd, applied, _ = pe.apply_operations(
+            self._paper(), [{"action": "swap", "qnum_a": 1, "qnum_b": 2}])
+        self.assertEqual(self._qtexts(pd, "Section A"), ["A-two", "A-one"])
+
+    def test_renumber_is_sequential_after_structural_change(self):
+        pd, _a, _n = pe.apply_operations(
+            self._paper(), [{"action": "move", "qnum": 1, "to_section": "Section B"}])
+        nums = [q["qnum"] for _n, s in pe.iter_sections(pd) for q in s["questions"]]
+        self.assertEqual(nums, [1, 2, 3, 4])
+
+    def test_add_uses_generator_and_inserts(self):
+        def fake_gen(kind, ctx):
+            self.assertEqual(kind, "add")
+            return {"type": ctx["type"], "marks": ctx["marks"], "text": "fresh added Q",
+                    "answer_explanation": "…"}
+        pd, applied, _ = pe.apply_operations(
+            self._paper(),
+            [{"action": "add", "section": "Section B", "type": "SA", "marks": 3,
+              "instruction": "on fractions"}],
+            generate_fn=fake_gen)
+        self.assertIn("fresh added Q", self._qtexts(pd, "Section B"))
+        self.assertEqual(len(pd["Section B"]["questions"]), 3)
+
+    def test_edit_replaces_text_and_preserves_identity(self):
+        def fake_gen(kind, ctx):
+            return {"text": "reworded", "type": ctx["question"]["type"]}
+        pd, applied, _ = pe.apply_operations(
+            self._paper(), [{"action": "edit", "qnum": 1, "instruction": "reword"}],
+            generate_fn=fake_gen)
+        q1 = pd["Section A"]["questions"][0]
+        self.assertEqual(q1["text"], "reworded")
+        self.assertEqual(q1["marks"], 1)          # marks preserved on a plain edit
+
+    def test_unknown_and_missing_ops_are_noted_not_fatal(self):
+        pd, applied, notes = pe.apply_operations(self._paper(), [
+            {"action": "frobnicate", "qnum": 1},        # unknown
+            {"action": "delete", "qnum": 999},           # missing target
+            {"action": "delete", "qnum": 1},             # valid — must still apply
+        ])
+        self.assertEqual(applied, ["deleted Q1"])
+        self.assertEqual(len(notes), 2)
+        self.assertNotIn("A-one", self._qtexts(pd, "Section A"))
+
+    def test_multiple_ops_apply_in_order(self):
+        pd, applied, _ = pe.apply_operations(self._paper(), [
+            {"action": "delete", "qnum": 2},
+            {"action": "move", "qnum": 3, "to_section": "Section A"},
+            {"action": "set", "qnum": 4, "fields": {"marks": 4}},
+        ])
+        self.assertIn("B-one", self._qtexts(pd, "Section A"))
+        self.assertEqual(len(applied), 3)
+        # renumbered 1..N with no gaps
+        nums = [q["qnum"] for _n, s in pe.iter_sections(pd) for q in s["questions"]]
+        self.assertEqual(nums, list(range(1, len(nums) + 1)))
+
+
+class MarksRightAlignTest(TestCase):
+    """Per-question marks must snap to a right-aligned tab at the supplied text-area width, so
+    they sit flush at the right margin (not the old fixed 5.75\")."""
+
+    def _render(self, text, tab_twips, left_indent=None):
+        import re as _re
+        from docx import Document
+        from docx.shared import Inches
+        from lxml import etree
+        from core.generator import _add_question_with_marks
+        marks_pattern = _re.compile(r"\s*\[(\d+)\s*marks?\]", _re.IGNORECASE)
+        li = Inches(left_indent) if left_indent is not None else None
+        p = _add_question_with_marks(Document(), text, marks_pattern,
+                                     left_indent=li, right_tab_twips=tab_twips)
+        return p, etree.tostring(p._element, encoding="unicode")
+
+    def test_marks_use_supplied_right_tab(self):
+        p, xml = self._render("1. What is 2+2? [2 marks]", 10068)
+        self.assertIn('val="right"', xml)            # right-aligned tab stop
+        self.assertIn('pos="10068"', xml)            # at the supplied text-area width
+        self.assertIn("\t[2]", p.text)               # marks rendered number-only after a tab
+
+    def test_marks_tab_tracks_position(self):
+        _p, xml = self._render("3. Define osmosis. [3 marks]", 9750)
+        self.assertIn('pos="9750"', xml)
+        self.assertNotIn('pos="8280"', xml)          # no longer the hardcoded fallback
+
+    def test_no_right_tab_when_no_marks(self):
+        _p, xml = self._render("1. A plain question with no marks tag.", 10068)
+        self.assertNotIn('val="right"', xml)
+
+    def test_numbered_question_gets_hanging_indent(self):
+        # The number is isolated in a hanging-indent column; body text snaps to it via a tab,
+        # so wrapped lines align under the text — not under the number.
+        p, xml = self._render("8. A long question that wraps onto a second line. [1 marks]", 10068)
+        self.assertIn('hanging', xml)                # hanging indent applied
+        self.assertIn('val="left"', xml)             # left tab stop at the hang column
+        self.assertIn('pos="504"', xml)              # 0.35in * 1440 = 504 twips
+        self.assertIn("8.\t", p.text)                # number + tab before the body text
+
+    def test_subquestion_hang_nests_under_its_indent(self):
+        # A sub-question indented 0.25" hangs relative to that → body column at 0.25+0.35=0.6".
+        _p, xml = self._render("(ii) A wrapped sub-question. [2 marks]", 10068, left_indent=0.25)
+        self.assertIn('hanging', xml)
+        self.assertIn('pos="864"', xml)              # (0.25+0.35)*1440 = 864 twips
+
+    def test_unnumbered_line_has_no_hanging_indent(self):
+        _p, xml = self._render("A passage lead-in with no leading number.", 10068)
+        self.assertNotIn('hanging', xml)
+
+    def test_tabs_precede_ind_in_pPr(self):
+        # Regression: <w:tabs> MUST come before <w:ind> in <w:pPr> (OOXML CT_PPr order). When it
+        # was appended last, Word dropped the left tab and the first body line shot far right.
+        p, _xml = self._render("8. A wrapped question. [1 marks]", 10068)
+        order = [c.tag.split('}')[-1] for c in p._element.get_or_add_pPr()]
+        self.assertIn('tabs', order)
+        self.assertIn('ind', order)
+        self.assertLess(order.index('tabs'), order.index('ind'))
 
 
 class ChapterAllocationTest(TestCase):
@@ -1266,3 +1476,119 @@ class MissingCountDerivationTest(TestCase):
         self.assertEqual(counts["Ver"], 6)     # B: 12 / 2
         self.assertEqual(counts["Sho"], 6)     # C: 18 / 3
         self.assertEqual(counts["Lon"], 6)     # D: 30 / 5
+
+
+class ParseChapterListTest(TestCase):
+    """The upload view accepts the 'chapters' field as a JSON array (what the form sends), a
+    single string, or a repeated form field — all normalise to a de-duplicated name list."""
+
+    def setUp(self):
+        from api.views import _parse_chapter_list
+        self.parse = _parse_chapter_list
+
+    def test_json_array_string(self):
+        self.assertEqual(self.parse('["Light", "Electricity"]'), ["Light", "Electricity"])
+
+    def test_single_plain_string(self):
+        self.assertEqual(self.parse("Light"), ["Light"])
+
+    def test_python_list(self):
+        self.assertEqual(self.parse(["Light", "Electricity"]), ["Light", "Electricity"])
+
+    def test_dedupes_case_insensitively_preserving_order(self):
+        self.assertEqual(self.parse('["Light", "light", "Sound"]'), ["Light", "Sound"])
+
+    def test_empty_and_none(self):
+        self.assertEqual(self.parse(None), [])
+        self.assertEqual(self.parse(""), [])
+        self.assertEqual(self.parse("[]"), [])
+
+    def test_malformed_json_falls_back_to_literal(self):
+        self.assertEqual(self.parse("[oops"), ["[oops"])
+
+
+class _FakePage:
+    def __init__(self, text):
+        self._t = text
+    def extract_text(self):
+        return self._t
+
+
+class _FakeReader:
+    def __init__(self, text):
+        self.pages = [_FakePage(text)]
+
+
+class _CapturingCollection:
+    """Stands in for a Chroma collection — records the last add()/get()/delete() call."""
+    def __init__(self):
+        self.added = None
+        self.deleted = None
+        self._get_ret = {"ids": ["id_a", "id_b"]}
+        self.get_where = None
+    def add(self, ids, embeddings, documents, metadatas):
+        self.added = {"ids": ids, "embeddings": embeddings, "documents": documents, "metadatas": metadatas}
+    def get(self, where=None, include=None):
+        self.get_where = where
+        return self._get_ret
+    def delete(self, ids=None):
+        self.deleted = ids
+
+
+class ChapterIngestTest(TestCase):
+    """ingest_pdf tags one file's chunks under several chapter labels (notes spanning chapters)
+    and makes chunk ids material-scoped so they never collide with a textbook chapter's chunks."""
+
+    def _run_ingest(self, **kwargs):
+        from unittest import mock
+        from core import embeddings as emb
+        col = _CapturingCollection()
+        unit = kwargs.pop("unit", "ignored")
+        with mock.patch.object(emb, "PdfReader", lambda *_a, **_k: _FakeReader("x" * 1600)), \
+             mock.patch.object(emb, "get_embeddings_batch", side_effect=lambda chunks, provider: [[0.0]] * len(chunks)), \
+             mock.patch.object(emb, "get_collection", return_value=col):
+            emb.ingest_pdf("10", "Physics", unit, "C:/fake.pdf", **kwargs)
+        return col
+
+    def test_multi_unit_tags_every_chapter(self):
+        col = self._run_ingest(units=["Light", "Electricity"], source_id=42, material_type="notes")
+        units = {m["unit"] for m in col.added["metadatas"]}
+        self.assertEqual(units, {"light", "electricity"})
+        # Every chunk carries the material id, and ids encode it so they can't collide.
+        self.assertTrue(all(m["material_id"] == 42 for m in col.added["metadatas"]))
+        self.assertTrue(all("_42_" in i for i in col.added["ids"]))
+        self.assertEqual(len(set(col.added["ids"])), len(col.added["ids"]))  # unique
+
+    def test_single_unit_legacy_scheme_unchanged(self):
+        # No source_id → textbook path keeps the original id scheme and adds no material_id.
+        col = self._run_ingest(unit="Light", material_type="textbook")
+        self.assertTrue(all(m["unit"] == "light" for m in col.added["metadatas"]))
+        self.assertTrue(all("material_id" not in m for m in col.added["metadatas"]))
+        self.assertTrue(all(i.startswith("10_physics_light_") for i in col.added["ids"]))
+
+    def test_note_ids_do_not_collide_with_textbook(self):
+        textbook = self._run_ingest(unit="Light", material_type="textbook")
+        note = self._run_ingest(units=["Light"], source_id=7, material_type="notes")
+        self.assertFalse(set(textbook.added["ids"]) & set(note.added["ids"]))
+
+
+class DeleteMaterialEmbeddingsTest(TestCase):
+    """Deleting a chapter-linked note removes only its own chunks (by material_id), never the
+    textbook chapter's chunks that share the same unit label."""
+
+    def test_deletes_by_material_id(self):
+        from unittest import mock
+        from core import embeddings as emb
+        col = _CapturingCollection()
+        with mock.patch.object(emb, "get_collection", return_value=col):
+            emb.delete_material_embeddings("10", "Physics", 42, school_id=1)
+        self.assertEqual(col.get_where, {"material_id": 42})
+        self.assertEqual(col.deleted, ["id_a", "id_b"])
+
+    def test_noop_when_material_id_none(self):
+        from unittest import mock
+        from core import embeddings as emb
+        col = _CapturingCollection()
+        with mock.patch.object(emb, "get_collection", return_value=col):
+            emb.delete_material_embeddings("10", "Physics", None)
+        self.assertIsNone(col.deleted)

@@ -162,12 +162,25 @@ def copy_shared_to_school(school_id):
 
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
-def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook", provider='local', school_id=None, page_range=None):
+def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook", provider='local', school_id=None, page_range=None, units=None, source_id=None):
     """Ingest a PDF (or a page range of it) as `unit`. page_range=(start, end) ingests only
-    pages [start, end) — used to ingest one chapter out of a whole-book PDF."""
+    pages [start, end) — used to ingest one chapter out of a whole-book PDF.
+
+    `units` (plural) attaches the SAME file to several chapter labels (e.g. notes that span
+    multiple chapters): the file is read + embedded once, then its chunks are written once per
+    unit so the content is retrievable for each chapter. When `units` is falsy the function
+    behaves exactly as before, tagging chunks with the single `unit`.
+
+    `source_id` (the Material row id) makes chunk ids material-scoped and stamps a `material_id`
+    on each chunk. This is REQUIRED when a file shares a unit label with another material — e.g.
+    notes attached to the textbook chapter 'Light' — otherwise the chunk ids collide with the
+    textbook's and Chroma silently drops them. When None, the legacy id scheme is kept so
+    textbook ingestion is byte-for-byte unchanged."""
     class_name = normalize_label(class_name)
     subject    = normalize_label(subject)
-    unit       = normalize_label(unit)
+    unit_labels = [u for u in (normalize_label(u) for u in (units or [unit])) if u]
+    if not unit_labels:
+        unit_labels = [normalize_label(unit)]
     pdf_filename = os.path.basename(pdf_path)
 
     try:
@@ -217,15 +230,21 @@ def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="t
 
     collection = get_collection(class_name, subject, provider, school_id=school_id)
     ids, embeddings, docs, metas = [], [], [], []
-    for (i, chunk), emb in zip(chunks, vectors):
-        ids.append(f"{class_name}_{subject}_{unit}_{i}")
-        embeddings.append(emb)
-        docs.append(chunk)
-        metas.append({"class": class_name, "subject": subject, "unit": unit,
-                      "title": title or pdf_filename, "type": material_type})
+    id_tag = "" if source_id is None else f"{source_id}_"
+    for lbl in unit_labels:
+        for (i, chunk), emb in zip(chunks, vectors):
+            ids.append(f"{class_name}_{subject}_{lbl}_{id_tag}{i}")
+            embeddings.append(emb)
+            docs.append(chunk)
+            meta = {"class": class_name, "subject": subject, "unit": lbl,
+                    "title": title or pdf_filename, "type": material_type}
+            if source_id is not None:
+                meta["material_id"] = source_id
+            metas.append(meta)
     try:
         collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
-        print(f"[Embeddings] Added {len(ids)} chunks from '{pdf_filename}'")
+        print(f"[Embeddings] Added {len(ids)} chunks from '{pdf_filename}'"
+              + (f" across {len(unit_labels)} chapters" if len(unit_labels) > 1 else ""))
     except Exception as e:
         if "invalid literal for int" in str(e) or "base 16" in str(e):
             collection = get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
@@ -275,7 +294,9 @@ def ingest_bulk(class_name, subject, chapters, material_type="textbook", provide
         pdf_filename = os.path.basename(ch["file_path"])
         try:
             n = ingest_pdf(class_name, subject, ch["unit"], ch["file_path"],
-                           title=ch.get("title"), material_type=material_type, provider=provider, school_id=school_id)
+                           title=ch.get("title"), material_type=material_type, provider=provider,
+                           school_id=school_id, units=ch.get("chapters") or None,
+                           source_id=ch.get("material_id") if material_type != "textbook" else None)
             total += n
             print(f"[Embeddings] OK: {pdf_filename} ({n} chunks)")
         except Exception as e:
@@ -368,6 +389,25 @@ def delete_unit_embeddings(class_name, subject, unit, school_id=None):
                 print(f"[Embeddings] Deleted {len(ids)} chunks for unit='{unit}' ({provider}) school_id={school_id}")
         except Exception as e:
             print(f"[Embeddings] Could not delete embeddings for unit='{unit}' ({provider}): {e}")
+
+
+def delete_material_embeddings(class_name, subject, material_id, school_id=None):
+    """Remove only the chunks belonging to one Material row (by `material_id` metadata), across
+    every provider's collection. Used for non-textbook materials whose chunks share a unit label
+    with a textbook chapter — deleting by unit would wrongly wipe the textbook's chunks."""
+    class_name = normalize_label(class_name)
+    subject    = normalize_label(subject)
+    if material_id is None:
+        return
+    for provider in COLLECTION_NAMES:
+        try:
+            col = get_collection(class_name, subject, provider, school_id=school_id)
+            ids = col.get(where={"material_id": material_id}, include=[])["ids"]
+            if ids:
+                col.delete(ids=ids)
+                print(f"[Embeddings] Deleted {len(ids)} chunks for material_id={material_id} ({provider}) school_id={school_id}")
+        except Exception as e:
+            print(f"[Embeddings] Could not delete embeddings for material_id={material_id} ({provider}): {e}")
 
 
 def delete_subject_embeddings(class_name, subject, school_id=None):

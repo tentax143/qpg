@@ -960,20 +960,24 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def ai_edit(self, request, pk=None):
-        """Targeted, structure-preserving AI edit (two-stage).
+        """Operation-based AI edit (two-stage) — full control over the paper.
 
-        1. LOCATE — show the LLM a compact index of questions + the instruction; it returns
-           which question number(s) to edit.
-        2. EDIT — send ONLY each target question's JSON object + the instruction; the LLM
-           returns the corrected question with the same schema. Splice back into paper_data
-           and re-render.
+        1. PLAN — the LLM turns the teacher's natural-language instruction into a list of
+           structured operations over a compact index of the paper's questions:
+           edit / replace / add / move (across sections) / delete / swap / set / set_section.
+        2. APPLY — core.paper_edit applies them deterministically (content ops call the model
+           for the new question text), renumbers questions 1..N, and we re-render.
 
-        Operating on paper_data (not whole-paper text) avoids the 4000-token truncation that
-        silently dropped edits, and preserves images, per-type marks, and section grouping.
-        Returns 'no_paper_data' (400) for legacy papers so the client can fall back.
+        Operations are honoured AS REQUESTED (e.g. a cross-section move is not blocked); a
+        post-edit marks audit reports any resulting pattern mismatch as a warning instead.
+        Operating on paper_data (not whole-paper text) preserves images, per-type marks, and
+        section grouping. Returns 'no_paper_data' (400) for legacy papers so the client can
+        fall back to the text flow.
         """
-        import copy, re as _re, json as _json
+        import copy, json as _json
         from core import mantle_client
+        from core.paper_edit import apply_operations
+        from core.section_generator import _regen_question_skeleton
 
         paper = self.get_object()
         if not _can_modify_paper(request.user, paper):
@@ -985,77 +989,110 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         if not isinstance(pd, dict) or not pd:
             return Response({'error': 'no_paper_data'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Build a flat index of all questions.
-        index = []
+        # Compact index + section list for the planner.
+        index, sections = [], []
         for sname, sec in _paper_section_iter(pd):
+            sections.append(sname)
             for q in sec['questions']:
                 if isinstance(q, dict):
                     index.append({'qnum': q.get('qnum'), 'section': sname,
-                                  'type': q.get('type'), 'snippet': str(q.get('text', ''))[:120]})
+                                  'type': q.get('type'), 'marks': q.get('marks'),
+                                  'snippet': str(q.get('text', ''))[:100]})
         if not index:
             return Response({'error': 'no_questions'}, status=status.HTTP_400_BAD_REQUEST)
-        valid_qnums = {qi['qnum'] for qi in index}
 
-        # ── Stage 1: locate target question(s) ──────────────────────────────
-        explicit = [int(n) for n in _re.findall(r'(?:question|ques|q)\s*#?\s*(\d+)', instruction, _re.IGNORECASE)]
-        targets = [n for n in explicit if n in valid_qnums]
-        if not targets:
-            loc_sys = (
-                "You route an exam-paper edit. Given a JSON list of questions (qnum, section, type, snippet) "
-                "and a teacher instruction, return ONLY JSON {\"targets\":[qnum,...]} naming the question "
-                "number(s) the instruction refers to. For a section-wide instruction, list every qnum in that "
-                "section. If nothing matches, return {\"targets\":[]}. JSON only."
-            )
-            loc_prompt = f"QUESTIONS:\n{_json.dumps(index, ensure_ascii=False)}\n\nINSTRUCTION:\n{instruction}\n\nJSON:"
-            try:
-                loc_raw, _, _ = mantle_client.converse(
-                    model_id=mantle_client.GEN_MODEL, prompt=loc_prompt, system_prompt=loc_sys,
-                    max_tokens=300, temperature=0.1)
-                parsed = _extract_json_blob(loc_raw) or {}
-                tlist = parsed.get('targets') if isinstance(parsed, dict) else parsed
-                targets = [int(t) for t in (tlist or []) if str(t).strip().lstrip('-').isdigit() and int(t) in valid_qnums]
-            except Exception as e:
-                return Response({'error': f'Could not locate the question to edit: {e}'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        if not targets:
-            return Response({'error': "Couldn't identify which question to edit — try naming the number, e.g. 'change question 1 …'."},
+        # ── Stage 1: plan operations ────────────────────────────────────────
+        plan_sys = (
+            "You convert a teacher's instruction into edit operations on an exam paper. You receive "
+            "the questions (qnum, section, type, marks, snippet) and the list of section names. "
+            'Return ONLY JSON {"operations":[...]}. Each operation is exactly one of:\n'
+            '  {"action":"edit","qnum":N,"instruction":"what to change"}\n'
+            '  {"action":"replace","qnum":N,"instruction":"spec for a brand-new question"}\n'
+            '  {"action":"add","section":"<exact section name>","type":"MCQ|VSA|SA|LA|CBQ","marks":M,"instruction":"topic/spec","position":"end"}\n'
+            '  {"action":"move","qnum":N,"to_section":"<exact section name>","position":"end"}\n'
+            '  {"action":"delete","qnum":N}\n'
+            '  {"action":"swap","qnum_a":N,"qnum_b":M}\n'
+            '  {"action":"set","qnum":N,"fields":{"marks":5}}\n'
+            '  {"action":"set_section","section":"<exact name>","fields":{"instructions":"..."}}\n'
+            "Use qnum values and section names EXACTLY as given. For 'change marks/answer/type' use "
+            "set; for content rewrites use edit; for a fresh question use replace (in place) or add "
+            "(new). For a section-wide instruction emit one op per affected question. If nothing "
+            'applies, return {"operations":[]}. JSON only — no prose.'
+        )
+        plan_prompt = (f"SECTIONS:\n{_json.dumps(sections, ensure_ascii=False)}\n\n"
+                       f"QUESTIONS:\n{_json.dumps(index, ensure_ascii=False)}\n\n"
+                       f"INSTRUCTION:\n{instruction}\n\nJSON:")
+        try:
+            raw, _, _ = mantle_client.converse(
+                model_id=mantle_client.GEN_MODEL, prompt=plan_prompt, system_prompt=plan_sys,
+                max_tokens=1200, temperature=0.1)
+            parsed = _extract_json_blob(raw) or {}
+        except Exception as e:
+            return Response({'error': f'Could not plan the edit: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        operations = (parsed.get('operations') if isinstance(parsed, dict)
+                      else parsed if isinstance(parsed, list) else [])
+        if not operations:
+            return Response({'error': "Couldn't work out what to change — try naming the question or "
+                                      "section, e.g. 'move question 5 to Section B', 'add a 2-mark "
+                                      "question on fractions to Section A', or 'change Q3 marks to 5'."},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        # ── Stage 2: edit each target question in place ─────────────────────
-        prev_data = copy.deepcopy(pd)
-        new_pd = copy.deepcopy(pd)
-        edit_sys = (
-            "You edit ONE CBSE exam question. You receive a single question as a JSON object and an instruction. "
-            "Apply the instruction and return ONLY the corrected question as a JSON object with the EXACT same keys. "
-            "Do NOT change qnum, type, subtype, or marks unless the instruction explicitly requires it. MCQ/Assertion-"
-            "Reason questions MUST keep their 4 options (same a/b/c/d structure). Return JSON only — no markdown, no prose."
-        )
-        edited = []
-        for sname, sec in _paper_section_iter(new_pd):
-            for idx, q in enumerate(sec['questions']):
-                if not (isinstance(q, dict) and q.get('qnum') in targets):
-                    continue
-                eprompt = f"QUESTION JSON:\n{_json.dumps(q, ensure_ascii=False)}\n\nINSTRUCTION:\n{instruction}\n\nCorrected question JSON:"
-                try:
-                    eraw, _, _ = mantle_client.converse(
-                        model_id=mantle_client.GEN_MODEL, prompt=eprompt, system_prompt=edit_sys,
-                        max_tokens=1500, temperature=0.3)
-                    newq = _extract_json_blob(eraw)
-                except Exception:
-                    newq = None
-                if isinstance(newq, dict) and str(newq.get('text', '')).strip():
-                    # Preserve identity/structure fields the editor must not invent.
-                    newq['qnum'] = q.get('qnum')
-                    newq.setdefault('type', q.get('type'))
-                    newq.setdefault('subtype', q.get('subtype'))
-                    if newq.get('marks') in (None, '', 0):
-                        newq['marks'] = q.get('marks')
-                    sec['questions'][idx] = newq
-                    edited.append(q.get('qnum'))
+        # ── Stage 2: content generator (only edit / replace / add call the model) ──
+        def _gen(kind, ctx):
+            try:
+                if kind in ('edit', 'replace'):
+                    q = ctx['question']
+                    if kind == 'edit':
+                        gsys = ("You edit ONE CBSE exam question. Apply the instruction and return ONLY the "
+                                "corrected question as a JSON object with the SAME keys. Keep qnum/type/subtype/"
+                                "marks unless the instruction requires changing them. MCQ/Assertion-Reason keep "
+                                "their 4 options a/b/c/d. JSON only — no prose.")
+                        gp = (f"QUESTION JSON:\n{_json.dumps(q, ensure_ascii=False)}\n\n"
+                              f"INSTRUCTION:\n{ctx.get('instruction', '')}\n\nCorrected question JSON:")
+                        mt = 1500
+                    else:
+                        gsys = ("You write ONE fresh CBSE exam question to replace an existing one, matching its "
+                                "type and marks. Return ONLY a question JSON object using the same schema as the "
+                                "original. JSON only — no prose.")
+                        gp = (f"ORIGINAL (match its type & marks):\n{_json.dumps(q, ensure_ascii=False)}\n\n"
+                              f"NEW QUESTION SPEC:\n{ctx.get('instruction', '')}\n\nNew question JSON:")
+                        mt = 1200
+                    r, _, _ = mantle_client.converse(model_id=mantle_client.GEN_MODEL, prompt=gp,
+                                                     system_prompt=gsys, max_tokens=mt, temperature=0.4)
+                    return _extract_json_blob(r)
+                if kind == 'add':
+                    qtype = ctx.get('type') or 'SA'
+                    marks = ctx.get('marks') or 1
+                    _instr, skel = _regen_question_skeleton({'type': qtype}, 0, marks)
+                    gsys = ("You write ONE new CBSE exam question for the named section, matching the requested "
+                            "type and marks. Return ONLY a question JSON object. JSON only — no prose.")
+                    gp = (f"SECTION: {ctx.get('section')}\nTYPE: {qtype}\nMARKS: {marks}\n"
+                          f"SPEC: {ctx.get('instruction', '')}\n\nReturn JSON shaped exactly like:\n{skel}\n\n"
+                          f"New question JSON:")
+                    r, _, _ = mantle_client.converse(model_id=mantle_client.GEN_MODEL, prompt=gp,
+                                                     system_prompt=gsys, max_tokens=1200, temperature=0.6)
+                    return _extract_json_blob(r)
+            except Exception:
+                return None
+            return None
 
-        if not edited:
-            return Response({'error': 'The edit could not be applied — please rephrase the instruction.'},
+        prev_data = copy.deepcopy(pd)
+        new_pd, applied, notes = apply_operations(pd, operations, generate_fn=_gen)
+        if not applied:
+            tail = (' ' + ' '.join(notes[:3])) if notes else ''
+            return Response({'error': 'The edit could not be applied — please rephrase.' + tail},
                             status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        # We honoured the edit as asked — surface (not block) any resulting pattern mismatch.
+        warnings = list(notes)
+        try:
+            from core.paper_audit import audit_paper_marks, summary_line
+            audit = audit_paper_marks(new_pd, paper.pattern)
+            if not audit.get('ok'):
+                warnings.append("Marks check — " + summary_line(audit))
+        except Exception:
+            pass
 
         paper.paper_data = new_pd
         paper.edited_content = None        # JSON is now the source of truth; text re-extracts from the new DOCX
@@ -1066,7 +1103,8 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             import traceback; traceback.print_exc()
             return Response({'error': f'Edit applied but re-render failed: {e}'},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        return Response({'status': 'edited', 'edited_qnums': sorted(edited),
+        return Response({'status': 'edited', 'summary': '; '.join(applied),
+                         'applied': applied, 'warnings': warnings,
                          'file': file_url, 'prev_data': prev_data})
 
     @action(detail=True, methods=['post'])
@@ -1193,6 +1231,35 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def _parse_chapter_list(raw):
+    """Parse a 'chapters' field that may arrive as a JSON-array string (the upload form sends
+    JSON.stringify(selectedChapters)), a single plain string, or a list (repeated form field).
+    Returns a de-duplicated, order-preserving list of non-empty chapter names."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        candidates = list(raw)
+    else:
+        s = str(raw).strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                candidates = parsed if isinstance(parsed, list) else [parsed]
+            except Exception:
+                candidates = [s]
+        else:
+            candidates = [s]
+    items, seen = [], set()
+    for c in candidates:
+        name = str(c).strip()
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            items.append(name)
+    return items
+
+
 class MaterialViewSet(viewsets.ModelViewSet):
     """
     ViewSet for Material model.
@@ -1220,12 +1287,54 @@ class MaterialViewSet(viewsets.ModelViewSet):
         school = _get_school(self.request.user)
         serializer.save(uploaded_by=self.request.user, school=school)
 
+    def update(self, request, *args, **kwargs):
+        """Standard field edits via the serializer, plus chapter re-association for non-textbook
+        materials: when a `chapters` field is sent, store it on metadata + unit and — if the set
+        changed or the file was replaced — re-ingest the file under the new chapter labels (using
+        the provider the material was originally embedded with, so dimensions stay consistent)."""
+        response = super().update(request, *args, **kwargs)
+        if response.status_code >= 400 or "chapters" not in request.data:
+            return response
+
+        instance = self.get_object()
+        if instance.type == 'textbook':
+            return response
+
+        chapters = _parse_chapter_list(request.data.get("chapters"))
+        if not chapters:
+            return response
+
+        meta = instance.metadata or {}
+        old_chapters = meta.get("chapters") or []
+        meta["chapters"] = chapters
+        instance.metadata = meta
+        instance.unit = chapters[0]
+        instance.save(update_fields=["metadata", "unit"])
+
+        if chapters != old_chapters or request.FILES.get("file"):
+            sid = instance.school_id
+            embeddings.delete_material_embeddings(instance.class_name, instance.subject, instance.id, school_id=sid)
+            if instance.file:
+                ingest_material_task.apply_async(
+                    args=[instance.class_name, instance.subject,
+                          [{"unit": chapters[0], "title": instance.title, "file_path": instance.file.path,
+                            "material_id": instance.id, "chapters": chapters}],
+                          instance.type],
+                    kwargs={"provider": meta.get("provider", "local"), "school_id": sid},
+                )
+        response.data = self.get_serializer(instance).data
+        return response
+
     def perform_destroy(self, instance):
         school_id = instance.school_id
         if instance.type == 'textbook':
             embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=None)
             if school_id:
                 embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=school_id)
+        elif (instance.metadata or {}).get("chapters"):
+            # Chapter-linked material: its chunks share unit labels with the textbook, so delete
+            # ONLY this material's chunks (by material_id) — never the textbook chapter's chunks.
+            embeddings.delete_material_embeddings(instance.class_name, instance.subject, instance.id, school_id=school_id)
         else:
             embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=school_id)
         instance.delete()
@@ -1310,6 +1419,15 @@ class MaterialViewSet(viewsets.ModelViewSet):
                 if not files:
                     return Response({"error": "No files provided for bulk upload"}, status=status.HTTP_400_BAD_REQUEST)
 
+                # Non-textbook materials (notes / bank / syllabus / reference) must declare which
+                # chapter(s) they relate to — the whole batch shares the same selection.
+                batch_chapters = _parse_chapter_list(request.data.get("chapters"))
+                if material_type != "textbook" and not batch_chapters:
+                    return Response(
+                        {"error": "Select at least one chapter this material relates to."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
                 for file in files:
                     if not file:
                         continue
@@ -1321,22 +1439,28 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         )
                     filename = file.name
                     base_name = os.path.splitext(filename)[0]
+                    if material_type == 'textbook':
+                        unit = base_name
+                    else:
+                        unit = batch_chapters[0]  # representative chapter for listings/get_chapters
 
                     material = Material.objects.create(
                         class_name=class_name,
                         subject=subject,
-                        unit=base_name if material_type == 'textbook' else None,
+                        unit=unit,
                         title=base_name,
                         type=material_type,
                         file=file,
                         school=school,
                         uploaded_by=user,
+                        metadata={"chapters": batch_chapters, "provider": embedding_provider} if material_type != 'textbook' else {},
                     )
                     materials_to_ingest.append({
                         "unit": material.unit,
                         "title": material.title,
                         "file_path": material.file.path,
                         "material_id": material.id,
+                        "chapters": batch_chapters if material_type != 'textbook' else None,
                     })
 
             else:
@@ -1349,6 +1473,8 @@ class MaterialViewSet(viewsets.ModelViewSet):
                     unit = request.data.get(f"unit_{i}")
                     title = request.data.get(f"title_{i}")
                     file = request.FILES.get(f"file_{i}")
+                    # Non-textbook files declare their own related chapter(s) via chapters_{i}.
+                    chapters_i = _parse_chapter_list(request.data.get(f"chapters_{i}"))
 
                     if not file:
                         continue
@@ -1359,6 +1485,15 @@ class MaterialViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST,
                         )
 
+                    if material_type != "textbook":
+                        if not chapters_i:
+                            return Response(
+                                {"error": f"File {i + 1}: select at least one chapter it relates to."},
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+                        unit = chapters_i[0]
+                        title = title or chapters_i[0]
+
                     material = Material.objects.create(
                         class_name=class_name,
                         subject=subject,
@@ -1368,12 +1503,14 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         file=file,
                         school=school,
                         uploaded_by=user,
+                        metadata={"chapters": chapters_i, "provider": embedding_provider} if material_type != 'textbook' else {},
                     )
                     materials_to_ingest.append({
                         "unit": unit,
                         "title": title,
                         "file_path": material.file.path,
                         "material_id": material.id,
+                        "chapters": chapters_i if material_type != 'textbook' else None,
                     })
 
             # Queue embedding ingestion via Celery

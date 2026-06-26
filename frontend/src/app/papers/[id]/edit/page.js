@@ -93,6 +93,32 @@ export default function EditPaperPage() {
 
       resizeIframe(iDoc);
       setTimeout(() => resizeIframe(iDoc), 600);
+
+      // PREVIEW-ONLY FIX. docx-preview's experimental tab engine double-counts a paragraph's
+      // left margin when sizing LEFT tab stops (updateTabStop: pOffset = pbb.left + marginLeft,
+      // but pbb.left already includes the margin), so the tab after a question NUMBER balloons
+      // ~0.7in in the preview. The downloaded .docx is correct — only this in-browser render is
+      // wrong. Re-size that first (number→text) tab so the body text lands exactly at the
+      // hanging-indent column where the wrapped lines align. Runs AFTER docx-preview's own
+      // 500ms tab pass so it wins. The marks (right) tab is left untouched.
+      setTimeout(() => {
+        try {
+          const view = iDoc.defaultView || window;
+          iDoc.querySelectorAll('p').forEach((p) => {
+            const cs = view.getComputedStyle(p);
+            if ((parseFloat(cs.textIndent) || 0) >= 0) return;   // only hanging-indent questions
+            const tab = p.querySelector('.docx-tab-stop');       // first tab = number→text
+            if (!tab) return;
+            const targetX = p.getBoundingClientRect().left + (parseFloat(cs.paddingLeft) || 0);
+            const gap = targetX - tab.getBoundingClientRect().left;
+            tab.style.display = 'inline-block';
+            tab.style.wordSpacing = 'normal';
+            tab.style.width = `${gap > 0 ? gap : 0}px`;
+            tab.textContent = '';
+          });
+          resizeIframe(iDoc);
+        } catch (_e) { /* preview-only cosmetic; ignore */ }
+      }, 750);
     } catch (e) {
       console.error('docx-preview', e);
       setRenderError(e?.message || 'Render failed');
@@ -290,8 +316,11 @@ export default function EditPaperPage() {
       await refreshFromServer();
 
       setAiInput('');
-      const n = (res.data.edited_qnums || []).join(', ');
-      showToast('success', n ? `Updated question ${n}` : 'Edit applied');
+      const warns = res.data.warnings || [];
+      const base = res.data.summary || 'Edit applied';
+      // Edit always succeeds when we get here; a warning (e.g. a marks mismatch from a
+      // deliberate move) is appended as a note rather than shown as a failure.
+      showToast('success', warns.length ? `${base}  ⚠ ${warns.join('  ')}` : base);
     } catch (e) {
       showToast('error', e?.response?.data?.error || 'AI edit failed');
     } finally {
@@ -539,7 +568,7 @@ export default function EditPaperPage() {
             value={aiInput}
             onChange={e => setAiInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAiCorrect(); } }}
-            placeholder="Tell me your correction and I will apply it… e.g. Change Q3 marks to 5, fix spelling in Q7"
+            placeholder="Tell me what to change… e.g. move Q5 to Section B · add a 2-mark question on fractions to Section A · delete Q3 · swap Q2 and Q4 · make Q7 harder · change Q3 marks to 5"
             className="flex-1 text-sm text-slate-200 placeholder-slate-500 focus:outline-none bg-transparent"
             disabled={aiLoading}
           />

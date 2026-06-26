@@ -3246,7 +3246,14 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         # section's own question_types is a flat name list + marks_per_question="varies").
         # Normalise those subsections into {type,count,marks_each} dicts so the budget,
         # mixed-marks and prompt-blueprint paths all work instead of crashing/undersizing.
-        types_list = sec_data.get("question_types", [])
+        types_list = sec_data.get("question_types") or []
+        if not types_list:
+            # Tolerate the singular 'question_type' field (saved by the generate-page form) —
+            # without this the section carries no type, so the prompt/validator/enforcer impose
+            # no type constraint and the model mixes types (e.g. MCQs in a Short-Answer section).
+            single = sec_data.get("question_type") or ps.get("question_type")
+            if single:
+                types_list = [single] if isinstance(single, str) else list(single)
         subsecs = sec_data.get("subsections") or ps.get("subsections", [])
         if subsecs and not any(isinstance(t, dict) for t in types_list):
             synth = _qt_dicts_from_subsections(subsecs, mpq)
