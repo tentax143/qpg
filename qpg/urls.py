@@ -48,5 +48,6 @@ urlpatterns = [
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     path("api/", include("api.urls")),
+    path("api/billing/", include("billing.urls")),
     re_path(r"^media/(?P<path>.*)$", serve_media),
 ]

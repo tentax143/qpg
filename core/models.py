@@ -5,14 +5,48 @@ from django.dispatch import receiver
 from django.utils import timezone
 
 
+class Plan(models.Model):
+    PLAN_FREE = 'free'
+    PLAN_BASIC = 'basic'
+    PLAN_PRO = 'pro'
+    PLAN_SCHOOL = 'school'
+
+    name = models.CharField(max_length=50, unique=True)          # free / basic / pro / school
+    display_name = models.CharField(max_length=100)
+    monthly_paper_limit = models.IntegerField(default=5)          # -1 = unlimited
+    teacher_limit = models.IntegerField(default=2)                # -1 = unlimited
+    price_inr = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    razorpay_plan_id = models.CharField(max_length=100, blank=True)  # Razorpay plan ID for subscriptions
+
+    class Meta:
+        ordering = ['price_inr']
+
+    def __str__(self):
+        return self.display_name
+
+    @property
+    def is_unlimited_papers(self):
+        return self.monthly_paper_limit == -1
+
+    @property
+    def is_unlimited_teachers(self):
+        return self.teacher_limit == -1
+
+
 class School(models.Model):
     name = models.CharField(max_length=200)
     address = models.TextField(blank=True)
     phone = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True)
-    monthly_token_budget = models.BigIntegerField(default=0)  # 0 = unlimited
+    monthly_token_budget = models.BigIntegerField(default=0)  # 0 = unlimited (legacy token cap)
     is_active = models.BooleanField(default=True)
     access_shared_vector_store = models.BooleanField(default=False)
+
+    # Plan & billing
+    plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True, blank=True, related_name='schools')
+    plan_expires_at = models.DateTimeField(null=True, blank=True)   # None = no expiry / permanent
+    trial_started_at = models.DateTimeField(null=True, blank=True)  # set when trial begins
+
     # Cumulative usage — persists even after papers are deleted
     total_papers_generated = models.BigIntegerField(default=0)
     total_tokens_used = models.BigIntegerField(default=0)
@@ -25,6 +59,28 @@ class School(models.Model):
 
     def __str__(self):
         return self.name
+
+    def effective_plan(self):
+        """Return the currently active plan, falling back to free if trial expired."""
+        if self.plan is None:
+            return None
+        if self.plan_expires_at and timezone.now() > self.plan_expires_at:
+            try:
+                return Plan.objects.get(name=Plan.PLAN_FREE)
+            except Plan.DoesNotExist:
+                return self.plan
+        return self.plan
+
+    def is_on_trial(self):
+        return (self.trial_started_at is not None
+                and self.plan_expires_at is not None
+                and timezone.now() < self.plan_expires_at)
+
+    def papers_this_month(self):
+        from core.models import UsageEvent
+        now = timezone.now()
+        first = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return UsageEvent.objects.filter(school=self, kind='generate', created_at__gte=first).count()
 
 
 class Subject(models.Model):

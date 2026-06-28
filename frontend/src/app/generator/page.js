@@ -13,6 +13,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import CustomSelect from '@/components/CustomSelect';
+import UpgradeModal from '@/components/UpgradeModal';
 
 function GeneratorContent() {
   const router = useRouter();
@@ -21,6 +22,7 @@ function GeneratorContent() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -311,7 +313,13 @@ function GeneratorContent() {
       setSuccess("Question paper generation started successfully!");
       setTimeout(() => router.push('/dashboard'), 2000);
     } catch (err) {
-      setError(err.response?.data?.error || err.response?.data?.detail || "Failed to generate paper");
+      const msg = err.response?.data?.error || err.response?.data?.detail || '';
+      // HTTP 429 with "Upgrade" in the message means the plan paper limit was hit
+      if (err.response?.status === 429 && msg.toLowerCase().includes('upgrade')) {
+        setShowUpgradeModal(true);
+      } else {
+        setError(msg || 'Failed to generate paper');
+      }
       setSubmitting(false);
     }
   };
@@ -874,6 +882,18 @@ function GeneratorContent() {
           ))}
         </div>
       </div>
+
+      {/* Upgrade Modal — shown when plan paper limit is hit */}
+      {showUpgradeModal && (
+        <UpgradeModal
+          reason="paper"
+          onClose={() => setShowUpgradeModal(false)}
+          onSuccess={() => {
+            setShowUpgradeModal(false);
+            setSuccess('Plan upgraded! You can now generate more papers.');
+          }}
+        />
+      )}
 
       {/* Blueprint Preview Modal */}
       {showBlueprintModal && previewBlueprintData && (

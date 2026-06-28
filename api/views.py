@@ -6,7 +6,7 @@ from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Subject
+from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Subject, Plan
 from core import embeddings
 from core.tasks import generate_paper_task, ingest_material_task, split_book_task, ingest_url_task
 from core.views import extract_text_from_pdf, extract_text_from_docx, extract_docx_text_with_images
@@ -83,9 +83,7 @@ def _owner_scope(qs, user, owner_field='created_by'):
 
 def _generation_blocked(user, exclude_id=None):
     """Guard before queuing a paper-generation task. Returns an error string if generation
-    should be refused (concurrency / budget), else None. Prevents Retry/Generate spam and
-    runaway LLM+image spend (one paper = many billed calls). `exclude_id` skips the paper
-    being retried/regenerated so it doesn't block itself."""
+    should be refused (concurrency / budget / plan limit), else None."""
     # One active generation per user — a paper is expensive; don't let a user queue several.
     active = QuestionPaper.objects.filter(created_by=user, status__in=['queued', 'generating'])
     if exclude_id is not None:
@@ -93,8 +91,22 @@ def _generation_blocked(user, exclude_id=None):
     if active.exists():
         return ("You already have a paper generating. Please wait for it to finish before "
                 "starting another.")
-    # School token budget (0 = unlimited). total_tokens_used is the cumulative counter.
+
     school = _get_school(user)
+
+    # Plan-based monthly paper limit.
+    if school:
+        plan = school.effective_plan()
+        if plan and not plan.is_unlimited_papers:
+            used = school.papers_this_month()
+            if used >= plan.monthly_paper_limit:
+                return (
+                    f"Your school has reached its monthly paper limit "
+                    f"({used}/{plan.monthly_paper_limit} papers on the {plan.display_name} plan). "
+                    "Upgrade your plan to generate more papers."
+                )
+
+    # Legacy school token budget (0 = unlimited).
     if school and school.monthly_token_budget and school.total_tokens_used >= school.monthly_token_budget:
         return (f"Your school has reached its token budget "
                 f"({school.total_tokens_used:,}/{school.monthly_token_budget:,} tokens). "

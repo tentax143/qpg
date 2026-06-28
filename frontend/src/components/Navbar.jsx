@@ -11,7 +11,7 @@ export default function Navbar() {
           {/* Logo/Brand */}
           <Link href="/" className="flex items-center gap-2">
             <Zap className="w-6 h-6 text-blue-600" />
-            <span className="text-xl font-bold text-gray-900">QPG</span>
+            <span className="text-xl font-bold text-gray-900">Shiken</span>
           </Link>
 
           {/* Navigation Links */}

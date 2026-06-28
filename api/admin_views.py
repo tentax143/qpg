@@ -331,7 +331,9 @@ def school_user_usage(request, pk):
             total_output=Sum('output_tokens'),
             total_cost=Sum('cost'),
         )
-        monthly = events.filter(created_at__gte=first_of_month).aggregate(
+        monthly_events = events.filter(created_at__gte=first_of_month, kind='generate')
+        monthly = monthly_events.aggregate(
+            monthly_papers=Count('id'),
             monthly_input=Sum('input_tokens'),
             monthly_output=Sum('output_tokens'),
             monthly_cost=Sum('cost'),
@@ -345,6 +347,7 @@ def school_user_usage(request, pk):
             'role': getattr(u.profile, 'role', 'teacher'),
             'allowed_subject': getattr(u.profile, 'allowed_subject', None),
             'total_papers': agg['n'] or 0,
+            'monthly_papers': monthly['monthly_papers'] or 0,
             'current_papers': live_papers,
             'total_tokens': (agg['total_input'] or 0) + (agg['total_output'] or 0),
             'total_cost': str(agg['total_cost'] or 0),
@@ -352,7 +355,7 @@ def school_user_usage(request, pk):
             'monthly_cost': str(monthly['monthly_cost'] or 0),
         })
 
-    rows.sort(key=lambda r: r['total_tokens'], reverse=True)
+    rows.sort(key=lambda r: r['monthly_papers'], reverse=True)
     return Response({'users': rows, 'school': school.name})
 
 
@@ -454,4 +457,22 @@ def my_school(request):
         school = None
     if not school:
         return Response({'error': 'No school assigned'}, status=status.HTTP_404_NOT_FOUND)
-    return Response(_school_to_dict(school, include_stats=True))
+
+    data = _school_to_dict(school, include_stats=True)
+
+    # Inject billing/plan info so the frontend can show quota + trial banners
+    plan = school.effective_plan()
+    papers_used = school.papers_this_month()
+    data.update({
+        'plan_name': plan.display_name if plan else 'Free',
+        'plan_key': plan.name if plan else 'free',
+        'paper_limit': plan.monthly_paper_limit if plan else 5,
+        'paper_limit_unlimited': (plan.monthly_paper_limit == -1) if plan else False,
+        'papers_this_month': papers_used,
+        'teacher_limit': plan.teacher_limit if plan else 2,
+        'teacher_limit_unlimited': (plan.teacher_limit == -1) if plan else False,
+        'is_on_trial': school.is_on_trial(),
+        'trial_ends_at': school.plan_expires_at if school.is_on_trial() else None,
+        'plan_expires_at': school.plan_expires_at,
+    })
+    return Response(data)

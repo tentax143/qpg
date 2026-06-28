@@ -18,6 +18,7 @@ import {
   BarChart3,
   ShieldCheck,
   HelpCircle,
+  CreditCard,
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -70,6 +71,7 @@ export default function Sidebar() {
     { href: '/materials', icon: BookOpen, label: 'Materials' },
     { href: '/users', icon: Users, label: 'Users', roles: ['school_admin'] },
     { href: '/team-usage', icon: BarChart3, label: 'Team Usage', roles: ['school_admin'] },
+    { href: '/billing', icon: CreditCard, label: 'Billing & Plans', roles: ['school_admin'] },
   ];
 
   const handleLogout = () => {
@@ -110,7 +112,7 @@ export default function Sidebar() {
         </div>
         <div className="ml-3 min-w-0">
           <span className="text-[15px] font-semibold text-slate-900 tracking-tight truncate block">
-            {isSuperAdmin ? 'QPG' : (user?.school_name || 'QPG')}
+            {isSuperAdmin ? 'Shiken' : (user?.school_name || 'Shiken')}
           </span>
           {isSuperAdmin && (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">

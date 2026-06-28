@@ -15,7 +15,7 @@ from .views import (
     get_blueprint_details,
     model_choice,
 )
-from .auth_views import login, logout, user_profile, user_management, delete_user, change_password, first_login_password
+from .auth_views import login, logout, user_profile, user_management, delete_user, change_password, first_login_password, register_school, google_login
 from .admin_views import (
     superadmin_dashboard,
     schools_list,
@@ -42,7 +42,9 @@ router.register(r'blueprints', ExamBlueprintViewSet, basename='examblueprint')
 
 urlpatterns = [
     path('auth/login/', login, name='api_login'),
+    path('auth/google/', google_login, name='api_google_login'),
     path('auth/logout/', logout, name='api_logout'),
+    path('auth/register/', register_school, name='api_register_school'),
     path('auth/profile/', user_profile, name='api_profile'),
     path('auth/change-password/', change_password, name='api_change_password'),
     path('auth/first-login-password/', first_login_password, name='api_first_login_password'),

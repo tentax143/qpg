@@ -12,6 +12,7 @@ import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import UpgradeModal from '@/components/UpgradeModal';
 
 const ROLE_BADGE = {
   superadmin: 'bg-amber-100/80 text-amber-700 border border-amber-200',
@@ -28,6 +29,7 @@ export default function UsersPage() {
   const [success, setSuccess] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [subjects, setSubjects] = useState([]);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
   // New User Form State
   const [newUser, setNewUser] = useState({
@@ -80,7 +82,12 @@ export default function UsersPage() {
       setNewUser({ username: '', password: '', email: '', is_staff: false, allowed_subject: '' });
       fetchData();
     } catch (err) {
-      setError(err.response?.data?.error || err.response?.data?.username?.[0] || 'Failed to create user');
+      // HTTP 402 means the teacher plan limit was hit — show the upgrade wall
+      if (err.response?.status === 402) {
+        setShowUpgradeModal(true);
+      } else {
+        setError(err.response?.data?.error || err.response?.data?.username?.[0] || 'Failed to create user');
+      }
     }
   };
 
@@ -373,6 +380,18 @@ export default function UsersPage() {
           </div>
         ))}
       </div>
+
+      {/* Upgrade Modal — shown when the teacher plan limit is hit */}
+      {showUpgradeModal && (
+        <UpgradeModal
+          reason="teacher"
+          onClose={() => setShowUpgradeModal(false)}
+          onSuccess={() => {
+            setShowUpgradeModal(false);
+            setSuccess('Plan upgraded! You can now add more teachers.');
+          }}
+        />
+      )}
     </div>
   );
 }

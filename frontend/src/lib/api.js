@@ -18,8 +18,14 @@ const SESSION_TIMEOUT = 3600 * 1000;
 // Add request interceptor for auth token and session expiration
 apiClient.interceptors.request.use(
   (config) => {
+    // Rewrite /foo/ → api/foo/ so axios appends it to the full baseURL
+    // instead of treating it as origin-absolute (which drops the /api base path).
+    if (config.url && config.url.startsWith('/')) {
+      config.url = 'api' + config.url;
+    }
+
     // Skip session check for auth endpoints
-    if (config.url.startsWith('/auth/login') || config.url.startsWith('/auth/logout')) {
+    if (config.url.startsWith('api/auth/login') || config.url.startsWith('api/auth/logout')) {
       return config;
     }
 

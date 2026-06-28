@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Question Paper Generator",
-  description: "Generate question papers from exam patterns",
+  title: "Shiken",
+  description: "AI-powered question paper generator for Indian schools",
 };
 
 export default function RootLayout({ children }) {

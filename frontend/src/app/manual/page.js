@@ -168,7 +168,7 @@ function SectionExamPattern({ num }) {
       <div className="section-card mb-4">
         <h4 className="font-bold text-slate-900 sans mb-2">Using AI to Generate a Pattern</h4>
         <p className="text-sm text-slate-700 mb-2">
-          Instead of building manually, describe your exam in plain English and QPG generates the structure for you:
+          Instead of building manually, describe your exam in plain English and Shiken generates the structure for you:
         </p>
         <div className="bg-slate-900 rounded-lg px-4 py-3 text-green-400 font-mono text-xs leading-relaxed">
           "Create a 40-mark Biology paper for Class 10 with 10 MCQs of 1 mark each, 5 short answers of 2 marks, and 3 long answers of 5 marks each."
@@ -371,7 +371,7 @@ function SuperadminManual() {
         <h2 className="text-2xl font-bold text-slate-900 mb-1">1. System Overview</h2>
         <div className="h-1 w-12 bg-blue-500 rounded mb-5" />
         <p className="text-base leading-relaxed text-slate-700 mb-4">
-          QPG (Question Paper Generator) is an AI-powered platform that lets schools generate curriculum-aligned question papers from their own uploaded study materials.
+          Shiken is an AI-powered platform that lets schools generate curriculum-aligned question papers from their own uploaded study materials.
         </p>
         <div className="grid grid-cols-1 gap-3">
           {[
@@ -614,7 +614,7 @@ export default function ManualPage() {
     } else {
       setRole('teacher');
     }
-    document.title = 'QPG — User Manual';
+    document.title = 'Shiken — User Manual';
   }, []);
 
   const roleLabel = role === 'superadmin' ? 'Superadmin' : role === 'school_admin' ? 'School Admin' : 'Teacher';
@@ -647,8 +647,8 @@ export default function ManualPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z" />
             </svg>
           </div>
-          <h1 className="text-4xl font-bold text-slate-900 mb-2 tracking-tight">QPG</h1>
-          <p className="text-xl text-slate-500 mb-1">Question Paper Generator</p>
+          <h1 className="text-4xl font-bold text-slate-900 mb-2 tracking-tight">Shiken</h1>
+          <p className="text-xl text-slate-500 mb-1">AI Question Paper Generator</p>
           <p className="text-base font-semibold text-blue-600 mb-4">User Manual</p>
           <div className="flex items-center justify-center gap-3">
             <span className={`role-pill ${accentColor}`}>{roleLabel}</span>
@@ -663,7 +663,7 @@ export default function ManualPage() {
 
         {/* Footer */}
         <div className="border-t-2 border-slate-200 pt-6 text-center text-xs text-slate-400 sans">
-          <p>QPG — Question Paper Generator &nbsp;·&nbsp; User Manual v1.0 &nbsp;·&nbsp; {roleLabel} Edition</p>
+          <p>Shiken — AI Question Paper Generator &nbsp;·&nbsp; User Manual v1.0 &nbsp;·&nbsp; {roleLabel} Edition</p>
           <p className="mt-1">For support, contact your system administrator.</p>
         </div>
 

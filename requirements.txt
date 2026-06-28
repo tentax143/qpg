@@ -1,6 +1,9 @@
 # Django Framework
 Django==5.0.1
 
+# Billing
+razorpay==1.4.2
+
 # REST API
 djangorestframework==3.14.0
 django-cors-headers==4.3.1
