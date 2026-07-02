@@ -8,7 +8,8 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Subject
 from core import embeddings
-from core.tasks import generate_paper_task, ingest_material_task, split_book_task, ingest_url_task
+from core.tasks import (ingest_material_task, split_book_task, ingest_url_task,
+                        dispatch_paper, dispatch_next_queued_paper)
 from core.views import extract_text_from_pdf, extract_text_from_docx, extract_docx_text_with_images
 from core.media_access import signed_file_url
 import os
@@ -91,25 +92,32 @@ def _owner_scope(qs, user, owner_field='created_by'):
     return qs.filter(**{owner_field: user})
 
 
-def _generation_blocked(user, exclude_id=None):
-    """Guard before queuing a paper-generation task. Returns an error string if generation
-    should be refused (concurrency / budget), else None. Prevents Retry/Generate spam and
-    runaway LLM+image spend (one paper = many billed calls). `exclude_id` skips the paper
-    being retried/regenerated so it doesn't block itself."""
-    # One active generation per user — a paper is expensive; don't let a user queue several.
-    active = QuestionPaper.objects.filter(created_by=user, status__in=['queued', 'generating'])
-    if exclude_id is not None:
-        active = active.exclude(id=exclude_id)
-    if active.exists():
-        return ("You already have a paper generating. Please wait for it to finish before "
-                "starting another.")
-    # School token budget (0 = unlimited). total_tokens_used is the cumulative counter.
+def _budget_blocked(user):
+    """Hard guard before queuing a paper-generation task: the school token budget (0 = unlimited).
+    Returns an error string if generation must be refused, else None. Concurrency is NOT handled
+    here any more — a second concurrent request is *queued* (see _has_active_generation), not refused,
+    so the user sees a 'queued' paper instead of an error."""
     school = _get_school(user)
     if school and school.monthly_token_budget and school.total_tokens_used >= school.monthly_token_budget:
         return (f"Your school has reached its token budget "
                 f"({school.total_tokens_used:,}/{school.monthly_token_budget:,} tokens). "
                 "Contact your administrator to raise it.")
     return None
+
+
+def _has_active_generation(user, exclude_id=None):
+    """True if the user already has a paper occupying (or about to occupy) a Celery worker: status
+    'generating', or 'queued' with a task_id already dispatched. A 'queued' paper WITHOUT a task_id is
+    only *waiting in line* and does NOT count. When this is True a new request is left waiting (shown
+    as 'queued') rather than dispatched; the per-user serial queue promotes it when the active one ends.
+    `exclude_id` skips the paper being retried/regenerated so it doesn't see itself as active."""
+    from django.db.models import Q
+    qs = QuestionPaper.objects.filter(created_by=user).filter(
+        Q(status='generating') | (Q(status='queued') & ~(Q(task_id__isnull=True) | Q(task_id='')))
+    )
+    if exclude_id is not None:
+        qs = qs.exclude(id=exclude_id)
+    return qs.exists()
 
 
 def _scoped_blueprints(user):
@@ -495,8 +503,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         Handles both logic and legacy core processing flow via API.
         """
         try:
-            # Budget / concurrency guard — refuse before creating the paper or queuing work.
-            blocked = _generation_blocked(request.user)
+            # Budget guard — refuse before creating the paper or queuing work. (Concurrency is no
+            # longer refused: a second request is queued behind the active one — see below.)
+            blocked = _budget_blocked(request.user)
             if blocked:
                 return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
@@ -592,16 +601,19 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             }
             additional_context_json = json.dumps(meta_payload)
 
-            # Trigger Celery Task
-            task = generate_paper_task.delay(
-                paper.id, 
-                blueprint_id=blueprint_id, 
-                model_source=model_source, 
-                additional_context=additional_context_json
-            )
-            
-            paper.task_id = task.id
-            paper.save()
+            # Persist the task kwargs so this paper can be dispatched later if it has to wait.
+            paper.gen_params = {
+                'blueprint_id': blueprint_id,
+                'model_source': model_source,
+                'additional_context': additional_context_json,
+            }
+            paper.save(update_fields=['gen_params'])
+
+            # Per-user serial queue: run now only if nothing else is active for this user; otherwise
+            # leave it 'queued' (waiting) — dispatch_next_queued_paper promotes it when the current
+            # generation finishes. Either way the paper already exists with status 'queued'.
+            if not _has_active_generation(request.user, exclude_id=paper.id):
+                dispatch_paper(paper)
 
             serializer = self.get_serializer(paper)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -642,6 +654,11 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             paper.status = 'cancelled'
             paper.status_detail = 'Cancelled by user.'
             paper.save()
+            # Free the user's slot: promote their next waiting paper, if any.
+            try:
+                dispatch_next_queued_paper(paper.created_by_id)
+            except Exception as _dq:
+                print(f"[Cancel] dispatch_next_queued failed: {_dq}")
             return Response({'status': 'Task cancelled'})
         return Response(
             {'error': 'Cannot cancel task with status: ' + paper.status},
@@ -665,18 +682,21 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                         current_app.control.revoke(paper.task_id, terminate=True, signal='SIGTERM')
                     except Exception as _e:
                         print(f"[Retry] revoke of stale task {paper.task_id} failed: {_e}")
-                blocked = _generation_blocked(request.user, exclude_id=paper.id)
+                blocked = _budget_blocked(request.user)
                 if blocked:
                     return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+                # Reset to a clean waiting state (no task_id) — retry reuses the paper's stored
+                # gen_params so it re-runs with its original blueprint / model / context.
                 paper.status = "queued"
                 paper.status_detail = ""
+                paper.task_id = None
                 paper.save()
 
-                # Trigger the celery task
-                task = generate_paper_task.delay(paper.id)
-                paper.task_id = task.id
-                paper.save()
-
+                # Per-user serial queue: dispatch now only if nothing else is active for this user,
+                # else leave it waiting to be promoted when the current generation finishes.
+                if _has_active_generation(request.user, exclude_id=paper.id):
+                    return Response({'status': 'Queued', 'queued': True})
+                task = dispatch_paper(paper)
                 return Response({'status': 'Retry initiated', 'task_id': task.id})
 
             return Response({'error': 'Paper cannot be retried from its current state'}, status=status.HTTP_400_BAD_REQUEST)
@@ -722,23 +742,27 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             "school_name": school_name,
         }
 
-        blocked = _generation_blocked(request.user, exclude_id=paper.id)
+        blocked = _budget_blocked(request.user)
         if blocked:
             return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         # Re-queue. Keep the current file/paper_data until the new one is ready (so the paper
-        # stays viewable if generation fails); drop any AI-edited text overlay.
+        # stays viewable if generation fails); drop any AI-edited text overlay. Clear task_id so it
+        # is a clean waiting state, and stash the task kwargs for the queue to dispatch later.
         paper.status = 'queued'
         paper.edited_content = None
-        paper.save(update_fields=['status', 'edited_content', 'updated_at'])
+        paper.task_id = None
+        paper.gen_params = {
+            'model_source': request.session.get('model_choice', 'aws'),
+            'additional_context': _json.dumps(meta_payload),
+        }
+        paper.save(update_fields=['status', 'edited_content', 'task_id', 'gen_params', 'updated_at'])
 
-        task = generate_paper_task.delay(
-            paper.id,
-            model_source=request.session.get('model_choice', 'aws'),
-            additional_context=_json.dumps(meta_payload),
-        )
-        paper.task_id = task.id
-        paper.save(update_fields=['task_id'])
+        # Per-user serial queue: dispatch now only if nothing else is active for this user, else
+        # leave it waiting to be promoted when the current generation finishes.
+        if _has_active_generation(request.user, exclude_id=paper.id):
+            return Response({'status': 'Queued', 'queued': True})
+        task = dispatch_paper(paper)
         return Response({'status': 'Regeneration started', 'task_id': task.id})
 
     @action(detail=False, methods=['post'], url_path='bulk-delete')

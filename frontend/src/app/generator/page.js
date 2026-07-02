@@ -305,10 +305,15 @@ function GeneratorContent() {
     try {
       // Use the standard REST API /papers/ endpoint
       // It includes all logic (Celery, Text Extraction) and returns JSON
-      await apiClient.post('/papers/', data, {
+      const res = await apiClient.post('/papers/', data, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      setSuccess("Question paper generation started successfully!");
+      // If another generation is already running, this paper is queued (no task dispatched yet)
+      // and starts automatically when the current one finishes.
+      const queued = res?.data?.status === 'queued' && !res?.data?.task_id;
+      setSuccess(queued
+        ? "Queued — this paper will start automatically when your current one finishes."
+        : "Question paper generation started successfully!");
       setTimeout(() => router.push('/dashboard'), 2000);
     } catch (err) {
       setError(err.response?.data?.error || err.response?.data?.detail || "Failed to generate paper");

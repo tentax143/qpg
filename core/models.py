@@ -144,6 +144,10 @@ class QuestionPaper(models.Model):
     status_detail = models.TextField(blank=True, default="")  # failure reason / warnings shown to the teacher
     edited_content = models.TextField(blank=True, null=True)  # Store edited content from the editor
     paper_data = models.JSONField(null=True, blank=True)      # Raw generated JSON — used for re-rendering
+    # Stored generate_paper_task kwargs (blueprint_id / model_source / additional_context) so a
+    # paper that is 'queued' *waiting* behind the user's active generation can be dispatched later
+    # by the per-user serial queue — see core.tasks.dispatch_paper / dispatch_next_queued_paper.
+    gen_params = models.JSONField(null=True, blank=True)
     cost = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     input_tokens = models.BigIntegerField(default=0)
     output_tokens = models.BigIntegerField(default=0)

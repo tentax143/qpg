@@ -1569,6 +1569,117 @@ class MissingCountDerivationTest(TestCase):
         self.assertEqual(counts["Lon"], 6)     # D: 30 / 5
 
 
+class InconsistentCountReconcileTest(TestCase):
+    """Pattern 353 (English Core, cls 6, 40m) shipped a 40-mark paper as 89 marks. Its sections
+    carried a section-level questions_count that disagreed with their per-type breakdown:
+    questions_count=10 for a section whose two subsections describe just 2 questions worth 5m
+    each. The generator asked for 10×1m while the per-type validator demanded EXACTLY
+    MCQ×1+OTHER×1 at 5m — impossible to satisfy both, so the section shipped partial and blew
+    the marks total (a 10-mark section rendered as 38m). The work-order builder must treat the
+    per-type breakdown as authoritative for the count and marks."""
+
+    def _pattern(self):
+        return ExamPattern(name="p353", subject="English Core", class_name="6", sections=[
+            # Reading: plain-string types, genuinely 10×1m — must stay UNCHANGED (no breakdown).
+            {"name": "Reading Skills", "marks": 10, "questions_count": 10,
+             "marks_per_question": 1, "question_types": ["MCQ"]},
+            # Writing: section CLAIMS 10 questions, but subsections describe 2 (5m each, uniform).
+            {"name": "Writing Skills and Applied Grammar", "marks": 10, "questions_count": 10,
+             "marks_per_question": 1, "question_types": ["Short Answer"], "subsections": [
+                 _sub("MCQ", "MCQ", 5, 1, 5), _sub("Letter Writing", "Letter Writing", 5, 1, 5)]},
+            # Literature: section CLAIMS 20 questions; subsections describe 3 (5+10+5) → mixed.
+            {"name": "Language through Literature", "marks": 20, "questions_count": 20,
+             "marks_per_question": 1, "question_types": ["Short Answer"], "subsections": [
+                 _sub("Extract Based", "Extract Based", 5, 1, 5),
+                 _sub("Short Answer", "Short Answer", 10, 1, 10),
+                 _sub("Long Answer", "Long Answer", 5, 1, 5)]},
+        ])
+
+    def _wos(self):
+        p = self._pattern()
+        bp = {s["name"]: s for s in p.sections}
+        return {wo.section_name: wo for wo in
+                sg.build_work_orders(bp, p, {}, "Medium", "6", "English Core", ["Fables"])}
+
+    def test_count_follows_per_type_breakdown_not_stale_field(self):
+        wos = self._wos()
+        # Reading: no per-type breakdown → declared count/marks stand.
+        self.assertEqual(wos["Reading Skills"].questions_count, 10)
+        self.assertEqual(wos["Reading Skills"].marks_per_question, 1)
+        # Writing: 2 questions (not 10), 5m each, section total still 10, uniform marks.
+        w = wos["Writing Skills and Applied Grammar"]
+        self.assertEqual(w.questions_count, 2)
+        self.assertEqual(w.marks, 10)
+        self.assertEqual(w.marks_per_question, 5.0)
+        self.assertFalse(w.mixed_marks)
+        # Literature: 3 questions (not 20), section total 20, mixed 5/10/5 marks.
+        lit = wos["Language through Literature"]
+        self.assertEqual(lit.questions_count, 3)
+        self.assertEqual(lit.marks, 20)
+        self.assertTrue(lit.mixed_marks)
+
+    def test_reconciled_work_order_has_no_self_conflicting_validation(self):
+        # A submission that matches the reconciled typed counts must satisfy BOTH the count
+        # check and the marks-total check — they used to contradict each other and fail forever.
+        w = self._wos()["Writing Skills and Applied Grammar"]
+        data = {"questions": [
+            {"qnum": 1, "type": "MCQ", "subtype": "standard", "text": "Pick one.",
+             "options": {"a": "1", "b": "2", "c": "3", "d": "4"}, "answer": "b",
+             "answer_explanation": "b is right.", "marks": 5, "competency_type": "recall"},
+            {"qnum": 2, "type": "Letter Writing", "subtype": "standard",
+             "text": "Write a letter to your friend describing your school.",
+             "answer_explanation": "Format + content points.", "marks": 5,
+             "competency_type": "constructed"},
+        ]}
+        errs = sg.validate_section_output(data, w)
+        joined = " ".join(errs)
+        self.assertNotIn("Expected", joined, f"count conflict remains: {errs}")
+        self.assertNotIn("Section marks total", joined, f"marks-total conflict remains: {errs}")
+        self.assertNotIn("distribution wrong", joined, f"type conflict remains: {errs}")
+
+
+class TrimOverfullSectionTest(TestCase):
+    """A section that generates MORE questions than its blueprint must be trimmed back, or the
+    paper's marks overshoot (the Biology 33/30, Physics 28/25 case). Mirror of [Refill]."""
+
+    def _wo(self):
+        # Biology from _compound_sections: caps mcq7, ar2, vsa3, sa2, cbq1, la1 = 16q / 30m.
+        p = ExamPattern(name="ov", subject="Science", class_name="10",
+                        sections=[_compound_sections()[0]])
+        bp = {s["name"]: s for s in p.sections}
+        return sg.build_work_orders(bp, p, {}, "Medium", "10", "Science", ["Life Processes"])[0]
+
+    def test_trims_excess_of_a_capped_type(self):
+        wo = self._wo()
+        qs = ([{"type": "MCQ", "subtype": "standard", "marks": 1} for _ in range(7)]
+              + [{"type": "MCQ", "subtype": "assertion_reason", "marks": 1} for _ in range(2)]
+              + [{"type": "VSA", "marks": 2} for _ in range(3)]
+              + [{"type": "SA", "marks": 3} for _ in range(3)]        # one too many (cap 2)
+              + [{"type": "CBQ", "subtype": "source_based", "marks": 4}]
+              + [{"type": "LA", "marks": 5}])
+        for i, q in enumerate(qs, 1):
+            q["qnum"] = i
+        out = sg.trim_overfull_sections({"Biology": {"questions": qs}}, [wo])
+        kept = out["Biology"]["questions"]
+        self.assertEqual(len(kept), 16)                                  # 17 → 16
+        self.assertEqual(len([q for q in kept if q["type"] == "SA"]), 2)  # capped at 2
+        self.assertEqual(sum(q["marks"] for q in kept), 30)              # back to section budget
+
+    def test_leaves_on_count_section_untouched(self):
+        wo = self._wo()
+        qs = ([{"type": "MCQ", "subtype": "standard", "marks": 1} for _ in range(7)]
+              + [{"type": "MCQ", "subtype": "assertion_reason", "marks": 1} for _ in range(2)]
+              + [{"type": "VSA", "marks": 2} for _ in range(3)]
+              + [{"type": "SA", "marks": 3} for _ in range(2)]
+              + [{"type": "CBQ", "subtype": "source_based", "marks": 4}]
+              + [{"type": "LA", "marks": 5}])
+        for i, q in enumerate(qs, 1):
+            q["qnum"] = i
+        out = sg.trim_overfull_sections({"Biology": {"questions": qs}}, [wo])
+        self.assertEqual(len(out["Biology"]["questions"]), 16)
+        self.assertNotIn("_trimmed_overfull", out["Biology"])
+
+
 class ParseChapterListTest(TestCase):
     """The upload view accepts the 'chapters' field as a JSON array (what the form sends), a
     single string, or a repeated form field — all normalise to a de-duplicated name list."""

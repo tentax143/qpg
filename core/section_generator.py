@@ -3155,6 +3155,27 @@ def _qt_dicts_from_subsections(subsections: list, section_mpq: float) -> list:
     return out
 
 
+def _blueprint_counts(question_types) -> tuple:
+    """Sum the explicit per-type (count, total_marks) of a *detailed* blueprint whose
+    question_types are dicts like {"type": "MCQ", "count": 1, "marks_each": 5} — authored that
+    way, or synthesised from subsections by _qt_dicts_from_subsections.
+
+    When a section states its questions this way, the per-type counts/marks are the source of
+    truth for how many questions it holds and what they are worth — far more reliable than the
+    section-level 'questions_count'/'marks_per_question', which AI-authored patterns routinely
+    fill in inconsistently (e.g. questions_count=10 for a section whose two typed entries
+    describe just 2 questions). Returns (0, 0.0) when the types carry no explicit counts (e.g.
+    plain-string types), so callers fall back to the section-level fields unchanged."""
+    total_count = 0
+    total_marks = 0.0
+    for qt in (question_types or []):
+        if isinstance(qt, dict) and ("count" in qt or "marks_each" in qt):
+            c = _as_int(qt.get("count", 1), 1)
+            total_count += c
+            total_marks += c * _as_float(qt.get("marks_each", 0), 0.0)
+    return total_count, total_marks
+
+
 def _typical_marks_for_types(types_list) -> float:
     """Typical CBSE per-question marks for a section's question type(s) — used to derive a
     sensible question count when the pattern left marks_per_question / questions_count blank."""
@@ -3226,12 +3247,51 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         q_count = _as_int(sec_data.get("questions_count") or sec_data.get("questions"), 0)
         marks = _as_int(sec_data.get("marks"), 0)
         mpq = _as_float(sec_data.get("marks_per_question"), 0.0)
+
+        # Resolve the section's question type(s) FIRST — the per-type breakdown is what
+        # reconciles the count/marks below, so it must exist before that step.
+        # Compound sections express their real per-type marks in `subsections` (the
+        # section's own question_types is a flat name list + marks_per_question="varies").
+        # Normalise those subsections into {type,count,marks_each} dicts so the budget,
+        # mixed-marks and prompt-blueprint paths all work instead of crashing/undersizing.
+        types_list = sec_data.get("question_types") or []
+        if not types_list:
+            # Tolerate the singular 'question_type' field (saved by the generate-page form) —
+            # without this the section carries no type, so the prompt/validator/enforcer impose
+            # no type constraint and the model mixes types (e.g. MCQs in a Short-Answer section).
+            single = sec_data.get("question_type") or ps.get("question_type")
+            if single:
+                types_list = [single] if isinstance(single, str) else list(single)
+        subsecs = sec_data.get("subsections") or ps.get("subsections", [])
+        if subsecs and not any(isinstance(t, dict) for t in types_list):
+            synth = _qt_dicts_from_subsections(subsecs, mpq)
+            if synth:
+                types_list = synth
+        is_map = any("map" in _type_str(t) for t in types_list)
+
+        # A detailed blueprint expresses its questions as explicit per-type entries, e.g.
+        #   [{"type":"MCQ","count":1,"marks_each":5}, {"type":"Letter","count":1,"marks_each":5}]
+        # (authored that way, or synthesised from subsections just above). Those per-type
+        # counts/marks are AUTHORITATIVE. The section-level questions_count / marks_per_question
+        # that AI-authored patterns emit alongside them are frequently inconsistent — a
+        # 2-question, 10-mark section arrived with questions_count=10 and marks_per_question=1,
+        # so the generator requested 10×1m questions while the per-type validator demanded
+        # EXACTLY MCQ×1+Letter×1 at 5m each. The section could never satisfy both, shipped
+        # partial, and blew the paper's marks total (a 10-mark section rendered as 38m). Trust
+        # the per-type breakdown for the count and marks whenever it is present.
+        typed_count, typed_marks = _blueprint_counts(types_list)
+        if typed_count > 0:
+            q_count = typed_count
+            if typed_marks > 0:
+                marks = int(round(typed_marks))
+                mpq = round(typed_marks / typed_count, 1)
+
         # Derive any missing per-question marks / question count so a section NEVER asks for
         # 0 questions. AI-generated patterns sometimes leave questions_count/marks_per_question
         # null with only the section marks set (e.g. VSA 12m, SA 18m, LA 30m) — without this,
         # those sections generate nothing and come out empty.
         if mpq <= 0:
-            mpq = round(marks / q_count, 1) if q_count else _typical_marks_for_types(sec_data.get("question_types"))
+            mpq = round(marks / q_count, 1) if q_count else _typical_marks_for_types(types_list)
         if q_count <= 0:
             q_count = max(1, round(marks / mpq)) if (marks and mpq) else 1
 
@@ -3252,7 +3312,10 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         # MO-01: attempt-N-of-M support — 'attempt' = students answer, 'count'/'provided' = questions generated
         # (coerced to int — these feed a division in the section marks-total check).
         attempt_count = _as_int(sec_data.get("attempt_count") or ps.get("attempt"), 0) or None
-        provided_count = _as_int(sec_data.get("provided_count") or sec_data.get("questions_count") or sec_data.get("questions"), 0)
+        # Base 'provided' on the reconciled q_count: the stale provided_count that the blueprint
+        # converter mirrors from the (unreliable) section-level questions_count must not override
+        # the per-type total resolved above.
+        provided_count = q_count if typed_count > 0 else (_as_int(sec_data.get("provided_count"), 0) or q_count)
         if attempt_count and provided_count and attempt_count < provided_count:
             # Generate the larger 'provided' set; students pick from it
             generate_count = provided_count
@@ -3261,37 +3324,22 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             attempt_count = None
             provided_count = None
 
-        # M-04: detect map-work question type.
-        # Compound sections express their real per-type marks in `subsections` (the
-        # section's own question_types is a flat name list + marks_per_question="varies").
-        # Normalise those subsections into {type,count,marks_each} dicts so the budget,
-        # mixed-marks and prompt-blueprint paths all work instead of crashing/undersizing.
-        types_list = sec_data.get("question_types") or []
-        if not types_list:
-            # Tolerate the singular 'question_type' field (saved by the generate-page form) —
-            # without this the section carries no type, so the prompt/validator/enforcer impose
-            # no type constraint and the model mixes types (e.g. MCQs in a Short-Answer section).
-            single = sec_data.get("question_type") or ps.get("question_type")
-            if single:
-                types_list = [single] if isinstance(single, str) else list(single)
-        subsecs = sec_data.get("subsections") or ps.get("subsections", [])
-        if subsecs and not any(isinstance(t, dict) for t in types_list):
-            synth = _qt_dicts_from_subsections(subsecs, mpq)
-            if synth:
-                types_list = synth
-        is_map = any("map" in _type_str(t) for t in types_list)
-
-        # M-01: detect mixed-marks sections (compound sections have multiple marks values)
-        # Fall back to 'question_types' (what the rest of the pipeline reads) when the
-        # separate 'question_type_details' field isn't populated — otherwise mixed_marks
-        # would be False for a genuinely mixed section, sending it down the uniform-marks
-        # path where every question fails the "marks=X expected <avg>" check → partial section.
-        qt_dicts = sec_data.get("question_type_details") or types_list
-        marks_values = set()
-        if qt_dicts:
-            for qt in qt_dicts:
-                if isinstance(qt, dict) and "marks_each" in qt:
-                    marks_values.add(qt["marks_each"])
+        # M-01: detect mixed-marks sections (compound sections have multiple marks values).
+        # Read from the resolved types_list first — it is authoritative and carries per-type
+        # marks synthesised from subsections. Only fall back to 'question_type_details' when
+        # types_list has no per-type marks dicts, because standardize_pattern seeds an absent
+        # question_types with a plain default (e.g. ["Short Answer"]); trusting that instead
+        # would flag a genuinely mixed section as uniform, sending it down the path where every
+        # question fails the "marks=X expected <avg>" check → partial section.
+        qt_dicts = (
+            types_list
+            if any(isinstance(t, dict) and "marks_each" in t for t in types_list)
+            else (sec_data.get("question_type_details") or types_list)
+        )
+        marks_values = {
+            qt["marks_each"] for qt in qt_dicts
+            if isinstance(qt, dict) and "marks_each" in qt
+        }
         mixed_marks = len(marks_values) > 1
 
         wo = SectionWorkOrder(
@@ -3771,6 +3819,61 @@ def enforce_section_question_types(paper_data: dict, work_orders: list) -> dict:
     return paper_data
 
 
+def trim_overfull_sections(paper_data: dict, work_orders: list) -> dict:
+    """Drop questions a section generated ABOVE its blueprint — the mirror of the [Refill]
+    top-up. A section that returns MORE questions than its work order asked for (an extra SA in
+    a mixed section, a 7th MCQ in a 6-MCQ block) inflates the paper's marks. The type enforcer
+    only removes FOREIGN types, never excess of an ALLOWED one, and reconcile_uniform_marks only
+    fixes per-question marks in uniform sections — so these extras survived and pushed section
+    totals over (Biology 33/30, Physics 28/25). Trim per fine-category when the blueprint states
+    explicit per-type counts, else trim the tail to the section's total count. Excess is dropped
+    from the END, preserving the earlier (usually higher-quality, on-plan) questions.
+    OR-alternatives live ON the question (not as separate list entries), so they are unaffected."""
+    wo_by_name = {wo.section_name: wo for wo in (work_orders or [])}
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__") or not isinstance(sec_data, dict):
+            continue
+        wo = wo_by_name.get(sec_name)
+        if not wo:
+            continue
+        questions = [q for q in sec_data.get("questions", []) if isinstance(q, dict)]
+
+        # Per-type caps from the blueprint (fine categories, matching validate_section_output).
+        per_type_cap: dict = {}
+        for qt in (wo.question_types or []):
+            if isinstance(qt, dict) and ("count" in qt or "marks_each" in qt):
+                cat = _fine_category(qt.get("type", ""))
+                per_type_cap[cat] = per_type_cap.get(cat, 0) + _as_int(qt.get("count", 1), 1)
+
+        # Attempt-N-of-M sections legitimately provide MORE than they budget marks for — cap at
+        # the provided set, not the attempted count.
+        total_cap = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
+
+        kept, dropped = [], []
+        if per_type_cap:
+            seen: dict = {}
+            for q in questions:
+                cat = _fine_category(q.get("type", ""), q.get("subtype", ""))
+                cap = per_type_cap.get(cat)
+                seen[cat] = seen.get(cat, 0) + 1
+                if cap is not None and seen[cat] > cap:      # excess of a capped type only
+                    dropped.append(q)
+                else:
+                    kept.append(q)
+        elif total_cap and len(questions) > total_cap:
+            kept, dropped = questions[:total_cap], questions[total_cap:]
+        else:
+            continue
+
+        if dropped:
+            sec_data["questions"] = kept
+            sec_data.setdefault("_trimmed_overfull", []).extend(
+                {"qnum": q.get("qnum"), "type": q.get("type")} for q in dropped)
+            print(f"[Trim] '{sec_name}': removed {len(dropped)} over-count question(s) "
+                  f"(kept {len(kept)}): {[q.get('type') for q in dropped]}")
+    return paper_data
+
+
 def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list):
     """
     Generate all sections in parallel using ThreadPoolExecutor.
@@ -3830,6 +3933,11 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
     # Final guarantee: strip any wrong-type questions before numbering/render (covers the
     # partial-emit path where a section shipped foreign types after exhausting retries).
     paper_data = enforce_section_question_types(paper_data, work_orders)
+
+    # Symmetric to the [Refill] below: drop questions a section generated ABOVE its blueprint,
+    # so an over-full section can't push the paper's marks over (e.g. Biology 33/30). Runs
+    # before Refill so the two together converge each section on its exact per-type counts.
+    paper_data = trim_overfull_sections(paper_data, work_orders)
 
     # Refill any section the type-enforcer (or post-validation dedup) left SHORT. These trims
     # run AFTER per-section validation passed, so the section never went 'partial' and was

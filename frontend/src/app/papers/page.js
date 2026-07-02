@@ -28,7 +28,7 @@ export default function PapersPage() {
     
     // Auto-refresh if papers are generating
     const interval = setInterval(() => {
-      if (papers.some(p => p.status === 'generating' || p.status === 'processing')) {
+      if (papers.some(p => p.status === 'generating' || p.status === 'processing' || p.status === 'queued')) {
         fetchPapers(false);
       }
     }, 5000);
@@ -65,8 +65,10 @@ export default function PapersPage() {
 
   const handleRetry = async (id) => {
     try {
-      await apiClient.post(`/papers/${id}/retry/`);
-      setSuccess('Generation restarted');
+      const res = await apiClient.post(`/papers/${id}/retry/`);
+      setSuccess(res?.data?.queued
+        ? 'Queued — this paper will start when your current generation finishes'
+        : 'Generation restarted');
       fetchPapers(false);
     } catch (err) {
       setError('Failed to retry generation');
@@ -91,8 +93,10 @@ export default function PapersPage() {
     if (!confirm('Regenerate this paper from its pattern? This creates fresh questions and replaces the current content.')) return;
     setRegeneratingId(id);
     try {
-      await apiClient.post(`/papers/${id}/regenerate/`);
-      setSuccess('Regenerating — refresh in a minute to see the new paper');
+      const res = await apiClient.post(`/papers/${id}/regenerate/`);
+      setSuccess(res?.data?.queued
+        ? 'Queued — regeneration will start when your current generation finishes'
+        : 'Regenerating — refresh in a minute to see the new paper');
       fetchPapers(false);
     } catch (err) {
       setError(err?.response?.data?.error || 'Could not start regeneration');
@@ -236,6 +240,10 @@ export default function PapersPage() {
                       ) : paper.status === 'generating' || paper.status === 'processing' ? (
                         <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[9px] font-black uppercase rounded-lg border border-blue-100 flex items-center gap-1.5 w-fit">
                           <RefreshCw size={10} className="animate-spin" /> {paper.status}
+                        </span>
+                      ) : paper.status === 'queued' ? (
+                        <span title="Waiting behind your current generation — it starts automatically." className="px-3 py-1 bg-amber-50 text-amber-600 text-[9px] font-black uppercase rounded-lg border border-amber-100 flex items-center gap-1.5 w-fit">
+                          <Clock size={10} /> Queued
                         </span>
                       ) : (
                         <span className="px-3 py-1 bg-red-50 text-red-600 text-[9px] font-black uppercase rounded-lg border border-red-100 flex items-center gap-1.5 w-fit">

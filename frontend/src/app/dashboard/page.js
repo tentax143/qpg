@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Plus, FileText, Download, CheckCircle, AlertTriangle,
-  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil, RotateCw
+  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil, RotateCw, Clock
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -297,6 +297,11 @@ export default function DashboardPage() {
                         ) : isStuck(paper) ? (
                           <span title="Generation looks stalled — you can retry." className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
                             Stalled
+                          </span>
+                        ) : paper.status === 'queued' ? (
+                          <span title="Waiting behind your current generation — it starts automatically." className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                            <Clock className="w-3.5 h-3.5" />
+                            Queued
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded-full">

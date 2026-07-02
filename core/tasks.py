@@ -261,6 +261,45 @@ def copy_shared_vectorstore_task(self, school_id):
     return {'copied': 0, 'note': 'scope-based sharing — nothing to copy'}
 
 
+# ── Per-user serial generation queue ──────────────────────────────────────────
+# A user runs ONE paper generation at a time. A request made while another is active
+# is stored as 'queued' *without* a task_id (waiting in line) instead of being refused;
+# when the active generation finishes it is promoted into a real Celery task here.
+
+def dispatch_paper(paper):
+    """Enqueue the generation Celery task for `paper` using its stored gen_params, and record the
+    resulting task_id. This is what turns a 'waiting' (queued, no task_id) paper into a running one."""
+    params = paper.gen_params or {}
+    task = generate_paper_task.delay(
+        paper.id,
+        blueprint_id=params.get('blueprint_id') or None,
+        model_source=params.get('model_source') or 'aws',
+        additional_context=params.get('additional_context') or "",
+    )
+    paper.task_id = task.id
+    paper.save(update_fields=['task_id'])
+    return task
+
+
+def dispatch_next_queued_paper(user_id):
+    """Promote this user's oldest *waiting* paper (status 'queued', no task_id) into a running task.
+    No-op if the user still has an active generation. Row-locks the user's non-terminal papers so a
+    completion and a cancel racing on the same user can't both dispatch — only one wins per call."""
+    from django.db import transaction
+    with transaction.atomic():
+        rows = list(QuestionPaper.objects
+                    .select_for_update()
+                    .filter(created_by_id=user_id, status__in=['queued', 'generating'])
+                    .order_by('created_at'))
+        # 'active' = already occupying/about to occupy a worker: generating, or queued+dispatched.
+        if any(p.status == 'generating' or (p.status == 'queued' and p.task_id) for p in rows):
+            return None
+        waiting = next((p for p in rows if p.status == 'queued' and not p.task_id), None)
+        if waiting is None:
+            return None
+        return dispatch_paper(waiting)
+
+
 @shared_task(bind=True)
 def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local', additional_context=""):
     paper = QuestionPaper.objects.get(id=paper_id)
@@ -427,6 +466,14 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         # Log the error and let the task fail once
         print(f"[Task Failed] Paper ID {paper_id}: {str(e)}")
         raise
+
+    finally:
+        # This generation is over (done or failed) — hand off to the user's next waiting paper,
+        # if any. Best-effort: a failure here must not mask the task's own result/exception.
+        try:
+            dispatch_next_queued_paper(paper.created_by_id)
+        except Exception as _dq:
+            print(f"[Task] dispatch_next_queued failed for user {paper.created_by_id}: {_dq}")
 
 
 # ── CBSE pattern updater ──────────────────────────────────────────────────────
