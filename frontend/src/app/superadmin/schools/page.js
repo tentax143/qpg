@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import apiClient from '@/lib/api';
-import { Plus, ChevronRight, Search, School, Database, RefreshCw, X } from 'lucide-react';
+import { Plus, ChevronRight, Search, School, Database, X } from 'lucide-react';
 
 export default function SchoolsPage() {
   const router = useRouter();
@@ -13,10 +13,10 @@ export default function SchoolsPage() {
   const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
 
-  // Per-school action state: { [schoolId]: 'granting' | 'resyncing' | 'revoking' | null }
+  // Per-school action state: { [schoolId]: 'granting' | 'revoking' | null }
   const [actionState, setActionState] = useState({});
   // Confirmation modal state
-  const [confirm, setConfirm] = useState(null); // { school, action: 'grant'|'revoke'|'resync' }
+  const [confirm, setConfirm] = useState(null); // { school, action: 'grant'|'revoke' }
   const [actionError, setActionError] = useState(null);
 
   useEffect(() => {
@@ -40,19 +40,13 @@ export default function SchoolsPage() {
   async function runAction(school, action) {
     setConfirm(null);
     setActionError(null);
-    const key = action === 'grant' ? 'granting' : action === 'resync' ? 'resyncing' : 'revoking';
-    setActionState(prev => ({ ...prev, [school.id]: key }));
+    setActionState(prev => ({ ...prev, [school.id]: action === 'grant' ? 'granting' : 'revoking' }));
     try {
-      if (action === 'resync') {
-        await apiClient.post(`/admin/schools/${school.id}/resync-vectorstore/`);
-        // resync doesn't change the flag, just retriggers the copy task
-      } else {
-        const enabled = action === 'grant';
-        await apiClient.patch(`/admin/schools/${school.id}/`, { access_shared_vector_store: enabled });
-        setSchoolShared(school.id, enabled);
-      }
+      const enabled = action === 'grant';
+      await apiClient.patch(`/admin/schools/${school.id}/`, { access_shared_vector_store: enabled });
+      setSchoolShared(school.id, enabled);   // scope-based: instant, no copy task
     } catch (e) {
-      setActionError(e.response?.data?.error || `Failed to ${action} vector store access`);
+      setActionError(e.response?.data?.error || `Failed to ${action} shared access`);
     } finally {
       setActionState(prev => ({ ...prev, [school.id]: null }));
     }
@@ -68,22 +62,16 @@ export default function SchoolsPage() {
 
   const confirmMeta = {
     grant: {
-      title: 'Grant Shared Vector Store Access',
-      body: (name) => `This will copy all shared textbook embeddings and subject metadata into ${name}'s private vector store. The school will immediately gain access to all shared NCERT content.`,
+      title: 'Grant Shared Content Access',
+      body: (name) => `Give ${name} read access to the entire shared (superadmin) vector store — all shared textbooks and chapters. Takes effect immediately; nothing is copied. The school's own private materials are unaffected.`,
       btn: 'Grant Access',
       btnClass: 'bg-blue-600 hover:bg-blue-700 text-white',
     },
     revoke: {
-      title: 'Revoke Shared Vector Store Access',
-      body: (name) => `This will disable shared vector store access for ${name}. Their private copies of the shared content will remain but no future syncs will occur.`,
+      title: 'Revoke Shared Content Access',
+      body: (name) => `Immediately remove ${name}'s access to the shared vector store. The school keeps its own private materials, and you can re-grant access anytime.`,
       btn: 'Revoke Access',
       btnClass: 'bg-red-600 hover:bg-red-700 text-white',
-    },
-    resync: {
-      title: 'Re-sync Shared Vector Store',
-      body: (name) => `This will re-copy all shared textbook embeddings and subject metadata to ${name}'s vector store, overwriting existing shared content copies. Private uploads are unaffected.`,
-      btn: 'Re-sync Now',
-      btnClass: 'bg-emerald-600 hover:bg-emerald-700 text-white',
     },
   };
 
@@ -175,35 +163,24 @@ export default function SchoolsPage() {
                           {shared ? 'Shared' : 'Private'}
                         </span>
 
-                        {/* Action button */}
+                        {/* Grant when private; Revoke when shared. Scope-based — instant, no sync. */}
                         {busy ? (
                           <div className="w-4 h-4 border-2 border-slate-300 border-t-blue-500 rounded-full animate-spin" />
                         ) : shared ? (
                           <button
-                            onClick={() => openConfirm(school, 'resync')}
-                            title="Re-sync shared vector store"
-                            className="p-1 text-slate-400 hover:text-emerald-600 transition-colors"
+                            onClick={() => openConfirm(school, 'revoke')}
+                            title="Revoke shared content access"
+                            className="p-1 text-slate-300 hover:text-red-500 transition-colors"
                           >
-                            <RefreshCw className="w-3.5 h-3.5" />
+                            <X className="w-3.5 h-3.5" />
                           </button>
                         ) : (
                           <button
                             onClick={() => openConfirm(school, 'grant')}
-                            title="Grant shared vector store access"
+                            title="Grant shared content access"
                             className="px-2 py-0.5 text-[11px] font-medium bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
                           >
                             Grant
-                          </button>
-                        )}
-
-                        {/* Revoke button (only visible when shared) */}
-                        {shared && !busy && (
-                          <button
-                            onClick={() => openConfirm(school, 'revoke')}
-                            title="Revoke shared vector store access"
-                            className="p-1 text-slate-300 hover:text-red-500 transition-colors"
-                          >
-                            <X className="w-3 h-3" />
                           </button>
                         )}
                       </div>

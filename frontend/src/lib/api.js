@@ -1,9 +1,29 @@
 import axios from 'axios';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
+// Public domains where the API is served same-origin (behind the proxy).
+const PROD_HOSTS = ['qgen.ramcoad.com', 'questionpapergeneration.duckdns.org'];
+// Port the Django backend listens on for local / LAN access.
+const LOCAL_API_PORT = 1223;
+
+// Resolve the backend base URL at runtime from where the frontend is loaded,
+// so a single build works both for clients (qgen.ramcoad.com) and for local
+// access via localhost / the LAN IP.
+function resolveApiBaseURL() {
+  // SSR / build time: no window — fall back to the env value or prod.
+  if (typeof window === 'undefined') {
+    return process.env.NEXT_PUBLIC_API_URL || 'https://qgen.ramcoad.com/api';
+  }
+  const { protocol, hostname, origin } = window.location;
+  // Client on a public domain -> same-origin API (proxy forwards /api to Django).
+  if (PROD_HOSTS.includes(hostname)) {
+    return `${origin}/api`;
+  }
+  // Local / LAN dev -> Django on the same host, port 1223.
+  return `${protocol}//${hostname}:${LOCAL_API_PORT}/api`;
+}
 
 const apiClient = axios.create({
-  baseURL: API_URL,
+  baseURL: resolveApiBaseURL(),
   withCredentials: true,
   xsrfCookieName: 'csrftoken',
   xsrfHeaderName: 'X-CSRFToken',
@@ -12,12 +32,15 @@ const apiClient = axios.create({
   },
 });
 
-// Session timeout in milliseconds (1 hour to match backend SESSION_COOKIE_AGE)
-const SESSION_TIMEOUT = 3600 * 1000;
+// Session timeout in milliseconds (24 hours — matches backend SESSION_COOKIE_AGE)
+const SESSION_TIMEOUT = 24 * 3600 * 1000;
 
 // Add request interceptor for auth token and session expiration
 apiClient.interceptors.request.use(
   (config) => {
+    // Resolve the backend URL per-request so it always matches the current host.
+    config.baseURL = resolveApiBaseURL();
+
     // Skip session check for auth endpoints
     if (config.url.startsWith('/auth/login') || config.url.startsWith('/auth/logout')) {
       return config;

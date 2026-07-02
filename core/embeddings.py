@@ -140,49 +140,95 @@ def get_collection(class_name, subject, provider='local', reset_if_corrupted=Fal
 
 # ── Copy shared store to a school's private store ─────────────────────────────
 def copy_shared_to_school(school_id):
-    import shutil
-    shared_base = os.path.join("vector_store", "shared")
-    school_base = os.path.join("vector_store", f"school_{school_id}")
-    if not os.path.exists(shared_base):
-        print(f"[Embeddings] No shared store found — nothing to copy")
-        return 0
-    os.makedirs(school_base, exist_ok=True)
-    count = 0
-    for dir_name in os.listdir(shared_base):
-        src = os.path.join(shared_base, dir_name)
-        if not os.path.isdir(src):
+    """Deprecated no-op. Sharing is now scope-based (core.access.visibility_q): a school granted
+    access_shared_vector_store sees the shared store directly at query time, so there is nothing
+    to copy. Kept as a stub so existing callers don't break."""
+    return 0
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  pgvector-backed store (replaces ChromaDB).                                ║
+# ║  One MaterialChunk row per chunk, embedded once; chapter membership is a   ║
+# ║  many-to-many (ChunkChapter) so a multi-chapter note is stored ONCE.       ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# Separator hierarchy, most-natural boundary first: paragraph → line → sentence → clause → word.
+_CHUNK_SEPARATORS = ["\n\n", "\n", ". ", "? ", "! ", "; ", ", ", " ", ""]
+
+
+def _split_recursive(text, size, seps):
+    """Break `text` into pieces each <= `size`, splitting on the FIRST separator in `seps` that
+    occurs — so we cut on paragraph breaks before line breaks before sentences before words, and
+    only hard-cut mid-word as a last resort. Returns a flat list of pieces (separators retained)."""
+    if len(text) <= size:
+        return [text]
+    sep, rest = "", []
+    for i, s in enumerate(seps):
+        if s == "":
+            break  # exhausted natural separators → hard split below
+        if s in text:
+            sep, rest = s, seps[i + 1:]
+            break
+    if sep == "":
+        return [text[j:j + size] for j in range(0, len(text), size)]
+    pieces = []
+    parts = text.split(sep)
+    for k, part in enumerate(parts):
+        piece = part + (sep if k < len(parts) - 1 else "")
+        if not piece:
             continue
-        dst = os.path.join(school_base, dir_name)
-        if os.path.exists(dst):
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-        count += 1
-        print(f"[Embeddings] Copied shared/{dir_name} → school_{school_id}/{dir_name}")
-    return count
+        if len(piece) > size:
+            pieces.extend(_split_recursive(piece, size, rest))
+        else:
+            pieces.append(piece)
+    return pieces
 
 
-# ── Ingest ────────────────────────────────────────────────────────────────────
-def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook", provider='local', school_id=None, page_range=None, units=None, source_id=None):
-    """Ingest a PDF (or a page range of it) as `unit`. page_range=(start, end) ingests only
-    pages [start, end) — used to ingest one chapter out of a whole-book PDF.
+def _merge_with_overlap(pieces, size, overlap):
+    """Greedily pack pieces into chunks <= ~size, carrying a word-aligned `overlap` tail from the
+    previous chunk into the next so context isn't severed at a boundary."""
+    chunks, cur = [], ""
+    for p in pieces:
+        if cur and len(cur) + len(p) > size:
+            chunks.append(cur.strip())
+            if overlap > 0:
+                tail = cur[-overlap:]
+                sp = tail.find(" ")               # start overlap at a word boundary
+                cur = tail[sp + 1:] if sp != -1 else tail
+            else:
+                cur = ""
+        cur += p
+    if cur.strip():
+        chunks.append(cur.strip())
+    return chunks
 
-    `units` (plural) attaches the SAME file to several chapter labels (e.g. notes that span
-    multiple chapters): the file is read + embedded once, then its chunks are written once per
-    unit so the content is retrievable for each chapter. When `units` is falsy the function
-    behaves exactly as before, tagging chunks with the single `unit`.
 
-    `source_id` (the Material row id) makes chunk ids material-scoped and stamps a `material_id`
-    on each chunk. This is REQUIRED when a file shares a unit label with another material — e.g.
-    notes attached to the textbook chapter 'Light' — otherwise the chunk ids collide with the
-    textbook's and Chroma silently drops them. When None, the legacy id scheme is kept so
-    textbook ingestion is byte-for-byte unchanged."""
-    class_name = normalize_label(class_name)
-    subject    = normalize_label(subject)
-    unit_labels = [u for u in (normalize_label(u) for u in (units or [unit])) if u]
-    if not unit_labels:
-        unit_labels = [normalize_label(unit)]
+def _chunk_text(text, size=1000, overlap=150):
+    """Structure-aware chunking (Tier 0): split on natural boundaries (paragraph → line → sentence
+    → word) and pack into ~`size`-char chunks with ~15% overlap, instead of arbitrary fixed-width
+    cuts. Keeps definitions / worked examples coherent and avoids severing sentences mid-way.
+    Returns [(index, chunk_text), …]."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    pieces = _split_recursive(text, size, _CHUNK_SEPARATORS)
+    chunks = _merge_with_overlap(pieces, size, overlap)
+    # Fold a tiny trailing fragment back into the previous chunk so we don't embed a stub.
+    if len(chunks) >= 2 and len(chunks[-1]) < size * 0.25:
+        chunks[-2] = (chunks[-2] + " " + chunks[-1]).strip()
+        chunks.pop()
+    return [(i, c) for i, c in enumerate(chunks) if c.strip()]
+
+
+def _emb_field(provider):
+    """Which embedding column a provider writes to / queries (dims differ, so columns differ)."""
+    return "embedding_or" if provider == "openrouter" else "embedding_local"
+
+
+def _read_pdf_text(pdf_path, page_range=None):
+    """Extract text from a PDF (or a page range), with a pdfplumber fallback for pages PyPDF2
+    chokes on. Returns the concatenated text; raises on unreadable files / no text."""
     pdf_filename = os.path.basename(pdf_path)
-
     try:
         reader = PdfReader(pdf_path)
     except Exception as e:
@@ -218,73 +264,77 @@ def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="t
 
     if pages_skipped:
         print(f"[Embeddings] '{pdf_filename}' — skipped {pages_skipped} pages")
+    # Legacy non-Unicode font (Walkman-Chanakya905 / Kruti Dev / DevLys): the extracted bytes are
+    # ASCII gibberish. Transcode to real Unicode Devanagari so chunks embed meaningfully. No-op for
+    # ordinary Unicode/Latin PDFs (their fonts don't match the legacy-font list).
+    from . import legacy_font
+    text = legacy_font.decode_if_legacy(pdf_path, text)
     if not text.strip():
         raise ValueError(f"No text extracted from '{pdf_filename}'")
-
-    chunks = [(i, c) for i, c in enumerate(text[j:j+800] for j in range(0, len(text), 800)) if c.strip()]
-    if not chunks:
-        return 0
-
-    print(f"[Embeddings] '{pdf_filename}' — {len(chunks)} chunks, provider={provider}")
-    vectors = get_embeddings_batch([c for _, c in chunks], provider)
-
-    collection = get_collection(class_name, subject, provider, school_id=school_id)
-    ids, embeddings, docs, metas = [], [], [], []
-    id_tag = "" if source_id is None else f"{source_id}_"
-    for lbl in unit_labels:
-        for (i, chunk), emb in zip(chunks, vectors):
-            ids.append(f"{class_name}_{subject}_{lbl}_{id_tag}{i}")
-            embeddings.append(emb)
-            docs.append(chunk)
-            meta = {"class": class_name, "subject": subject, "unit": lbl,
-                    "title": title or pdf_filename, "type": material_type}
-            if source_id is not None:
-                meta["material_id"] = source_id
-            metas.append(meta)
-    try:
-        collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
-        print(f"[Embeddings] Added {len(ids)} chunks from '{pdf_filename}'"
-              + (f" across {len(unit_labels)} chapters" if len(unit_labels) > 1 else ""))
-    except Exception as e:
-        if "invalid literal for int" in str(e) or "base 16" in str(e):
-            collection = get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
-            collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
-        else:
-            raise Exception(f"DB error for '{pdf_filename}': {e}")
-    return len(ids)
+    return text
 
 
-def ingest_text(class_name, subject, unit, text, title=None, material_type="textbook", provider='local', school_id=None):
-    """Ingest a raw text blob as `unit` (e.g. one chapter extracted from an HTML book).
-    Same chunk → embed → add path as ingest_pdf, minus the PDF reading. Returns chunk count."""
-    class_name = normalize_label(class_name)
-    subject    = normalize_label(subject)
-    unit       = normalize_label(unit)
+def _store_chunks(class_name, subject, unit_labels, text, title, material_type, provider, school_id, source_id):
+    """Embed `text` once and persist MaterialChunk rows + ChunkChapter links for each unit label.
+    The chunk is stored ONE time; `unit_labels` only multiplies the (cheap) chapter links — no
+    re-embedding or chunk duplication when a note spans several chapters. Returns chunk count."""
+    from .models import MaterialChunk, ChunkChapter
+    cls = normalize_label(class_name)
+    subj = normalize_label(subject)
+    labels = [u for u in (normalize_label(u) for u in unit_labels) if u]
+
     if not (text or "").strip():
         return 0
-
-    chunks = [(i, c) for i, c in enumerate(text[j:j+800] for j in range(0, len(text), 800)) if c.strip()]
+    chunks = _chunk_text(text)
     if not chunks:
         return 0
 
+    print(f"[Embeddings] '{title}' — {len(chunks)} chunks, provider={provider}")
     vectors = get_embeddings_batch([c for _, c in chunks], provider)
-    collection = get_collection(class_name, subject, provider, school_id=school_id)
-    ids, embs, docs, metas = [], [], [], []
-    for (i, chunk), emb in zip(chunks, vectors):
-        ids.append(f"{class_name}_{subject}_{unit}_{i}")
-        embs.append(emb)
-        docs.append(chunk)
-        metas.append({"class": class_name, "subject": subject, "unit": unit,
-                      "title": title or unit, "type": material_type})
-    try:
-        collection.add(ids=ids, embeddings=embs, documents=docs, metadatas=metas)
-    except Exception as e:
-        if "invalid literal for int" in str(e) or "base 16" in str(e):
-            collection = get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
-            collection.add(ids=ids, embeddings=embs, documents=docs, metadatas=metas)
-        else:
-            raise Exception(f"DB error ingesting unit '{unit}': {e}")
-    return len(ids)
+    field = _emb_field(provider)
+
+    objs = []
+    for (i, content), vec in zip(chunks, vectors):
+        kwargs = dict(
+            material_id=source_id, school_id=school_id, class_name=cls, subject=subj,
+            title=(title or "")[:255], material_type=material_type, chunk_index=i,
+            content=content, provider=provider,
+        )
+        kwargs[field] = list(vec)
+        objs.append(MaterialChunk(**kwargs))
+    created = MaterialChunk.objects.bulk_create(objs)
+
+    if labels:
+        links = [ChunkChapter(chunk=c, unit=u) for c in created for u in labels]
+        ChunkChapter.objects.bulk_create(links, ignore_conflicts=True)
+
+    print(f"[Embeddings] Stored {len(created)} chunks for '{title}'"
+          + (f" across {len(labels)} chapters" if len(labels) > 1 else ""))
+    return len(created)
+
+
+# ── Ingest ────────────────────────────────────────────────────────────────────
+def ingest_pdf(class_name, subject, unit, pdf_path, title=None, material_type="textbook",
+               provider='local', school_id=None, page_range=None, units=None, source_id=None):
+    """Ingest a PDF (or a page range) as one or more chapter labels.
+
+    `units` (plural) attaches the SAME file to several chapters — the file is read + embedded
+    ONCE and a single set of chunk rows is linked to every chapter (no duplication). `source_id`
+    is the owning Material row id (FK), so a chunk cascades away when its Material is deleted and
+    `delete_material_embeddings` can target it precisely."""
+    text = _read_pdf_text(pdf_path, page_range)
+    unit_labels = units if units else [unit]
+    return _store_chunks(class_name, subject, unit_labels, text,
+                         title or os.path.basename(pdf_path), material_type, provider, school_id, source_id)
+
+
+def ingest_text(class_name, subject, unit, text, title=None, material_type="textbook",
+                provider='local', school_id=None, source_id=None, units=None):
+    """Ingest a raw text blob (e.g. a chapter extracted from an HTML book). Same store path as
+    ingest_pdf, minus the PDF reading."""
+    unit_labels = units if units else [unit]
+    return _store_chunks(class_name, subject, unit_labels, text,
+                         title or unit or "", material_type, provider, school_id, source_id)
 
 
 def ingest_bulk(class_name, subject, chapters, material_type="textbook", provider='local', school_id=None):
@@ -296,7 +346,7 @@ def ingest_bulk(class_name, subject, chapters, material_type="textbook", provide
             n = ingest_pdf(class_name, subject, ch["unit"], ch["file_path"],
                            title=ch.get("title"), material_type=material_type, provider=provider,
                            school_id=school_id, units=ch.get("chapters") or None,
-                           source_id=ch.get("material_id") if material_type != "textbook" else None)
+                           source_id=ch.get("material_id"))
             total += n
             print(f"[Embeddings] OK: {pdf_filename} ({n} chunks)")
         except Exception as e:
@@ -308,132 +358,111 @@ def ingest_bulk(class_name, subject, chapters, material_type="textbook", provide
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────
-# Remember which collections we've already warned are dimension-mismatched, so a
-# broken collection produces ONE clear actionable line — not a stack trace per query.
-_DIM_MISMATCH_WARNED = set()
+def _scoped_chunks(cls, subj, field, school_id):
+    """Chunks for class+subject that have an embedding in the requested provider's column, scoped
+    by MATERIAL VISIBILITY (single source of truth, core.access.visibility_q):
+        own school's chunks  ∪  institutional (any school)  ∪  shared (if school granted access).
+    school_id None (superadmin / no-school) → shared ∪ institutional. This replaces the old
+    copy-shared-into-each-school approach — access changes take effect instantly, no duplication."""
+    from .models import MaterialChunk, School
+    from .access import visibility_q
+    base = MaterialChunk.objects.filter(class_name=cls, subject=subj, **{f"{field}__isnull": False})
+    school = School.objects.filter(id=school_id).first() if school_id else None
+    return base.filter(visibility_q(school, visibility_field="material__visibility",
+                                    school_field="school", store_field="material__vector_store"))
 
 
 def query(class_name, subject, unit, query_text, n_results=5, provider='local', school_id=None):
-    class_name = normalize_label(class_name)
-    subject    = normalize_label(subject)
-    unit       = normalize_label(unit)
+    """ANN retrieval over the pgvector store. Returns the SAME shape the ChromaDB layer did
+    (list-of-one-list per key) so existing consumers in generator/section_generator are unchanged.
+    `unit` falsy → search across all chapters of the subject."""
+    from pgvector.django import CosineDistance
+    cls = normalize_label(class_name)
+    subj = normalize_label(subject)
+    u = normalize_label(unit)
     empty = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-
-    def _do_query(coll, nr):
-        return coll.query(
-            query_embeddings=[get_embedding(query_text, provider)],
-            n_results=nr,
-            where={"unit": unit} if unit else {},
-            include=["embeddings", "documents", "metadatas", "distances"]
-        )
+    field = _emb_field(provider)
 
     try:
-        collection = get_collection(class_name, subject, provider, school_id=school_id)
-
-        # If the school-specific store is empty, fall back to the shared store automatically.
-        effective_school_id = school_id
-        if school_id and collection.count() == 0:
-            print(f"[Embeddings] school_{school_id}/{class_name}_{subject} is empty — falling back to shared store")
-            collection = get_collection(class_name, subject, provider, school_id=None)
-            effective_school_id = None
-
-        total = collection.count()
-        safe_n = min(n_results, total) if total > 0 else 0
-        if safe_n == 0:
-            return empty
-
-        # Guard: the collection must have been built with the same embedding model we
-        # query with, or ChromaDB rejects every query on a dimension mismatch and we'd
-        # silently generate ungrounded papers. Detect it cheaply and surface it ONCE.
-        expected_dim = EMBED_DIMS.get(provider)
-        try:
-            embs = collection.get(limit=1, include=["embeddings"]).get("embeddings")
-            coll_dim = len(embs[0]) if embs is not None and len(embs) > 0 and embs[0] is not None else None
-        except Exception:
-            coll_dim = None
-        if expected_dim and coll_dim and coll_dim != expected_dim:
-            key = (class_name, subject, effective_school_id)
-            if key not in _DIM_MISMATCH_WARNED:
-                _DIM_MISMATCH_WARNED.add(key)
-                print(f"[Embeddings] ⚠️  DIM MISMATCH {class_name}/{subject} "
-                      f"(school_id={effective_school_id}): collection is {coll_dim}-dim but the "
-                      f"'{provider}' model is {expected_dim}-dim. Returning NO context — fix with "
-                      f"`python manage.py fix_embedding_dims --apply`.")
-            return empty
-
-        return _do_query(collection, safe_n)
+        vec = get_embedding(query_text, provider)
     except Exception as e:
-        if "invalid literal for int" in str(e) or "base 16" in str(e):
-            try:
-                get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
-            except Exception:
-                pass
-            return empty
-        raise
+        print(f"[Embeddings] query embed failed ({provider}): {e}")
+        return empty
+
+    try:
+        qs = _scoped_chunks(cls, subj, field, school_id)
+        if u:
+            qs = qs.filter(chapter_links__unit=u)
+        rows = list(
+            qs.annotate(distance=CosineDistance(field, vec))
+              .order_by("distance")[:max(1, int(n_results))]
+        )
+    except Exception as e:
+        print(f"[Embeddings] query failed for {cls}/{subj} unit='{u}': {e}")
+        return empty
+
+    if not rows:
+        return empty
+
+    ids   = [str(r.id) for r in rows]
+    docs  = [r.content for r in rows]
+    dists = [float(getattr(r, "distance", 0.0) or 0.0) for r in rows]
+    metas = [{"class": cls, "subject": subj, "unit": u, "title": r.title or "",
+              "type": r.material_type, "material_id": r.material_id} for r in rows]
+    def _vec(v):
+        if v is None:
+            return []
+        return v.tolist() if hasattr(v, "tolist") else list(v)
+    embs  = [_vec(getattr(r, field)) for r in rows]
+    return {"ids": [ids], "documents": [docs], "metadatas": [metas],
+            "distances": [dists], "embeddings": [embs]}
 
 
-# ── Delete embeddings ─────────────────────────────────────────────────────────
+# ── Delete ────────────────────────────────────────────────────────────────────
 def delete_unit_embeddings(class_name, subject, unit, school_id=None):
-    """Remove all embedding chunks for a unit from every provider's collection."""
-    class_name = normalize_label(class_name)
-    subject    = normalize_label(subject)
-    unit       = normalize_label(unit)
-    if not unit:
+    """Delete chunks linked to a chapter label in a given store. For textbooks (1 material ↔ 1
+    chapter) this is exact; multi-chapter notes should be deleted via delete_material_embeddings."""
+    from .models import MaterialChunk
+    cls = normalize_label(class_name)
+    subj = normalize_label(subject)
+    u = normalize_label(unit)
+    if not u:
         return
-    for provider in COLLECTION_NAMES:
-        try:
-            col = get_collection(class_name, subject, provider, school_id=school_id)
-            ids = col.get(where={"unit": unit}, include=[])["ids"]
-            if ids:
-                col.delete(ids=ids)
-                print(f"[Embeddings] Deleted {len(ids)} chunks for unit='{unit}' ({provider}) school_id={school_id}")
-        except Exception as e:
-            print(f"[Embeddings] Could not delete embeddings for unit='{unit}' ({provider}): {e}")
+    qs = MaterialChunk.objects.filter(class_name=cls, subject=subj, chapter_links__unit=u)
+    qs = qs.filter(school_id=school_id) if school_id else qs.filter(school__isnull=True)
+    n, _ = qs.delete()
+    if n:
+        print(f"[Embeddings] Deleted {n} rows for unit='{u}' school_id={school_id}")
 
 
 def delete_material_embeddings(class_name, subject, material_id, school_id=None):
-    """Remove only the chunks belonging to one Material row (by `material_id` metadata), across
-    every provider's collection. Used for non-textbook materials whose chunks share a unit label
-    with a textbook chapter — deleting by unit would wrongly wipe the textbook's chunks."""
-    class_name = normalize_label(class_name)
-    subject    = normalize_label(subject)
+    """Delete only the chunks owned by one Material row (precise — never touches a textbook
+    chapter that shares the same unit label)."""
+    from .models import MaterialChunk
     if material_id is None:
         return
-    for provider in COLLECTION_NAMES:
-        try:
-            col = get_collection(class_name, subject, provider, school_id=school_id)
-            ids = col.get(where={"material_id": material_id}, include=[])["ids"]
-            if ids:
-                col.delete(ids=ids)
-                print(f"[Embeddings] Deleted {len(ids)} chunks for material_id={material_id} ({provider}) school_id={school_id}")
-        except Exception as e:
-            print(f"[Embeddings] Could not delete embeddings for material_id={material_id} ({provider}): {e}")
+    n, _ = MaterialChunk.objects.filter(material_id=material_id).delete()
+    if n:
+        print(f"[Embeddings] Deleted {n} rows for material_id={material_id}")
 
 
 def delete_subject_embeddings(class_name, subject, school_id=None):
-    """Drop the entire vector store directory for a class+subject."""
-    import shutil
-    namespace = "shared" if school_id is None else f"school_{school_id}"
-    db_dir = os.path.join("vector_store", namespace, f"{normalize_label(class_name)}_{normalize_label(subject)}")
-    if os.path.exists(db_dir):
-        try:
-            shutil.rmtree(db_dir)
-            print(f"[Embeddings] Deleted vector store: {db_dir}")
-        except Exception as e:
-            print(f"[Embeddings] Could not delete vector store '{db_dir}': {e}")
+    """Delete every chunk for a class+subject in a given store."""
+    from .models import MaterialChunk
+    cls = normalize_label(class_name)
+    subj = normalize_label(subject)
+    qs = MaterialChunk.objects.filter(class_name=cls, subject=subj)
+    qs = qs.filter(school_id=school_id) if school_id else qs.filter(school__isnull=True)
+    n, _ = qs.delete()
+    if n:
+        print(f"[Embeddings] Deleted {n} rows for {cls}/{subj} school_id={school_id}")
 
 
 # ── List units ────────────────────────────────────────────────────────────────
 def list_units(class_name, subject, provider='local', school_id=None):
-    try:
-        col = get_collection(class_name, subject, provider, school_id=school_id)
-        results = col.get(include=["metadatas"])
-        return sorted(set(m["unit"] for m in results["metadatas"]))
-    except Exception as e:
-        if "invalid literal for int" in str(e) or "base 16" in str(e):
-            try:
-                get_collection(class_name, subject, provider, reset_if_corrupted=True, school_id=school_id)
-            except Exception:
-                pass
-            return []
-        raise
+    from .models import ChunkChapter
+    cls = normalize_label(class_name)
+    subj = normalize_label(subject)
+    qs = ChunkChapter.objects.filter(chunk__class_name=cls, chunk__subject=subj)
+    qs = qs.filter(chunk__school_id=school_id) if school_id else qs.filter(chunk__school__isnull=True)
+    return sorted(set(qs.values_list("unit", flat=True)))

@@ -374,6 +374,202 @@ def school_resync_vectorstore(request, pk):
     return Response({'message': 'Re-sync started', 'task_id': task.id})
 
 
+@api_view(['GET', 'POST'])
+@permission_classes([IsSuperAdmin])
+def school_vector_links(request, pk):
+    """Cross-school vector-store links for a school (viewer = this school).
+
+    GET  → {links:[{source_id, source_name, mutual}], linkable:[{id,name}]}
+    POST → body {source_id, mutual?}: grant this school read access to source's materials;
+           `mutual` also grants the reciprocal. Scope-based — instant, nothing copied."""
+    try:
+        school = School.objects.get(pk=pk)
+    except School.DoesNotExist:
+        return Response({'error': 'School not found'}, status=status.HTTP_404_NOT_FOUND)
+    from core.models import SchoolVectorLink
+
+    if request.method == 'GET':
+        out_ids = set(SchoolVectorLink.objects.filter(viewer=school).values_list('source_id', flat=True))
+        in_ids = set(SchoolVectorLink.objects.filter(source=school).values_list('viewer_id', flat=True))
+        names = {s.id: s.name for s in School.objects.filter(id__in=out_ids)}
+        links = sorted(
+            [{'source_id': sid, 'source_name': names.get(sid, '?'), 'mutual': sid in in_ids} for sid in out_ids],
+            key=lambda x: x['source_name'].lower(),
+        )
+        linkable = [{'id': s.id, 'name': s.name} for s in School.objects.exclude(id=school.id).order_by('name')]
+        return Response({'links': links, 'linkable': linkable})
+
+    # POST — add a link
+    source = School.objects.filter(pk=request.data.get('source_id')).first()
+    if not source:
+        return Response({'error': 'Source school not found'}, status=status.HTTP_404_NOT_FOUND)
+    if source.id == school.id:
+        return Response({'error': 'A school cannot link to itself'}, status=status.HTTP_400_BAD_REQUEST)
+    mutual = bool(request.data.get('mutual', False))
+    SchoolVectorLink.objects.get_or_create(viewer=school, source=source, defaults={'created_by': request.user})
+    if mutual:
+        SchoolVectorLink.objects.get_or_create(viewer=source, source=school, defaults={'created_by': request.user})
+    return Response(
+        {'message': f'{school.name} can now read {source.name}' + (' (mutual)' if mutual else '')},
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsSuperAdmin])
+def school_vector_link_remove(request, pk, source_id):
+    """Remove the viewer(pk) → source link. ?mutual=1 also removes the reciprocal link."""
+    from core.models import SchoolVectorLink
+    SchoolVectorLink.objects.filter(viewer_id=pk, source_id=source_id).delete()
+    if request.GET.get('mutual') in ('1', 'true', 'True'):
+        SchoolVectorLink.objects.filter(viewer_id=source_id, source_id=pk).delete()
+    return Response({'message': 'Link removed'})
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsSuperAdmin])
+def school_vector_stores(request, pk):
+    """Named vector stores allocated to a school (the other side of the M2M managed on the
+    Vector Stores page).
+    GET  → {allocated:[{id,name}], allocatable:[{id,name}]}
+    POST {store_id} → allocate that store to this school (scope-based, instant)."""
+    from core.models import VectorStore
+    try:
+        school = School.objects.get(pk=pk)
+    except School.DoesNotExist:
+        return Response({'error': 'School not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        allocated_ids = set(school.vector_stores.values_list('id', flat=True))
+        allocated = [{'id': s.id, 'name': s.name, 'material_count': s.materials.count()}
+                     for s in school.vector_stores.all().order_by('name')]
+        allocatable = [{'id': s.id, 'name': s.name}
+                       for s in VectorStore.objects.exclude(id__in=allocated_ids).order_by('name')]
+        return Response({'allocated': allocated, 'allocatable': allocatable})
+
+    store = VectorStore.objects.filter(pk=request.data.get('store_id')).first()
+    if not store:
+        return Response({'error': 'Vector store not found'}, status=status.HTTP_404_NOT_FOUND)
+    store.schools.add(school)
+    return Response({'message': f'{store.name} allocated to {school.name}'}, status=status.HTTP_201_CREATED)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsSuperAdmin])
+def school_vector_store_remove(request, pk, store_id):
+    """Remove a named vector store's allocation to this school."""
+    from core.models import VectorStore
+    school = School.objects.filter(pk=pk).first()
+    store = VectorStore.objects.filter(pk=store_id).first()
+    if school and store:
+        store.schools.remove(school)
+    return Response({'message': 'Allocation removed'})
+
+
+# ── named vector stores (superadmin-managed shared corpora) ───────────────────
+
+def _store_content_tree(vs):
+    """What's uploaded into this store, grouped class → subject → units (chapters).
+    [{class_name, material_count, subjects: [{subject, material_count, units: [...]}]}]"""
+    from collections import defaultdict
+    units = defaultdict(lambda: defaultdict(list))   # class → subject → [unit names]
+    counts = defaultdict(lambda: defaultdict(int))
+    for m in vs.materials.all().values('class_name', 'subject', 'unit'):
+        c = (m['class_name'] or '—').strip() or '—'
+        s = (m['subject'] or '—').strip() or '—'
+        u = (m['unit'] or '').strip()
+        counts[c][s] += 1
+        if u and u not in units[c][s]:
+            units[c][s].append(u)
+    out = []
+    for c in sorted(units, key=lambda x: (len(x), x)):   # "8","9","10" sort sensibly-ish
+        subjects = [{'subject': s, 'material_count': counts[c][s], 'units': sorted(units[c][s])}
+                    for s in sorted(units[c])]
+        out.append({'class_name': c, 'material_count': sum(counts[c].values()), 'subjects': subjects})
+    return out
+
+
+def _vector_store_to_dict(vs, include_detail=False):
+    d = {
+        'id': vs.id,
+        'name': vs.name,
+        'description': vs.description,
+        'material_count': vs.materials.count(),
+        'school_count': vs.schools.count(),
+        'created_at': vs.created_at,
+        'updated_at': vs.updated_at,
+    }
+    if include_detail:
+        d['schools'] = [{'id': s.id, 'name': s.name}
+                        for s in vs.schools.all().order_by('name')]
+        d['allocatable'] = [{'id': s.id, 'name': s.name}
+                            for s in School.objects.exclude(id__in=vs.schools.values_list('id', flat=True)).order_by('name')]
+        d['content'] = _store_content_tree(vs)
+    return d
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsSuperAdmin])
+def vector_stores_list(request):
+    """GET → list every vector store (with material/school counts).
+    POST {name, description?, school_ids?} → create a store, optionally allocated to schools."""
+    from core.models import VectorStore
+    if request.method == 'GET':
+        stores = VectorStore.objects.all().order_by('name')
+        return Response([_vector_store_to_dict(vs) for vs in stores])
+
+    name = (request.data.get('name') or '').strip()
+    if not name:
+        return Response({'error': 'name is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if VectorStore.objects.filter(name__iexact=name).exists():
+        return Response({'error': 'A vector store with this name already exists'}, status=status.HTTP_400_BAD_REQUEST)
+    vs = VectorStore.objects.create(
+        name=name,
+        description=request.data.get('description', '') or '',
+        created_by=request.user,
+    )
+    school_ids = request.data.get('school_ids') or []
+    if school_ids:
+        vs.schools.set(School.objects.filter(id__in=school_ids))
+    return Response(_vector_store_to_dict(vs, include_detail=True), status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET', 'PATCH', 'DELETE'])
+@permission_classes([IsSuperAdmin])
+def vector_store_detail(request, pk):
+    """GET → store detail incl. allocated + allocatable schools.
+    PATCH {name?, description?, school_ids?} → rename / re-describe / REPLACE the allocation set.
+    DELETE → delete the store (its materials' vector_store FK is set null; embeddings survive but
+             become invisible to schools that only reached them via this store)."""
+    from core.models import VectorStore
+    try:
+        vs = VectorStore.objects.get(pk=pk)
+    except VectorStore.DoesNotExist:
+        return Response({'error': 'Vector store not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        return Response(_vector_store_to_dict(vs, include_detail=True))
+
+    if request.method == 'DELETE':
+        vs.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    if 'name' in request.data:
+        new_name = (request.data.get('name') or '').strip()
+        if not new_name:
+            return Response({'error': 'name cannot be empty'}, status=status.HTTP_400_BAD_REQUEST)
+        if VectorStore.objects.filter(name__iexact=new_name).exclude(pk=vs.pk).exists():
+            return Response({'error': 'A vector store with this name already exists'}, status=status.HTTP_400_BAD_REQUEST)
+        vs.name = new_name
+    if 'description' in request.data:
+        vs.description = request.data.get('description', '') or ''
+    vs.save()
+    if 'school_ids' in request.data:
+        ids = request.data.get('school_ids') or []
+        vs.schools.set(School.objects.filter(id__in=ids))
+    return Response(_vector_store_to_dict(vs, include_detail=True))
+
+
 # ── CBSE patterns list ────────────────────────────────────────────────────────
 
 @api_view(['GET'])

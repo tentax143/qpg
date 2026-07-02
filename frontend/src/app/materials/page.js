@@ -8,12 +8,18 @@ import {
   ChevronRight, ExternalLink, GraduationCap,
   Layers, MoreVertical, CheckCircle, Info,
   AlertCircle, FileDown, Eye, X, Edit,
-  CheckSquare, Square
+  CheckSquare, Square, ShieldCheck
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import CustomSelect from '@/components/CustomSelect';
+
+const VISIBILITY_BADGE = {
+  shared:        { label: 'Shared',      cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  private:       { label: 'Private',     cls: 'bg-gray-100 text-gray-600 border-gray-200' },
+  institutional: { label: 'All Schools', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+};
 
 export default function MaterialsPage() {
   const [materials, setMaterials] = useState([]);
@@ -23,7 +29,7 @@ export default function MaterialsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
-  const [filters, setFilters] = useState({ class_name: '', subject: '' });
+  const [filters, setFilters] = useState({ class_name: '', subject: '', visibility: '' });
   const [selectedItems, setSelectedItems] = useState([]);
 
   useEffect(() => {
@@ -69,7 +75,8 @@ export default function MaterialsPage() {
     const filtered = data.filter(m => {
       const matchClass = filters.class_name === '' || String(m.class_name) === filters.class_name;
       const matchSubject = filters.subject === '' || String(m.subject) === filters.subject;
-      return matchClass && matchSubject;
+      const matchVis = filters.visibility === '' || (m.visibility || 'private') === filters.visibility;
+      return matchClass && matchSubject && matchVis;
     });
 
     const groups = {};
@@ -186,7 +193,7 @@ export default function MaterialsPage() {
       {/* Filter Section */}
       <div className="bg-white/80 backdrop-blur-xl rounded-[32px] shadow-2xl shadow-blue-500/5 border border-white/20 p-8 mb-12 group transition-all duration-500 hover:shadow-blue-500/10">
         <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-end">
-          <div className="md:col-span-12 lg:col-span-5">
+          <div className="md:col-span-12 lg:col-span-3">
             <CustomSelect
               label="Filter by Class"
               icon={Filter}
@@ -197,7 +204,7 @@ export default function MaterialsPage() {
             />
           </div>
 
-          <div className="md:col-span-12 lg:col-span-4">
+          <div className="md:col-span-12 lg:col-span-3">
             <CustomSelect
               label="Filter by Subject"
               icon={BookOpen}
@@ -205,6 +212,21 @@ export default function MaterialsPage() {
               onChange={(val) => setFilters(prev => ({ ...prev, subject: val }))}
               options={subjects.map(s => ({ label: s, value: s }))}
               placeholder="All Subjects"
+            />
+          </div>
+
+          <div className="md:col-span-12 lg:col-span-3">
+            <CustomSelect
+              label="Filter by Scope"
+              icon={ShieldCheck}
+              value={filters.visibility}
+              onChange={(val) => setFilters(prev => ({ ...prev, visibility: val }))}
+              options={[
+                { label: 'Shared (global)', value: 'shared' },
+                { label: 'Private to school', value: 'private' },
+                { label: 'All schools', value: 'institutional' },
+              ]}
+              placeholder="All Scopes"
             />
           </div>
 
@@ -218,7 +240,7 @@ export default function MaterialsPage() {
             </button>
             <button 
               onClick={() => {
-                setFilters({ class_name: '', subject: '' });
+                setFilters({ class_name: '', subject: '', visibility: '' });
                 setSelectedItems([]);
                 fetchData(false);
               } }
@@ -319,6 +341,7 @@ export default function MaterialsPage() {
                       <th className="px-4 py-4 min-w-[200px]">Lesson/Chapter Name</th>
                       <th className="px-4 py-4 min-w-[200px]">Title</th>
                       <th className="px-4 py-4">Type</th>
+                      <th className="px-4 py-4">Scope</th>
                       <th className="px-4 py-4">Uploaded</th>
                       <th className="px-6 py-4 text-right">Actions</th>
                     </tr>
@@ -347,6 +370,16 @@ export default function MaterialsPage() {
                           <span className="px-2.5 py-1 bg-cyan-50 text-cyan-700 text-[9px] font-black rounded-lg border border-cyan-100 uppercase">
                             {item.type_display || 'Textbook'}
                           </span>
+                        </td>
+                        <td className="px-4 py-4">
+                          {(() => {
+                            const v = VISIBILITY_BADGE[item.visibility] || VISIBILITY_BADGE.private;
+                            return (
+                              <span className={`px-2.5 py-1 text-[9px] font-black rounded-lg border uppercase ${v.cls}`}>
+                                {v.label}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-4">
                           <p className="text-[11px] font-bold text-gray-600 uppercase tracking-tight">

@@ -54,14 +54,26 @@ def converse(
     temperature: float = 0.7,
     system_prompt: str = None,
     retries: int = 3,
+    timeout=None,
 ):
     """
     Call the Mantle Chat Completions endpoint.
+
+    `timeout` is a (connect, read) tuple. When None it is derived from `max_tokens`: a short
+    connect window so a stalled TLS handshake under parallel load fails fast and retries
+    quickly (instead of burning the whole window), and a READ window that scales with the
+    requested output — a large generation (e.g. an 8k-token Tamil section) legitimately
+    streams for several minutes, where a flat 120s read timeout truncated it into a hard
+    failure and the whole section was dropped from the paper.
 
     Returns:
         (text: str, input_tokens: int, output_tokens: int)
     """
     url = f"{BASE_URL}/chat/completions"
+
+    if timeout is None:
+        read_timeout = min(300, max(120, 90 + max_tokens * 0.05))
+        timeout = (15, read_timeout)
 
     messages = []
     if system_prompt:
@@ -82,7 +94,7 @@ def converse(
             "Authorization": f"Bearer {api_key}",
         }
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=120)
+            resp = requests.post(url, headers=headers, json=body, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
 

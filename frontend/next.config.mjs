@@ -2,6 +2,7 @@
 const nextConfig = {
   allowedDevOrigins: [
     "qgen.ramcoad.com",
+    "172.16.71.183",
   ],
   images: {
     remotePatterns: [

@@ -66,6 +66,16 @@ def _can_modify_paper(user, paper):
     return role in ('superadmin', 'school_admin') or user.is_superuser
 
 
+def _can_modify_material(user, material):
+    """A material may be edited/deleted only by a superadmin, or by a member of the school that
+    OWNS it. This stops one school from mutating another school's shared/institutional material
+    (which is now visible to it for retrieval) or the superadmin's global shared store."""
+    if _user_role(user) == 'superadmin' or getattr(user, 'is_superuser', False):
+        return True
+    school = _get_school(user)
+    return school is not None and material.school_id == school.id
+
+
 def _owner_scope(qs, user, owner_field='created_by'):
     """Visibility scoping: superadmin → everything; school_admin → their whole school;
     a normal teacher → ONLY their own creations (not the admin's or other teachers')."""
@@ -1280,18 +1290,33 @@ class MaterialViewSet(viewsets.ModelViewSet):
             return base
         school = _get_school(user)
         if school:
-            return base.filter(school=school)
+            from core.access import visibility_q
+            return base.filter(visibility_q(school))   # own ∪ shared(if granted) ∪ institutional
         return base.filter(uploaded_by=user)
 
     def perform_create(self, serializer):
-        school = _get_school(self.request.user)
-        serializer.save(uploaded_by=self.request.user, school=school)
+        # Superadmin uploads populate the global shared store (school=None, visibility=shared);
+        # a school's uploads are private to that school by default.
+        user = self.request.user
+        if _user_role(user) == 'superadmin' or user.is_superuser:
+            serializer.save(uploaded_by=user, school=None, visibility='shared')
+        else:
+            serializer.save(uploaded_by=user, school=_get_school(user), visibility='private')
 
     def update(self, request, *args, **kwargs):
         """Standard field edits via the serializer, plus chapter re-association for non-textbook
         materials: when a `chapters` field is sent, store it on metadata + unit and — if the set
         changed or the file was replaced — re-ingest the file under the new chapter labels (using
         the provider the material was originally embedded with, so dimensions stay consistent)."""
+        if not _can_modify_material(request.user, self.get_object()):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You can only edit materials your school owns.")
+        # Only the superadmin manages the global shared store; a school may flip its own material
+        # between 'private' and 'institutional' (cross-school) but not promote it to 'shared'.
+        if request.data.get("visibility") == "shared" and not (
+                _user_role(request.user) == 'superadmin' or request.user.is_superuser):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only a superadmin can mark a material as globally shared.")
         response = super().update(request, *args, **kwargs)
         if response.status_code >= 400 or "chapters" not in request.data:
             return response
@@ -1326,24 +1351,18 @@ class MaterialViewSet(viewsets.ModelViewSet):
         return response
 
     def perform_destroy(self, instance):
-        school_id = instance.school_id
-        if instance.type == 'textbook':
-            embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=None)
-            if school_id:
-                embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=school_id)
-        elif (instance.metadata or {}).get("chapters"):
-            # Chapter-linked material: its chunks share unit labels with the textbook, so delete
-            # ONLY this material's chunks (by material_id) — never the textbook chapter's chunks.
-            embeddings.delete_material_embeddings(instance.class_name, instance.subject, instance.id, school_id=school_id)
-        else:
-            embeddings.delete_unit_embeddings(instance.class_name, instance.subject, instance.unit, school_id=school_id)
+        if not _can_modify_material(self.request.user, instance):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You can only delete materials your school owns.")
+        # MaterialChunk has FK(Material, on_delete=CASCADE), so deleting the row removes its
+        # embeddings precisely — no unit-based deletion (which could hit other materials).
         instance.delete()
 
     def create(self, request, *args, **kwargs):
         """Custom create to handle bulk and multi-chapter uploads with embeddings"""
-        # Handle standard single file upload via DRF (no bulk/multi-chapter/url fields)
+        # Handle standard single file upload via DRF (no bulk/multi-chapter/url/split fields)
         if ("bulk_upload" not in request.data and "chapter_count" not in request.data
-                and "import_url" not in request.data):
+                and "import_url" not in request.data and "split_book" not in request.data):
             return super().create(request, *args, **kwargs)
 
         class_name = request.data.get("class_name")
@@ -1369,8 +1388,28 @@ class MaterialViewSet(viewsets.ModelViewSet):
 
         materials_to_ingest = []
         user = request.user if request.user.is_authenticated else None
-        school = _get_school(user) if user else None
+        # Superadmin uploads build the global shared store (school=None, visibility=shared);
+        # everyone else's uploads are private to their own school.
+        is_superadmin = bool(user) and (_user_role(user) == 'superadmin' or user.is_superuser)
+        if is_superadmin:
+            school = None
+            visibility = 'shared'
+        else:
+            school = _get_school(user) if user else None
+            visibility = 'private'
         school_id = school.id if school else None
+
+        # Optional named vector store (superadmin only): the material becomes part of that store —
+        # visibility "store", seen ONLY by schools the store is allocated to (core.access.visibility_q).
+        vector_store = None
+        vs_id = request.data.get("vector_store_id") or None
+        if vs_id and is_superadmin:
+            from core.models import VectorStore
+            vector_store = VectorStore.objects.filter(id=vs_id).first()
+            if not vector_store:
+                return Response({"error": "Selected vector store not found"}, status=status.HTTP_400_BAD_REQUEST)
+            visibility = 'store'
+        vector_store_id = vector_store.id if vector_store else None
 
         import_url = (request.data.get("import_url") or "").strip()
 
@@ -1382,7 +1421,8 @@ class MaterialViewSet(viewsets.ModelViewSet):
                 task = ingest_url_task.apply_async(
                     args=[class_name, subject, import_url, material_type],
                     kwargs={"provider": embedding_provider, "school_id": school_id,
-                            "uploaded_by_id": user.id if user else None},
+                            "uploaded_by_id": user.id if user else None,
+                            "vector_store_id": vector_store_id},
                 )
                 return Response({
                     "message": f"Importing book from URL and splitting into chapters ({embedding_provider}).",
@@ -1401,12 +1441,14 @@ class MaterialViewSet(viewsets.ModelViewSet):
                 base = Material.objects.create(
                     class_name=class_name, subject=subject, unit="(splitting…)",
                     title=os.path.splitext(book.name)[0], type=material_type, file=book,
-                    school=school, uploaded_by=user, metadata={"source_book": True},
+                    school=school, visibility=visibility, vector_store=vector_store,
+                    uploaded_by=user, metadata={"source_book": True},
                 )
                 task = split_book_task.apply_async(
                     args=[class_name, subject, base.file.path, material_type],
                     kwargs={"provider": embedding_provider, "school_id": school_id,
-                            "uploaded_by_id": user.id if user else None, "base_material_id": base.id},
+                            "uploaded_by_id": user.id if user else None, "base_material_id": base.id,
+                            "vector_store_id": vector_store_id},
                 )
                 return Response({
                     "message": f"Uploaded '{book.name}'. Splitting into chapters and ingesting ({embedding_provider}).",
@@ -1452,6 +1494,8 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         type=material_type,
                         file=file,
                         school=school,
+                        visibility=visibility,
+                        vector_store=vector_store,
                         uploaded_by=user,
                         metadata={"chapters": batch_chapters, "provider": embedding_provider} if material_type != 'textbook' else {},
                     )
@@ -1502,6 +1546,8 @@ class MaterialViewSet(viewsets.ModelViewSet):
                         type=material_type,
                         file=file,
                         school=school,
+                        visibility=visibility,
+                        vector_store=vector_store,
                         uploaded_by=user,
                         metadata={"chapters": chapters_i, "provider": embedding_provider} if material_type != 'textbook' else {},
                     )
@@ -1548,28 +1594,176 @@ class MaterialViewSet(viewsets.ModelViewSet):
         out = [{'unit': c.get('unit') or '(unnamed)', 'chars': len(c.get('text') or '')} for c in chapters]
         return Response({'count': len(out), 'chapters': out, 'bytes': len(html)})
 
+    @action(detail=False, methods=['post'], url_path='preview-names')
+    def preview_names(self, request):
+        """Detect each uploaded PDF's chapter/lesson name from its CONTENT (no DB writes, no
+        ingestion) so the bulk-upload UI can show the names for review before the user commits.
+        Returns names in the SAME ORDER the files were sent, so the client aligns them by index."""
+        from core import material_intel
+        import tempfile
+        from concurrent.futures import ThreadPoolExecutor
+
+        class_name = request.data.get('class_name') or ''
+        subject = request.data.get('subject') or ''
+        files = request.FILES.getlist('files')
+        if not files:
+            return Response({'error': 'No files provided'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(files) > 50:
+            return Response({'error': 'Detect at most 50 files at a time'}, status=status.HTTP_400_BAD_REQUEST)
+
+        def _detect(f):
+            base = os.path.splitext(f.name)[0]
+            ext = os.path.splitext(f.name)[1].lower() or '.pdf'
+            name = None
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+            try:
+                for chunk in f.chunks():
+                    tmp.write(chunk)
+                tmp.close()
+                name = material_intel.detect_unit_name(tmp.name, class_name, subject)
+            except Exception as e:
+                print(f"[preview_names] '{f.name}' detection failed: {e}")
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+            return {'filename': f.name, 'name': name or base, 'detected': bool(name)}
+
+        # Parallel — detection is one small LLM call per file; keep the request snappy.
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            names = list(ex.map(_detect, files))
+        return Response({'names': names, 'count': len(names)})
+
+    @action(detail=False, methods=['post'], url_path='preview-split')
+    def preview_split(self, request):
+        """For each uploaded PDF, detect its sub-chapters (lessons) via detect_book_chapters so the
+        bulk-upload UI can preview how a whole-unit PDF will split before committing (no DB writes).
+        Returns per-file chapter-name lists in the SAME ORDER the files were sent."""
+        from core import material_intel
+        import tempfile
+        from concurrent.futures import ThreadPoolExecutor
+
+        class_name = request.data.get('class_name') or ''
+        subject = request.data.get('subject') or ''
+        files = request.FILES.getlist('files')
+        if not files:
+            return Response({'error': 'No files provided'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(files) > 50:
+            return Response({'error': 'Detect at most 50 files at a time'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Scope the BookContents (TOC) lookup: superadmin → global (None), others → their school.
+        _u = request.user
+        _toc_school_id = None
+        if not (_user_role(_u) == 'superadmin' or getattr(_u, 'is_superuser', False)):
+            _sch = _get_school(_u)
+            _toc_school_id = _sch.id if _sch else None
+
+        def _split(f):
+            base = os.path.splitext(f.name)[0]
+            ext = os.path.splitext(f.name)[1].lower() or '.pdf'
+            chapters = []
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+            try:
+                for chunk in f.chunks():
+                    tmp.write(chunk)
+                tmp.close()
+                # refine_names=False → no LLM for the title-font path (names are the printed titles).
+                detected = material_intel.detect_book_chapters(tmp.name, class_name, subject,
+                                                               refine_names=False, school_id=_toc_school_id)
+                chapters = [c.get('unit') for c in detected if c.get('unit')]
+                if not chapters:
+                    nm = material_intel.detect_unit_name(tmp.name, class_name, subject)
+                    chapters = [nm or base]
+            except Exception as e:
+                print(f"[preview_split] '{f.name}' failed: {e}")
+                chapters = [base]
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+            return {'filename': f.name, 'chapters': chapters, 'count': len(chapters), 'split': len(chapters) > 1}
+
+        # Parallel, but conservatively — detect_book_chapters parses the whole PDF (pdfminer).
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            results = list(ex.map(_split, files))
+        return Response({'files': results, 'count': len(results)})
+
+    @action(detail=False, methods=['get', 'post'], url_path='book-contents')
+    def book_contents(self, request):
+        """The book's parsed table-of-contents (BookContents), used to split per-unit PDFs at exact
+        offsets with official lesson titles.
+        GET  ?class_name=&subject=  → the stored TOC (or {exists:false}).
+        POST (multipart: file, class_name, subject) → parse the prelims/contents PDF & store it.
+        Superadmin's TOC is global (school=None); others' are scoped to their school."""
+        from core import material_intel
+        from core.models import BookContents
+        import tempfile
+
+        user = request.user
+        is_superadmin = _user_role(user) == 'superadmin' or getattr(user, 'is_superuser', False)
+        school = None if is_superadmin else _get_school(user)
+        school_id = school.id if school else None
+
+        def _payload(tc):
+            return {'exists': True, 'title': tc.title, 'units': tc.units,
+                    'unit_count': len(tc.units or []),
+                    'lesson_count': sum(len(u.get('lessons', [])) for u in (tc.units or []))}
+
+        if request.method == 'GET':
+            cls = request.query_params.get('class_name') or ''
+            subj = request.query_params.get('subject') or ''
+            qs = BookContents.objects.filter(class_name=cls, subject__iexact=subj)
+            tc = (qs.filter(school_id=school_id).first() if school_id else None) or qs.filter(school__isnull=True).first()
+            return Response(_payload(tc) if tc else {'exists': False})
+
+        # POST — parse the contents PDF and (re)store it.
+        cls = request.data.get('class_name') or ''
+        subj = request.data.get('subject') or ''
+        f = request.FILES.get('file') or (request.FILES.getlist('files') or [None])[0]
+        if not (cls and subj and f):
+            return Response({'error': 'class_name, subject and a contents PDF are required'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        ext = os.path.splitext(f.name)[1].lower() or '.pdf'
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+        try:
+            for chunk in f.chunks():
+                tmp.write(chunk)
+            tmp.close()
+            parsed = material_intel.parse_book_contents(tmp.name)
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+        units = parsed.get('units') or []
+        if not units:
+            return Response({'error': 'No table-of-contents could be parsed from this PDF'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        BookContents.objects.filter(class_name=cls, subject__iexact=subj, school=school).delete()
+        tc = BookContents.objects.create(
+            class_name=cls, subject=subj, school=school, title=parsed.get('title', '') or '',
+            units=units, created_by=user if user.is_authenticated else None,
+        )
+        return Response(_payload(tc))
+
     @action(detail=False, methods=['post'], url_path='bulk-delete')
     def bulk_delete(self, request):
         ids = request.data.get('ids', [])
         if not ids:
             return Response({'error': 'No IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
-        qs = self.get_queryset().filter(id__in=ids)
-        count = qs.count()
-        if count == 0:
-            return Response({'error': 'No matching materials found'}, status=status.HTTP_404_NOT_FOUND)
+        qs = self.get_queryset().filter(id__in=ids).select_related('school')
+        # Only delete materials the caller owns (own school) or, for superadmin, anything —
+        # the visible queryset now includes shared/other-school materials it must not delete.
+        deletable_ids = [m.id for m in qs if _can_modify_material(request.user, m)]
+        if not deletable_ids:
+            return Response({'error': 'No deletable materials found'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Delete embeddings per material, respecting school-scoped namespaces
-        for m in qs.select_related('school'):
-            school_id = m.school_id
-            if m.type == 'textbook':
-                embeddings.delete_unit_embeddings(m.class_name, m.subject, m.unit, school_id=None)
-                if school_id:
-                    embeddings.delete_unit_embeddings(m.class_name, m.subject, m.unit, school_id=school_id)
-            else:
-                embeddings.delete_unit_embeddings(m.class_name, m.subject, m.unit, school_id=school_id)
-
-        qs.delete()
-        return Response({'message': f'Deleted {count} material(s)'})
+        # MaterialChunk has FK(Material, on_delete=CASCADE), so deleting the rows removes their
+        # embeddings precisely (no unit-based deletion that could hit other materials).
+        Material.objects.filter(id__in=deletable_ids).delete()
+        return Response({'message': f'Deleted {len(deletable_ids)} material(s)'})
 
 
 class BlueprintTemplateViewSet(viewsets.ModelViewSet):
@@ -1675,16 +1869,13 @@ def get_subjects_for_class(request):
     class_num = class_name.split("-")[0]
     base_qs = Material.objects.filter(class_name__istartswith=class_num)
 
+    role = _user_role(request.user) if request.user.is_authenticated else None
     school = _get_school(request.user) if request.user.is_authenticated else None
-    if school:
-        # Own materials + shared textbooks (if school opted in)
-        from django.db.models import Q
-        school_filter = Q(school=school)
-        if school.access_shared_vector_store:
-            school_filter |= Q(type='textbook', school__isnull=True)
-        qs = base_qs.filter(school_filter)
+    if role == 'superadmin' or getattr(request.user, 'is_superuser', False):
+        qs = base_qs                                  # superadmin sees everything
     else:
-        qs = base_qs
+        from core.access import visibility_q
+        qs = base_qs.filter(visibility_q(school))     # own ∪ shared(if granted) ∪ institutional
 
     subjects = qs.values_list("subject", flat=True).distinct().order_by("subject")
 
@@ -1709,15 +1900,13 @@ def get_chapters(request):
     class_num = class_name.split("-")[0]
     base_qs = Material.objects.filter(class_name__istartswith=class_num, subject__iexact=subject)
 
+    role = _user_role(request.user) if request.user.is_authenticated else None
     school = _get_school(request.user) if request.user.is_authenticated else None
-    if school:
-        from django.db.models import Q
-        school_filter = Q(school=school)
-        if school.access_shared_vector_store:
-            school_filter |= Q(type='textbook', school__isnull=True)
-        qs = base_qs.filter(school_filter)
+    if role == 'superadmin' or getattr(request.user, 'is_superuser', False):
+        qs = base_qs                                  # superadmin sees everything
     else:
-        qs = base_qs
+        from core.access import visibility_q
+        qs = base_qs.filter(visibility_q(school))     # own ∪ shared(if granted) ∪ institutional
 
     chapters = qs.values_list("unit", flat=True).distinct().order_by("unit")
     return Response({"chapters": list(chapters)})

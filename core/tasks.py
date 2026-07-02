@@ -126,7 +126,8 @@ def ingest_material_task(self, class_name, subject, materials, material_type="te
 
 @shared_task(bind=True)
 def split_book_task(self, class_name, subject, file_path, material_type="textbook",
-                    provider="local", school_id=None, uploaded_by_id=None, base_material_id=None):
+                    provider="local", school_id=None, uploaded_by_id=None, base_material_id=None,
+                    vector_store_id=None):
     """Split a whole-textbook PDF into per-chapter units: detect chapter page ranges, create one
     Material row per chapter (all referencing the same uploaded file) and ingest each chapter's
     pages as its own unit. The placeholder 'source book' Material (base_material_id) is reused as
@@ -135,7 +136,8 @@ def split_book_task(self, class_name, subject, file_path, material_type="textboo
     from .models import Material
     from . import material_intel
 
-    chapters = material_intel.detect_book_chapters(file_path, class_name, subject)
+    chapters = material_intel.detect_book_chapters(file_path, class_name, subject, school_id=school_id,
+                                                   persist_toc=True)
     if not chapters:
         # Couldn't split — treat the whole file as one auto-named unit.
         name = material_intel.detect_unit_name(file_path, class_name, subject) or \
@@ -146,16 +148,16 @@ def split_book_task(self, class_name, subject, file_path, material_type="textboo
     base = Material.objects.filter(id=base_material_id).first() if base_material_id else None
     file_name = base.file.name if base else None
 
-    def _ingest(unit, pr):
+    def _ingest(unit, pr, material_id):
         if material_type == "textbook":
             embeddings.ingest_pdf(class_name, subject, unit, file_path, title=unit,
-                                  material_type=material_type, provider=provider, school_id=None, page_range=pr)
+                                  material_type=material_type, provider=provider, school_id=None, page_range=pr, source_id=material_id)
             if school_id:
                 embeddings.ingest_pdf(class_name, subject, unit, file_path, title=unit,
-                                      material_type=material_type, provider=provider, school_id=school_id, page_range=pr)
+                                      material_type=material_type, provider=provider, school_id=school_id, page_range=pr, source_id=material_id)
         else:
             embeddings.ingest_pdf(class_name, subject, unit, file_path, title=unit,
-                                  material_type=material_type, provider=provider, school_id=school_id, page_range=pr)
+                                  material_type=material_type, provider=provider, school_id=school_id, page_range=pr, source_id=material_id)
 
     created = 0
     for idx, ch in enumerate(chapters):
@@ -169,13 +171,16 @@ def split_book_task(self, class_name, subject, file_path, material_type="textboo
                 base.title = unit
                 base.metadata = meta
                 base.save(update_fields=["unit", "title", "metadata"])
+                mat = base
             else:
-                Material.objects.create(
+                mat = Material.objects.create(
                     class_name=class_name, subject=subject, unit=unit, title=unit,
                     type=material_type, file=file_name, school_id=school_id,
+                    vector_store_id=vector_store_id,
+                    visibility=('store' if vector_store_id else ('shared' if school_id is None else 'private')),
                     uploaded_by_id=uploaded_by_id, metadata=meta,
                 )
-            _ingest(unit, pr)
+            _ingest(unit, pr, mat.id)
             created += 1
         except Exception as e:
             print(f"[split_book_task] chapter '{unit}' failed: {e}")
@@ -186,7 +191,7 @@ def split_book_task(self, class_name, subject, file_path, material_type="textboo
 
 @shared_task(bind=True)
 def ingest_url_task(self, class_name, subject, url, material_type="textbook",
-                    provider="local", school_id=None, uploaded_by_id=None):
+                    provider="local", school_id=None, uploaded_by_id=None, vector_store_id=None):
     """Import a whole-book HTML page (e.g. a TN-schools textbook URL): fetch it, split into
     per-chapter units by heading tags, save the source HTML once, create one Material row per
     chapter (all referencing that file) and ingest each chapter's text as its own unit. Clean
@@ -210,16 +215,16 @@ def ingest_url_task(self, class_name, subject, url, material_type="textbook",
     saved_name = None
     created = 0
 
-    def _ingest(unit, text):
+    def _ingest(unit, text, material_id):
         if material_type == "textbook":
             embeddings.ingest_text(class_name, subject, unit, text, title=unit,
-                                   material_type=material_type, provider=provider, school_id=None)
+                                   material_type=material_type, provider=provider, school_id=None, source_id=material_id)
             if school_id:
                 embeddings.ingest_text(class_name, subject, unit, text, title=unit,
-                                       material_type=material_type, provider=provider, school_id=school_id)
+                                       material_type=material_type, provider=provider, school_id=school_id, source_id=material_id)
         else:
             embeddings.ingest_text(class_name, subject, unit, text, title=unit,
-                                   material_type=material_type, provider=provider, school_id=school_id)
+                                   material_type=material_type, provider=provider, school_id=school_id, source_id=material_id)
 
     for ch in chapters:
         unit = ch.get("unit")
@@ -228,6 +233,8 @@ def ingest_url_task(self, class_name, subject, url, material_type="textbook",
         try:
             mat = Material(class_name=class_name, subject=subject, unit=unit, title=unit,
                            type=material_type, school_id=school_id, uploaded_by_id=uploaded_by_id,
+                           vector_store_id=vector_store_id,
+                           visibility=('store' if vector_store_id else ('shared' if school_id is None else 'private')),
                            metadata={"source_url": url, "imported_html": True})
             if saved_name is None:
                 mat.file.save(f"{slug}.html", ContentFile(html.encode("utf-8")), save=False)
@@ -235,7 +242,7 @@ def ingest_url_task(self, class_name, subject, url, material_type="textbook",
             else:
                 mat.file = saved_name
             mat.save()
-            _ingest(unit, ch["text"])
+            _ingest(unit, ch["text"], mat.id)
             created += 1
         except Exception as e:
             print(f"[ingest_url_task] chapter '{unit}' failed: {e}")
@@ -246,40 +253,12 @@ def ingest_url_task(self, class_name, subject, url, material_type="textbook",
 
 @shared_task(bind=True)
 def copy_shared_vectorstore_task(self, school_id):
-    """Copy shared textbook vector store and Material records to a school."""
-    from .models import Material, School
-    school = School.objects.get(id=school_id)
-
-    # 1. Copy ChromaDB vector data from shared → school's store
-    count = embeddings.copy_shared_to_school(school_id)
-    print(f"[copy_shared_vectorstore_task] Copied {count} vector store dirs to school {school_id}")
-
-    # 2. Create Material records for shared textbooks not yet assigned to this school
-    shared_textbooks = Material.objects.filter(type='textbook').exclude(school=school)
-    created = 0
-    for mat in shared_textbooks:
-        already_exists = Material.objects.filter(
-            school=school,
-            class_name=mat.class_name,
-            subject=mat.subject,
-            unit=mat.unit,
-            title=mat.title,
-        ).exists()
-        if not already_exists:
-            Material.objects.create(
-                school=school,
-                class_name=mat.class_name,
-                subject=mat.subject,
-                unit=mat.unit,
-                title=mat.title,
-                file=mat.file.name,
-                type='textbook',
-                uploaded_by=None,
-                metadata=mat.metadata or {},
-            )
-            created += 1
-    print(f"[copy_shared_vectorstore_task] Created {created} Material records for school {school_id}")
-    return {'vector_dirs_copied': count, 'materials_created': created}
+    """Deprecated no-op. Granting a school access_shared_vector_store now takes effect immediately
+    via scope-based visibility (core.access.visibility_q) — the school sees the shared store's
+    materials and chunks directly at query time, with no copying or duplicated Material rows.
+    Retained so the admin grant/resync endpoints keep working."""
+    print(f"[copy_shared_vectorstore_task] no-op (scope-based sharing) for school {school_id}")
+    return {'copied': 0, 'note': 'scope-based sharing — nothing to copy'}
 
 
 @shared_task(bind=True)

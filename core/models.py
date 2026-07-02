@@ -3,6 +3,7 @@ from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
+from pgvector.django import VectorField, HnswIndex
 
 
 class School(models.Model):
@@ -162,14 +163,31 @@ class Material(models.Model):
         ("reference", "Reference Book"),
     ]
 
+    # Who can see this material (visibility lives ONLY here — chunks join to it, so flipping a
+    # material's visibility later takes effect instantly with no re-ingest):
+    #   shared        — the superadmin's global store (school is None); seen by schools granted access
+    #   private       — owning school only (default for school uploads)
+    #   institutional — shared across ALL schools (the cross-school switch; off by default)
+    VISIBILITY_CHOICES = [
+        ("shared", "Shared (global / superadmin)"),
+        ("private", "Private to school"),
+        ("institutional", "Shared across all schools"),
+        ("store", "Vector store (allocated schools only)"),
+    ]
+
     class_name = models.CharField(max_length=10)
     subject = models.CharField(max_length=50)
     unit = models.CharField(max_length=255, blank=True, null=True)  # CBSE chapter names can be long
     title = models.CharField(max_length=200)
     file = models.FileField(upload_to="materials/")
     type = models.CharField(max_length=50, choices=MATERIAL_TYPES)
+    visibility = models.CharField(max_length=20, choices=VISIBILITY_CHOICES, default="private", db_index=True)
     metadata = models.JSONField(default=dict)
     school = models.ForeignKey('School', on_delete=models.SET_NULL, null=True, blank=True, related_name='materials')
+    # Named vector store this material belongs to (superadmin-managed shared corpora). Set only when
+    # a superadmin uploads into a chosen store; visibility is then "store" and the material is seen
+    # ONLY by schools the store is allocated to (see core.access.visibility_q). Null = not in a store.
+    vector_store = models.ForeignKey('VectorStore', on_delete=models.SET_NULL, null=True, blank=True, related_name='materials')
     uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
@@ -352,3 +370,130 @@ def ensure_user_profile(sender, instance, created, raw=False, **kwargs):
     else:
         # Ensure profile exists for older users
         UserProfile.objects.get_or_create(user=instance)
+
+
+# ==============================
+# pgvector-backed embedding store
+# ==============================
+# Replaces the old per-(class,subject,school) ChromaDB collections. One row per text chunk,
+# embedded once; a chunk's chapter membership is a many-to-many (ChunkChapter) so a note that
+# spans several chapters is stored ONCE and linked to each — no per-chapter duplication.
+#
+# Two embedding columns because providers have different dimensions and a pgvector column is
+# fixed-dim: local Ollama nomic-embed-text = 768, OpenRouter = 2048. Only the column for the
+# provider that ingested the chunk is filled. HNSW (ANN) index only on the 768 column —
+# pgvector's HNSW/IVFFlat cap is 2000 dims, so the 2048 column uses an exact distance scan
+# (fine: queries are always chapter-scoped, so the candidate set is small).
+EMBED_LOCAL_DIM = 768
+EMBED_OPENROUTER_DIM = 2048
+
+
+class MaterialChunk(models.Model):
+    material = models.ForeignKey('Material', on_delete=models.CASCADE, related_name='chunks',
+                                 null=True, blank=True)
+    school = models.ForeignKey('School', on_delete=models.CASCADE, related_name='chunks',
+                               null=True, blank=True)  # null == shared store
+    class_name = models.CharField(max_length=32)   # normalized (embeddings.normalize_label)
+    subject = models.CharField(max_length=64)       # normalized
+    title = models.CharField(max_length=255, blank=True, default='')
+    material_type = models.CharField(max_length=50, default='textbook')
+    chunk_index = models.IntegerField(default=0)
+    content = models.TextField()
+    provider = models.CharField(max_length=20, default='local')
+    embedding_local = VectorField(dimensions=EMBED_LOCAL_DIM, null=True, blank=True)
+    embedding_or = VectorField(dimensions=EMBED_OPENROUTER_DIM, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['class_name', 'subject', 'school'], name='chunk_css_idx'),
+            HnswIndex(name='chunk_emb_local_hnsw', fields=['embedding_local'],
+                      m=16, ef_construction=64, opclasses=['vector_cosine_ops']),
+        ]
+
+    def __str__(self):
+        return f"chunk[{self.class_name}/{self.subject}] {self.title} #{self.chunk_index}"
+
+
+class ChunkChapter(models.Model):
+    """Many-to-many link: which chapter(s) (normalized unit label) a chunk belongs to."""
+    chunk = models.ForeignKey(MaterialChunk, on_delete=models.CASCADE, related_name='chapter_links')
+    unit = models.CharField(max_length=255)   # normalized chapter label
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['chunk', 'unit'], name='uniq_chunk_unit'),
+        ]
+        indexes = [
+            models.Index(fields=['unit'], name='chunkchapter_unit_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.chunk_id} → {self.unit}"
+
+
+class SchoolVectorLink(models.Model):
+    """Cross-school access grant: the `viewer` school may read the `source` school's own
+    materials (its private vector store), in addition to its own. Directional — a reciprocal
+    link is a separate row. A school can be linked to many sources. Managed by the superadmin.
+    Like shared-store access, this is scope-based: no copying, takes effect immediately."""
+    viewer = models.ForeignKey('School', on_delete=models.CASCADE, related_name='vector_links_out')
+    source = models.ForeignKey('School', on_delete=models.CASCADE, related_name='vector_links_in')
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['viewer', 'source'], name='uniq_school_vector_link'),
+            models.CheckConstraint(check=~models.Q(viewer=models.F('source')), name='no_self_vector_link'),
+        ]
+
+    def __str__(self):
+        return f"{self.viewer_id} → {self.source_id}"
+
+
+class BookContents(models.Model):
+    """Parsed table-of-contents of a textbook (from its uploaded prelims/contents PDF).
+
+    Maps each unit → its lessons → printed page number. Used to split the per-unit content PDFs at
+    exact page offsets with the book's OFFICIAL lesson titles, instead of heuristic/LLM guessing.
+    One row per (class_name, subject, school); the superadmin's global TOC is school=None."""
+    class_name = models.CharField(max_length=10)
+    subject = models.CharField(max_length=100)
+    school = models.ForeignKey('School', on_delete=models.CASCADE, null=True, blank=True,
+                               related_name='book_contents')
+    title = models.CharField(max_length=200, blank=True, default='')   # e.g. "Poorvi"
+    # [{"unit": 1, "theme": "Wit and Wisdom",
+    #   "lessons": [{"title": "The Wit that Won Hearts", "page": 1}, ...]}, ...]
+    units = models.JSONField(default=list)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['class_name', 'subject']
+
+    def __str__(self):
+        return f"TOC {self.class_name}/{self.subject} ({len(self.units or [])} units)"
+
+
+class VectorStore(models.Model):
+    """A named corpus of superadmin-uploaded materials, allocatable to specific schools.
+
+    Generalises the single global 'shared' store (School.access_shared_vector_store) into many
+    named ones. Allocation is scope-based (M2M to School): a school allocated a store sees that
+    store's materials at retrieval — in addition to its own private + institutional content —
+    with NO copying (takes effect instantly, see core.access.visibility_q). Materials in a store
+    carry visibility='store' so they never leak via the global shared/institutional clauses."""
+    name = models.CharField(max_length=200, unique=True)
+    description = models.TextField(blank=True)
+    schools = models.ManyToManyField('School', related_name='vector_stores', blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name

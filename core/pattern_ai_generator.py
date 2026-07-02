@@ -211,15 +211,14 @@ def validate_and_enhance_pattern(pattern, class_name, subject, exam_name):
         section.setdefault("constraints", {})
         section.setdefault("subsections", [])
 
-        # Calculate marks and questions for section
-        total_marks += section.get("marks", 0)
-        total_questions += section.get("questions_count", 0)
-
-        # Validate subsections
-        for subsec in section.get("subsections", []):
+        # Normalise subsections (defaults only — their marks are NOT added to the paper total
+        # separately; a section's own `marks` already represents the whole section, subsections
+        # included. Adding both double-counts every subsectioned section, e.g. a Hindi paper
+        # summed to 146 instead of 80.)
+        subs = section.get("subsections", [])
+        for idx, subsec in enumerate(subs):
             if "id" not in subsec:
-                subsec["id"] = f"{section['id']}_SUB{section['subsections'].index(subsec)}"
-
+                subsec["id"] = f"{section['id']}_SUB{idx}"
             subsec.setdefault("name", "Subsection")
             subsec.setdefault("marks", 0)
             subsec.setdefault("questions_count", 0)
@@ -227,8 +226,20 @@ def validate_and_enhance_pattern(pattern, class_name, subject, exam_name):
             subsec.setdefault("question_types", ["Short Answer"])
             subsec.setdefault("instructions", [])
 
-            total_marks += subsec.get("marks", 0)
-            total_questions += subsec.get("questions_count", 0)
+        # A section's marks/count take precedence; fall back to the sum of its subsections only
+        # when the section itself declares none. Write the resolved values back so the stored
+        # pattern is internally consistent for the downstream work-order builder.
+        sec_marks = section.get("marks", 0) or sum(ss.get("marks", 0) for ss in subs)
+        sec_qs = section.get("questions_count", 0) or sum(ss.get("questions_count", 0) for ss in subs)
+        section["marks"] = sec_marks
+        section["questions_count"] = sec_qs
+        # The model leaves marks_per_question null on mixed-marks sections (different marks per
+        # sub-part). Coerce to the section average so nothing downstream trips on None.
+        if not section.get("marks_per_question"):
+            section["marks_per_question"] = round(sec_marks / sec_qs, 2) if sec_qs else 1
+
+        total_marks += sec_marks
+        total_questions += sec_qs
 
     pattern["total_marks"] = total_marks
     pattern["total_questions"] = total_questions

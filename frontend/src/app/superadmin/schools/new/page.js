@@ -150,11 +150,11 @@ export default function NewSchoolPage() {
                 className="w-4 h-4 text-blue-600 border-slate-300 rounded"
               />
               <label htmlFor="access_shared_vector_store" className="text-sm font-medium text-slate-700">
-                Grant access to shared textbook vector store
+                Grant access to shared content
               </label>
             </div>
             <p className="text-xs text-slate-500 ml-6">
-              A copy of all shared textbook data (subjects, chapters, embeddings) will be copied to this school. Private materials from other schools are not shared.
+              This school will read the shared (superadmin) vector store — all shared textbooks and chapters — alongside its own materials. Takes effect immediately; nothing is copied. You can change this anytime from the school&apos;s page.
             </p>
           </div>
 

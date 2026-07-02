@@ -26,6 +26,12 @@ from .admin_views import (
     school_papers,
     school_user_usage,
     school_resync_vectorstore,
+    school_vector_links,
+    school_vector_link_remove,
+    school_vector_stores,
+    school_vector_store_remove,
+    vector_stores_list,
+    vector_store_detail,
     my_school,
     update_cbse_patterns,
     cbse_update_status,
@@ -71,6 +77,15 @@ urlpatterns = [
     path('admin/schools/<int:pk>/papers/', school_papers, name='api_school_papers'),
     path('admin/schools/<int:pk>/user-usage/', school_user_usage, name='api_school_user_usage'),
     path('admin/schools/<int:pk>/resync-vectorstore/', school_resync_vectorstore, name='api_school_resync_vectorstore'),
+    path('admin/schools/<int:pk>/vector-links/', school_vector_links, name='api_school_vector_links'),
+    path('admin/schools/<int:pk>/vector-links/<int:source_id>/', school_vector_link_remove, name='api_school_vector_link_remove'),
+    path('admin/schools/<int:pk>/vector-stores/', school_vector_stores, name='api_school_vector_stores'),
+    path('admin/schools/<int:pk>/vector-stores/<int:store_id>/', school_vector_store_remove, name='api_school_vector_store_remove'),
+
+    # SuperAdmin — named vector stores (shared corpora, allocatable to schools)
+    path('admin/vector-stores/', vector_stores_list, name='api_vector_stores_list'),
+    path('admin/vector-stores/<int:pk>/', vector_store_detail, name='api_vector_store_detail'),
+
     path('admin/my-school/', my_school, name='api_my_school'),
     path('admin/cbse-patterns/', cbse_patterns_list, name='api_cbse_patterns_list'),
     path('admin/cbse-patterns/update/', update_cbse_patterns, name='api_update_cbse_patterns'),

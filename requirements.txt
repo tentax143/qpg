@@ -16,6 +16,7 @@ redis==5.0.1
 
 # Vector Database
 chromadb==0.4.22
+pgvector==0.4.2
 numpy<2.0
 
 # PDF Processing

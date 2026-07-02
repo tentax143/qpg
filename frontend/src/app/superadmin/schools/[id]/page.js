@@ -7,11 +7,13 @@ import apiClient from '@/lib/api';
 import {
   ArrowLeft, Users, BarChart3, FileText, Settings,
   Plus, Trash2, Edit3, Check, X, ChevronDown, ShieldCheck, ShieldOff,
+  Database, Link2,
 } from 'lucide-react';
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: Settings },
   { id: 'users', label: 'Users', icon: Users },
+  { id: 'data', label: 'Data', icon: Database },
   { id: 'usage', label: 'Usage', icon: BarChart3 },
   { id: 'papers', label: 'Papers', icon: FileText },
 ];
@@ -37,13 +39,22 @@ export default function SchoolDetailPage({ params }) {
   const [error, setError] = useState(null);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({});
-  const [resyncing, setResyncing] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'teacher', allowed_subject: '' });
   const [addUserError, setAddUserError] = useState(null);
   const [addUserLoading, setAddUserLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [subjects, setSubjects] = useState([]);
+  // Data tab — shared-store + cross-school links
+  const [vectorData, setVectorData] = useState(null);
+  const [addSource, setAddSource] = useState('');
+  const [addMutual, setAddMutual] = useState(false);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [sharedBusy, setSharedBusy] = useState(false);
+  // Data tab — named vector-store allocations
+  const [storeData, setStoreData] = useState(null);   // {allocated:[{id,name,material_count}], allocatable:[{id,name}]}
+  const [addStore, setAddStore] = useState('');
+  const [storeBusy, setStoreBusy] = useState(false);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || 'null');
@@ -57,6 +68,7 @@ export default function SchoolDetailPage({ params }) {
     if (tab === 'users') fetchUsers();
     else if (tab === 'usage') fetchUsage();
     else if (tab === 'papers') fetchPapers();
+    else if (tab === 'data') { fetchVectorLinks(); fetchVectorStores(); }
   }, [tab, school]);
 
   async function fetchSchool() {
@@ -100,6 +112,66 @@ export default function SchoolDetailPage({ params }) {
     finally { setTabLoading(false); }
   }
 
+  async function fetchVectorLinks() {
+    setTabLoading(true);
+    try { const r = await apiClient.get(`/admin/schools/${id}/vector-links/`); setVectorData(r.data); }
+    catch (e) { console.error(e); }
+    finally { setTabLoading(false); }
+  }
+
+  async function fetchVectorStores() {
+    try { const r = await apiClient.get(`/admin/schools/${id}/vector-stores/`); setStoreData(r.data); }
+    catch (e) { console.error(e); }
+  }
+
+  async function handleAllocateStore() {
+    if (!addStore) return;
+    setStoreBusy(true);
+    try {
+      await apiClient.post(`/admin/schools/${id}/vector-stores/`, { store_id: addStore });
+      setAddStore('');
+      await fetchVectorStores();
+    } catch (e) { alert(e.response?.data?.error || 'Failed to allocate store'); }
+    finally { setStoreBusy(false); }
+  }
+
+  async function handleRemoveStore(storeId) {
+    if (!window.confirm('Remove this vector store from the school? Its materials will no longer be visible to them.')) return;
+    try {
+      await apiClient.delete(`/admin/schools/${id}/vector-stores/${storeId}/`);
+      await fetchVectorStores();
+    } catch (e) { alert(e.response?.data?.error || 'Failed to remove store'); }
+  }
+
+  async function handleToggleShared(enabled) {
+    setSharedBusy(true);
+    try {
+      const r = await apiClient.patch(`/admin/schools/${id}/`, { access_shared_vector_store: enabled });
+      setSchool(r.data);
+      setEditForm(prev => ({ ...prev, access_shared_vector_store: enabled }));
+    } catch (e) { alert(e.response?.data?.error || 'Failed to update access'); }
+    finally { setSharedBusy(false); }
+  }
+
+  async function handleAddLink() {
+    if (!addSource) return;
+    setLinkBusy(true);
+    try {
+      await apiClient.post(`/admin/schools/${id}/vector-links/`, { source_id: addSource, mutual: addMutual });
+      setAddSource(''); setAddMutual(false);
+      await fetchVectorLinks();
+    } catch (e) { alert(e.response?.data?.error || 'Failed to add link'); }
+    finally { setLinkBusy(false); }
+  }
+
+  async function handleRemoveLink(sourceId, mutual) {
+    if (!window.confirm('Remove this cross-school access link?')) return;
+    try {
+      await apiClient.delete(`/admin/schools/${id}/vector-links/${sourceId}/${mutual ? '?mutual=1' : ''}`);
+      await fetchVectorLinks();
+    } catch (e) { alert(e.response?.data?.error || 'Failed to remove link'); }
+  }
+
   async function handleSaveEdit() {
     try {
       const r = await apiClient.patch(`/admin/schools/${id}/`, {
@@ -110,19 +182,6 @@ export default function SchoolDetailPage({ params }) {
       setEditing(false);
     } catch (e) {
       alert(e.response?.data?.error || 'Failed to update');
-    }
-  }
-
-  async function handleResync() {
-    if (!window.confirm('Re-sync shared textbook data to this school? This will overwrite existing copied data.')) return;
-    setResyncing(true);
-    try {
-      await apiClient.post(`/admin/schools/${id}/resync-vectorstore/`);
-      alert('Re-sync started in background. It may take a few minutes.');
-    } catch (e) {
-      alert(e.response?.data?.error || 'Failed to start re-sync');
-    } finally {
-      setResyncing(false);
     }
   }
 
@@ -299,48 +358,152 @@ export default function SchoolDetailPage({ params }) {
               </div>
             )}
 
-            {/* Shared vector store — always shown */}
-            <div className="border border-blue-100 bg-blue-50 rounded-lg p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {editing ? (
-                    <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={editForm.access_shared_vector_store}
-                        onChange={e => setEditForm(prev => ({ ...prev, access_shared_vector_store: e.target.checked }))}
-                        className="w-4 h-4 text-blue-600 border-slate-300 rounded"
-                      />
-                      Shared textbook vector store access
-                    </label>
-                  ) : (
-                    <>
-                      <span className={`w-2 h-2 rounded-full ${school.access_shared_vector_store ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                      <span className="text-sm font-medium text-slate-700">Shared textbook vector store</span>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${school.access_shared_vector_store ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                        {school.access_shared_vector_store ? 'Enabled' : 'Disabled'}
-                      </span>
-                    </>
-                  )}
-                </div>
-                {!editing && school.access_shared_vector_store && (
-                  <button
-                    onClick={handleResync}
-                    disabled={resyncing}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-blue-300 text-blue-600 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors"
-                  >
-                    {resyncing ? <div className="w-3 h-3 border-2 border-blue-400/30 border-t-blue-600 rounded-full animate-spin" /> : null}
-                    {resyncing ? 'Syncing…' : 'Re-sync'}
-                  </button>
-                )}
-              </div>
-              <p className="text-xs text-slate-500">
-                {school.access_shared_vector_store
-                  ? 'This school has a copy of shared textbook embeddings and subject/chapter data. Use Re-sync to pull the latest shared textbook updates.'
-                  : 'Enable to copy shared textbook embeddings and subject metadata to this school.'
-                }
-              </p>
+            <div className="flex items-center gap-2 text-xs text-slate-400 pt-1">
+              <Database className="w-3.5 h-3.5" />
+              Vector-store access (shared store + cross-school links) is managed in the <span className="font-medium text-slate-600">Data</span> tab.
             </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'data' && (
+        <div className="space-y-5">
+          {/* Shared (super-admin) store */}
+          <div className="bg-white border border-slate-200 rounded-xl p-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Database className="w-4 h-4 text-blue-600" />
+                <h2 className="text-sm font-semibold text-slate-900">Shared (super-admin) vector store</h2>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${school.access_shared_vector_store ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                  {school.access_shared_vector_store ? 'Granted' : 'Not granted'}
+                </span>
+              </div>
+              <button
+                onClick={() => handleToggleShared(!school.access_shared_vector_store)}
+                disabled={sharedBusy}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-60 ${school.access_shared_vector_store ? 'border border-red-200 text-red-600 hover:bg-red-50' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+              >
+                {sharedBusy ? '…' : school.access_shared_vector_store ? 'Revoke' : 'Grant'}
+              </button>
+            </div>
+            <p className="text-xs text-slate-500 mt-2">
+              When granted, this school reads all shared textbooks &amp; chapters uploaded by the super-admin, alongside its own materials. Instant — nothing is copied.
+            </p>
+          </div>
+
+          {/* Named vector stores allocated to this school */}
+          <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Database className="w-4 h-4 text-blue-600" />
+              <h2 className="text-sm font-semibold text-slate-900">Named vector stores</h2>
+            </div>
+            <p className="text-xs text-slate-500 -mt-2">
+              Shared corpora allocated to <span className="font-medium text-slate-700">{school.name}</span> — it retrieves from every store listed here, alongside its own materials. Store contents are managed on the <span className="font-medium text-slate-600">Vector Stores</span> page.
+            </p>
+
+            {!storeData ? (
+              <div className="flex justify-center py-6"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
+            ) : (
+              <>
+                {storeData.allocated.length === 0 ? (
+                  <p className="text-sm text-slate-400 py-1">No vector stores allocated yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {storeData.allocated.map(s => (
+                      <div key={s.id} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Database className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="font-medium text-slate-900">{s.name}</span>
+                          <span className="text-[11px] text-slate-400">· {s.material_count} material(s)</span>
+                        </div>
+                        <button onClick={() => handleRemoveStore(s.id)} className="text-slate-300 hover:text-red-500 transition-colors" title="Remove allocation">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {storeData.allocatable.length > 0 && (
+                  <div className="flex items-center gap-2 pt-3 border-t border-slate-100">
+                    <select
+                      value={addStore}
+                      onChange={e => setAddStore(e.target.value)}
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    >
+                      <option value="">Select a vector store to allocate…</option>
+                      {storeData.allocatable.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                    <button
+                      onClick={handleAllocateStore}
+                      disabled={!addStore || storeBusy}
+                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Add
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Cross-school links */}
+          <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Link2 className="w-4 h-4 text-blue-600" />
+              <h2 className="text-sm font-semibold text-slate-900">Cross-school access</h2>
+            </div>
+            <p className="text-xs text-slate-500 -mt-2">
+              Let <span className="font-medium text-slate-700">{school.name}</span> also read the private materials of other schools. Directional — tick <span className="font-medium">Mutual</span> to share both ways.
+            </p>
+
+            {tabLoading || !vectorData ? (
+              <div className="flex justify-center py-6"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
+            ) : (
+              <>
+                {vectorData.links.length === 0 ? (
+                  <p className="text-sm text-slate-400 py-1">No cross-school links yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {vectorData.links.map(l => (
+                      <div key={l.source_id} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2">
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="text-slate-400">can read</span>
+                          <span className="font-medium text-slate-900">{l.source_name}</span>
+                          {l.mutual && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 font-medium">Mutual</span>}
+                        </div>
+                        <button onClick={() => handleRemoveLink(l.source_id, l.mutual)} className="text-slate-300 hover:text-red-500 transition-colors" title="Remove link">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-3 border-t border-slate-100">
+                  <select
+                    value={addSource}
+                    onChange={e => setAddSource(e.target.value)}
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    <option value="">Select a school to link…</option>
+                    {vectorData.linkable
+                      .filter(s => !vectorData.links.some(l => l.source_id === s.id))
+                      .map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap">
+                    <input type="checkbox" checked={addMutual} onChange={e => setAddMutual(e.target.checked)} className="w-4 h-4 text-blue-600 border-slate-300 rounded" />
+                    Mutual
+                  </label>
+                  <button
+                    onClick={handleAddLink}
+                    disabled={!addSource || linkBusy}
+                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

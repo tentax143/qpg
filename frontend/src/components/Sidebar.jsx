@@ -18,6 +18,7 @@ import {
   BarChart3,
   ShieldCheck,
   HelpCircle,
+  Database,
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -54,7 +55,14 @@ export default function Sidebar() {
   const superAdminItems = [
     { href: '/superadmin', icon: LayoutDashboard, label: 'Dashboard' },
     { href: '/superadmin/schools', icon: School, label: 'Schools' },
+    { href: '/superadmin/vector-stores', icon: Database, label: 'Vector Stores' },
     { href: '/superadmin/cbse-patterns', icon: ClipboardList, label: 'CBSE Patterns' },
+  ];
+
+  // SuperAdmin content management — populates the shared/global vector store.
+  const superAdminContentItems = [
+    { href: '/materials/upload', icon: UploadCloud, label: 'Upload Material' },
+    { href: '/materials', icon: BookOpen, label: 'Materials' },
   ];
 
   // Regular user navigation
@@ -124,14 +132,24 @@ export default function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 overflow-y-auto custom-scrollbar space-y-5">
         {isSuperAdmin ? (
-          <div>
-            <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Administration</p>
-            <div className="space-y-0.5">
-              {superAdminItems.map((item) => (
-                <NavLink key={item.href} {...item} />
-              ))}
+          <>
+            <div>
+              <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Administration</p>
+              <div className="space-y-0.5">
+                {superAdminItems.map((item) => (
+                  <NavLink key={item.href} {...item} />
+                ))}
+              </div>
             </div>
-          </div>
+            <div>
+              <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Shared Content</p>
+              <div className="space-y-0.5">
+                {superAdminContentItems.map((item) => (
+                  <NavLink key={item.href} {...item} />
+                ))}
+              </div>
+            </div>
+          </>
         ) : (
           <>
             <div>

@@ -928,6 +928,77 @@ class SectionTopUpTest(TestCase):
         self.assertEqual(sg._top_up_short_section(section_data, wo), (0, 0))
         self.assertNotIn("_topped_up", section_data)
 
+    def test_topup_fills_free_form_type_section(self):
+        """AI-generated patterns declare descriptive types ('3-5 Mark Questions', 'Essay',
+        'Letter Writing') that classify to 'other', so the old guard skipped the top-up and the
+        section shipped short (the reported Tamil paper: SA 27/30, LA 15/20, etc.). A plain
+        uniform-marks section with free-form types must still be filled (loose mode)."""
+        import json
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(4, types=("3–5 Mark Questions",))      # descriptive label → 'other'
+        sa = lambda t: {"type": "SA", "text": t, "marks": 1, "chapter_tag": "Chemical Bonding"}
+        section_data = {"questions": [sa(t) for t in self.EXISTING[:2]]}
+        fresh = json.dumps({"questions": [sa(t) for t in self.FRESH[:2]]})
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(fresh, 7, 9)):
+            tokens = sg._top_up_short_section(section_data, wo)
+        self.assertEqual(len(section_data["questions"]), 4)        # filled 2/2 missing
+        self.assertEqual(section_data.get("_topped_up"), 2)
+        self.assertEqual(tokens, (7, 9))
+        self.assertTrue(all(q["marks"] == 1 for q in section_data["questions"]))
+
+    def test_topup_freeform_still_rejects_structural_types(self):
+        """Loose mode accepts any written-answer question but must NOT pull a CBQ/map question
+        into a plain section it can't structurally host."""
+        import json
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(3, types=("Essay",))
+        sa = lambda t: {"type": "SA", "text": t, "marks": 1, "chapter_tag": "Chemical Bonding"}
+        section_data = {"questions": [sa(t) for t in self.EXISTING[:2]]}
+        cbq = {"type": "CBQ", "text": "Read the passage and answer.", "marks": 1,
+               "sub_questions": [{"text": "x", "marks": 1}], "chapter_tag": "Chemical Bonding"}
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(json.dumps({"questions": [cbq]}), 1, 1)):
+            sg._top_up_short_section(section_data, wo)
+        self.assertEqual(len(section_data["questions"]), 2)        # CBQ rejected, nothing added
+        self.assertNotIn("_topped_up", section_data)
+
+
+class PatternAIEnhanceTest(TestCase):
+    """validate_and_enhance_pattern: a section's own marks already cover its subsections, so the
+    paper total must NOT add both (a subsectioned Hindi board paper summed to 146 instead of 80)."""
+
+    def test_subsection_marks_not_double_counted(self):
+        from core import pattern_ai_generator as pag
+        raw = {"sections": [
+            {"id": "A", "name": "Unseen", "marks": 14, "questions_count": 2, "marks_per_question": 7,
+             "question_types": ["Comprehension"], "subsections": []},
+            {"id": "B", "name": "Grammar", "marks": 16, "questions_count": 4, "marks_per_question": 4,
+             "question_types": ["Short Answer"],
+             "subsections": [{"marks": 4, "questions_count": 4} for _ in range(4)]},
+            {"id": "D", "name": "Writing", "marks": 22, "questions_count": 5, "marks_per_question": None,
+             "question_types": ["Paragraph", "Letter"],
+             "subsections": [{"marks": m, "questions_count": 1} for m in (5, 5, 4, 3, 5)]},
+        ]}
+        out = pag.validate_and_enhance_pattern(raw, "10", "Hindi", "Board")
+        self.assertEqual(out["total_marks"], 52)          # 14 + 16 + 22, subsections NOT re-added
+        self.assertEqual(out["total_questions"], 11)      # 2 + 4 + 5
+        # None marks_per_question is coerced to the section average, never left None.
+        self.assertIsNotNone(out["sections"][2]["marks_per_question"])
+
+    def test_section_marks_fallback_to_subsection_sum(self):
+        from core import pattern_ai_generator as pag
+        raw = {"sections": [
+            {"id": "C", "name": "Textbook", "marks": 0, "questions_count": 0,
+             "question_types": ["MCQ"],
+             "subsections": [{"marks": 5, "questions_count": 5}, {"marks": 6, "questions_count": 3}]},
+        ]}
+        out = pag.validate_and_enhance_pattern(raw, "10", "Hindi", "Board")
+        # Section declared 0 → fall back to the subsection sum (11), don't leave it empty.
+        self.assertEqual(out["total_marks"], 11)
+        self.assertEqual(out["sections"][0]["marks"], 11)
+        self.assertEqual(out["sections"][0]["questions_count"], 8)
+
 
 class LanguageSupportTest(TestCase):
     """Tamil & Hindi: the right complex-script font is applied at render, and the generation
@@ -1012,6 +1083,26 @@ class MaterialIntelTest(TestCase):
     def test_detect_unit_name_empty_sample_returns_none(self):
         from core import material_intel as mi
         self.assertIsNone(mi.detect_unit_name(None, "12", "Physics", sample_text="   "))
+
+    def test_legacy_font_gibberish_is_unreadable(self):
+        """A Hindi PDF typeset in a legacy non-Unicode font (Walkman-Chanakya905) extracts as
+        ASCII keystroke gibberish with no Devanagari — must be flagged unreadable so naming falls
+        back to the filename instead of returning confident garbage ('dchj')."""
+        from core import material_intel as mi
+        chanakya = "i| [kaM ,d jk\"Vªh; vfLerk vkSj jk\"Vªh; pfj=k dk fodkl"  # real Chanakya extraction
+        self.assertTrue(mi.text_is_unreadable_for_subject(chanakya, "Hindi"))
+        # And detect_unit_name bails to None on it (no LLM call reached).
+        self.assertIsNone(mi.detect_unit_name(None, "10", "Hindi", sample_text=chanakya))
+
+    def test_real_devanagari_is_readable(self):
+        from core import material_intel as mi
+        self.assertFalse(mi.text_is_unreadable_for_subject("दो बैलों की कथा — प्रेमचंद की कहानी", "Hindi"))
+
+    def test_latin_subject_never_flagged_unreadable(self):
+        from core import material_intel as mi
+        # English/maths content is ASCII by nature — the guard applies only to Indic-script subjects.
+        self.assertFalse(mi.text_is_unreadable_for_subject("Chapter 1: Real Numbers", "Mathematics"))
+        self.assertFalse(mi.text_is_unreadable_for_subject("The Sound of Music", "English"))
 
     def test_extract_html_chapters_by_heading(self):
         from core.material_intel import extract_html_chapters
@@ -1519,76 +1610,285 @@ class _FakeReader:
         self.pages = [_FakePage(text)]
 
 
-class _CapturingCollection:
-    """Stands in for a Chroma collection — records the last add()/get()/delete() call."""
-    def __init__(self):
-        self.added = None
-        self.deleted = None
-        self._get_ret = {"ids": ["id_a", "id_b"]}
-        self.get_where = None
-    def add(self, ids, embeddings, documents, metadatas):
-        self.added = {"ids": ids, "embeddings": embeddings, "documents": documents, "metadatas": metadatas}
-    def get(self, where=None, include=None):
-        self.get_where = where
-        return self._get_ret
-    def delete(self, ids=None):
-        self.deleted = ids
-
-
 class ChapterIngestTest(TestCase):
-    """ingest_pdf tags one file's chunks under several chapter labels (notes spanning chapters)
-    and makes chunk ids material-scoped so they never collide with a textbook chapter's chunks."""
+    """ingest_pdf stores each chunk ONCE and links it to every chapter via ChunkChapter — a note
+    spanning multiple chapters is no longer duplicated per chapter (pgvector many-to-many)."""
 
     def _run_ingest(self, **kwargs):
         from unittest import mock
         from core import embeddings as emb
-        col = _CapturingCollection()
         unit = kwargs.pop("unit", "ignored")
         with mock.patch.object(emb, "PdfReader", lambda *_a, **_k: _FakeReader("x" * 1600)), \
-             mock.patch.object(emb, "get_embeddings_batch", side_effect=lambda chunks, provider: [[0.0]] * len(chunks)), \
-             mock.patch.object(emb, "get_collection", return_value=col):
-            emb.ingest_pdf("10", "Physics", unit, "C:/fake.pdf", **kwargs)
-        return col
+             mock.patch.object(emb, "get_embeddings_batch",
+                               side_effect=lambda chunks, provider: [[0.0] * 768 for _ in chunks]):
+            return emb.ingest_pdf("10", "Physics", unit, "C:/fake.pdf", **kwargs)
 
-    def test_multi_unit_tags_every_chapter(self):
-        col = self._run_ingest(units=["Light", "Electricity"], source_id=42, material_type="notes")
-        units = {m["unit"] for m in col.added["metadatas"]}
-        self.assertEqual(units, {"light", "electricity"})
-        # Every chunk carries the material id, and ids encode it so they can't collide.
-        self.assertTrue(all(m["material_id"] == 42 for m in col.added["metadatas"]))
-        self.assertTrue(all("_42_" in i for i in col.added["ids"]))
-        self.assertEqual(len(set(col.added["ids"])), len(col.added["ids"]))  # unique
+    def test_multi_chapter_note_stored_once(self):
+        from core.models import MaterialChunk, ChunkChapter
+        n = self._run_ingest(units=["Light", "Electricity"], material_type="notes")
+        # 1600 chars → 2 chunks, stored ONCE (not 4) even though linked to 2 chapters.
+        self.assertEqual(n, 2)
+        self.assertEqual(MaterialChunk.objects.count(), 2)
+        self.assertEqual(set(ChunkChapter.objects.values_list("unit", flat=True)), {"light", "electricity"})
+        self.assertEqual(ChunkChapter.objects.count(), 4)  # 2 chunks × 2 chapters (cheap links, not chunk copies)
 
-    def test_single_unit_legacy_scheme_unchanged(self):
-        # No source_id → textbook path keeps the original id scheme and adds no material_id.
-        col = self._run_ingest(unit="Light", material_type="textbook")
-        self.assertTrue(all(m["unit"] == "light" for m in col.added["metadatas"]))
-        self.assertTrue(all("material_id" not in m for m in col.added["metadatas"]))
-        self.assertTrue(all(i.startswith("10_physics_light_") for i in col.added["ids"]))
+    def test_single_chapter_links_once(self):
+        from core.models import MaterialChunk, ChunkChapter
+        self._run_ingest(unit="Light", material_type="textbook")
+        self.assertEqual(MaterialChunk.objects.count(), 2)
+        self.assertEqual(ChunkChapter.objects.count(), 2)
+        self.assertTrue(all(c.embedding_local is not None for c in MaterialChunk.objects.all()))
 
-    def test_note_ids_do_not_collide_with_textbook(self):
-        textbook = self._run_ingest(unit="Light", material_type="textbook")
-        note = self._run_ingest(units=["Light"], source_id=7, material_type="notes")
-        self.assertFalse(set(textbook.added["ids"]) & set(note.added["ids"]))
+    def test_note_and_textbook_coexist_under_same_chapter(self):
+        from core.models import MaterialChunk, ChunkChapter
+        self._run_ingest(unit="Light", material_type="textbook")
+        self._run_ingest(units=["Light"], material_type="notes")
+        self.assertEqual(MaterialChunk.objects.count(), 4)            # separate rows — no id collision
+        self.assertEqual(ChunkChapter.objects.filter(unit="light").count(), 4)
 
 
 class DeleteMaterialEmbeddingsTest(TestCase):
-    """Deleting a chapter-linked note removes only its own chunks (by material_id), never the
-    textbook chapter's chunks that share the same unit label."""
+    """delete_material_embeddings removes only one material's chunks (cascading their chapter
+    links), never a textbook chapter's chunks that share the same unit label."""
 
-    def test_deletes_by_material_id(self):
-        from unittest import mock
+    def _chunk(self, material, unit):
+        from core.models import MaterialChunk, ChunkChapter
+        c = MaterialChunk.objects.create(material=material, class_name="10", subject="physics",
+                                         content="x", chunk_index=0, provider="local")
+        ChunkChapter.objects.create(chunk=c, unit=unit)
+        return c
+
+    def test_deletes_only_that_material(self):
+        from core.models import Material, MaterialChunk, ChunkChapter
         from core import embeddings as emb
-        col = _CapturingCollection()
-        with mock.patch.object(emb, "get_collection", return_value=col):
-            emb.delete_material_embeddings("10", "Physics", 42, school_id=1)
-        self.assertEqual(col.get_where, {"material_id": 42})
-        self.assertEqual(col.deleted, ["id_a", "id_b"])
+        note = Material.objects.create(class_name="10", subject="Physics", title="notes", type="notes", file="")
+        book = Material.objects.create(class_name="10", subject="Physics", title="book", type="textbook", file="")
+        self._chunk(note, "light"); self._chunk(note, "light"); self._chunk(book, "light")
+        emb.delete_material_embeddings("10", "Physics", note.id)
+        self.assertEqual(MaterialChunk.objects.filter(material=note).count(), 0)
+        self.assertEqual(MaterialChunk.objects.filter(material=book).count(), 1)
+        self.assertEqual(ChunkChapter.objects.count(), 1)            # deleted chunks' links cascaded away
 
     def test_noop_when_material_id_none(self):
+        from core import embeddings as emb
+        emb.delete_material_embeddings("10", "Physics", None)        # must not raise / delete nothing
+
+
+class ChunkingTest(TestCase):
+    """Structure-aware chunker: natural boundaries, size bound, overlap, tiny-tail merge."""
+
+    def test_short_text_is_single_chunk(self):
+        from core.embeddings import _chunk_text
+        out = _chunk_text("A short paragraph about photosynthesis.")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0][1], "A short paragraph about photosynthesis.")
+
+    def test_empty_text(self):
+        from core.embeddings import _chunk_text
+        self.assertEqual(_chunk_text("   "), [])
+
+    def test_respects_size_bound(self):
+        from core.embeddings import _chunk_text
+        text = ". ".join(f"Sentence number {i} explains an idea" for i in range(400))
+        out = _chunk_text(text, size=500, overlap=60)
+        self.assertGreater(len(out), 1)
+        # No chunk grossly exceeds size (allow overlap + one boundary token of slack).
+        self.assertTrue(all(len(c) <= 500 + 120 for _, c in out))
+
+    def test_prefers_sentence_boundaries(self):
+        from core.embeddings import _chunk_text
+        text = " ".join(f"This is sentence {i}." for i in range(200))
+        out = _chunk_text(text, size=300, overlap=40)
+        # Most chunks should end at a sentence terminator, not mid-word.
+        ends_clean = sum(1 for _, c in out if c.endswith("."))
+        self.assertGreaterEqual(ends_clean, len(out) - 1)
+
+    def test_overlap_carries_context(self):
+        from core.embeddings import _chunk_text
+        text = " ".join(f"word{i}" for i in range(400))
+        out = [c for _, c in _chunk_text(text, size=300, overlap=60)]
+        self.assertGreater(len(out), 1)
+        # The tail of one chunk should reappear at the head of the next (context overlap).
+        first_tail = out[0].split()[-1]
+        self.assertIn(first_tail, out[1].split()[:8])
+
+    def test_indices_are_sequential(self):
+        from core.embeddings import _chunk_text
+        text = ". ".join(f"Idea {i} is described here" for i in range(120))
+        out = _chunk_text(text, size=400, overlap=50)
+        self.assertEqual([i for i, _ in out], list(range(len(out))))
+
+
+class PgvectorQueryTest(TestCase):
+    """query() returns the Chroma-shaped dict, orders by cosine distance, and scopes to chapter."""
+
+    def setUp(self):
+        from core.models import Material
+        # Chunks must belong to a material for the visibility join; a shared material is visible
+        # to the default (school_id=None) query context.
+        self.mat = Material.objects.create(class_name="10", subject="Physics", title="t",
+                                           type="notes", file="", school=None, visibility="shared")
+
+    def _chunk(self, content, vec, unit="light"):
+        from core.models import MaterialChunk, ChunkChapter
+        c = MaterialChunk.objects.create(material=self.mat, class_name="10", subject="physics",
+                                         content=content, chunk_index=0, provider="local",
+                                         embedding_local=vec)
+        ChunkChapter.objects.create(chunk=c, unit=unit)
+        return c
+
+    def test_orders_by_similarity_and_shape(self):
         from unittest import mock
         from core import embeddings as emb
-        col = _CapturingCollection()
-        with mock.patch.object(emb, "get_collection", return_value=col):
-            emb.delete_material_embeddings("10", "Physics", None)
-        self.assertIsNone(col.deleted)
+        near = [1.0] + [0.0] * 767
+        far = [0.0] * 767 + [1.0]
+        self._chunk("near-doc", near)
+        self._chunk("far-doc", far)
+        with mock.patch.object(emb, "get_embedding", return_value=near):
+            res = emb.query("10", "Physics", "Light", "q", n_results=5)
+        self.assertEqual(len(res["documents"]), 1)                   # list-of-one-list (Chroma shape)
+        self.assertEqual(res["documents"][0], ["near-doc", "far-doc"])
+        self.assertIn("embeddings", res)
+
+    def test_chapter_scoping(self):
+        from unittest import mock
+        from core import embeddings as emb
+        self._chunk("light-doc", [1.0] + [0.0] * 767, unit="light")
+        self._chunk("sound-doc", [1.0] + [0.0] * 767, unit="sound")
+        with mock.patch.object(emb, "get_embedding", return_value=[1.0] + [0.0] * 767):
+            res = emb.query("10", "Physics", "Sound", "q", n_results=5)
+        self.assertEqual(res["documents"][0], ["sound-doc"])
+
+
+class MaterialVisibilityScopeTest(TestCase):
+    """visibility_q (the single access rule): a school sees its own materials ∪ shared (only if
+    granted) ∪ institutional (any school), and NEVER another school's private material."""
+
+    def setUp(self):
+        from core.models import School, Material
+        self.A = School.objects.create(name="A", access_shared_vector_store=True)
+        self.B = School.objects.create(name="B", access_shared_vector_store=False)
+        mk = lambda **kw: Material.objects.create(class_name="10", subject="Physics",
+                                                  title="t", type="notes", file="", **kw)
+        self.shared = mk(school=None, visibility="shared")
+        self.a_priv = mk(school=self.A, visibility="private")
+        self.b_priv = mk(school=self.B, visibility="private")
+        self.b_inst = mk(school=self.B, visibility="institutional")
+
+    def _visible(self, school):
+        from core.models import Material
+        from core.access import visibility_q
+        return set(Material.objects.filter(visibility_q(school)).values_list("id", flat=True))
+
+    def test_school_with_shared_access(self):
+        v = self._visible(self.A)
+        self.assertEqual(v, {self.shared.id, self.a_priv.id, self.b_inst.id})
+        self.assertNotIn(self.b_priv.id, v)                  # never another school's private
+
+    def test_school_without_shared_access(self):
+        v = self._visible(self.B)
+        self.assertEqual(v, {self.b_priv.id, self.b_inst.id})
+        self.assertNotIn(self.shared.id, v)                  # not granted shared store
+        self.assertNotIn(self.a_priv.id, v)
+
+    def test_superadmin_or_no_school(self):
+        self.assertEqual(self._visible(None), {self.shared.id, self.b_inst.id})
+
+    def test_flip_to_institutional_exposes_cross_school(self):
+        self.assertNotIn(self.b_priv.id, self._visible(self.A))
+        self.b_priv.visibility = "institutional"
+        self.b_priv.save()
+        self.assertIn(self.b_priv.id, self._visible(self.A))   # instant, no re-ingest
+
+
+class ChunkVisibilityScopeTest(TestCase):
+    """The retrieval layer (_scoped_chunks) enforces the same visibility rule via the chunk→material
+    join, so generation can only pull context a school is allowed to see."""
+
+    def setUp(self):
+        from core.models import School, Material, MaterialChunk, ChunkChapter
+        self.A = School.objects.create(name="A", access_shared_vector_store=True)
+        self.B = School.objects.create(name="B", access_shared_vector_store=False)
+
+        def mk(school, vis):
+            m = Material.objects.create(class_name="10", subject="Physics", title="t",
+                                        type="notes", file="", school=school, visibility=vis)
+            c = MaterialChunk.objects.create(material=m, school=school, class_name="10",
+                                             subject="physics", content="c", chunk_index=0,
+                                             provider="local", embedding_local=[0.0] * 768)
+            ChunkChapter.objects.create(chunk=c, unit="light")
+            return c
+
+        self.shared = mk(None, "shared")
+        self.a_priv = mk(self.A, "private")
+        self.b_priv = mk(self.B, "private")
+        self.b_inst = mk(self.B, "institutional")
+
+    def _scoped(self, school_id):
+        from core.embeddings import _scoped_chunks
+        return set(_scoped_chunks("10", "physics", "embedding_local", school_id)
+                   .values_list("id", flat=True))
+
+    def test_with_access(self):
+        self.assertEqual(self._scoped(self.A.id), {self.shared.id, self.a_priv.id, self.b_inst.id})
+
+    def test_without_access(self):
+        self.assertEqual(self._scoped(self.B.id), {self.b_priv.id, self.b_inst.id})
+
+    def test_superadmin(self):
+        self.assertEqual(self._scoped(None), {self.shared.id, self.b_inst.id})
+
+
+class CrossSchoolLinkTest(TestCase):
+    """SchoolVectorLink: a viewer school reads a source school's private materials ONLY when a
+    link exists, and only in the granted direction."""
+
+    def setUp(self):
+        from core.models import School, Material
+        self.A = School.objects.create(name="A")
+        self.B = School.objects.create(name="B")
+        mk = lambda school: Material.objects.create(class_name="10", subject="Physics", title="t",
+                                                    type="notes", file="", school=school, visibility="private")
+        self.a_priv = mk(self.A)
+        self.b_priv = mk(self.B)
+
+    def _visible(self, school):
+        from core.models import Material
+        from core.access import visibility_q
+        return set(Material.objects.filter(visibility_q(school)).values_list("id", flat=True))
+
+    def test_no_link_is_isolated(self):
+        self.assertEqual(self._visible(self.A), {self.a_priv.id})
+        self.assertEqual(self._visible(self.B), {self.b_priv.id})
+
+    def test_link_is_directional(self):
+        from core.models import SchoolVectorLink
+        SchoolVectorLink.objects.create(viewer=self.A, source=self.B)   # A → B only
+        self.assertEqual(self._visible(self.A), {self.a_priv.id, self.b_priv.id})  # A sees B's
+        self.assertEqual(self._visible(self.B), {self.b_priv.id})                  # B still can't see A's
+
+    def test_mutual_link(self):
+        from core.models import SchoolVectorLink
+        SchoolVectorLink.objects.create(viewer=self.A, source=self.B)
+        SchoolVectorLink.objects.create(viewer=self.B, source=self.A)
+        self.assertIn(self.b_priv.id, self._visible(self.A))
+        self.assertIn(self.a_priv.id, self._visible(self.B))
+
+    def test_chunk_scope_respects_link(self):
+        from core.models import MaterialChunk, ChunkChapter, SchoolVectorLink
+        from core.embeddings import _scoped_chunks
+        c = MaterialChunk.objects.create(material=self.b_priv, school=self.B, class_name="10",
+                                         subject="physics", content="x", chunk_index=0,
+                                         provider="local", embedding_local=[0.0] * 768)
+        ChunkChapter.objects.create(chunk=c, unit="light")
+        scoped = lambda: set(_scoped_chunks("10", "physics", "embedding_local", self.A.id).values_list("id", flat=True))
+        self.assertNotIn(c.id, scoped())                                # not linked → invisible
+        SchoolVectorLink.objects.create(viewer=self.A, source=self.B)
+        self.assertIn(c.id, scoped())                                   # linked → visible
+
+    def test_no_self_link_allowed(self):
+        from core.models import SchoolVectorLink
+        from django.db import IntegrityError, transaction
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                SchoolVectorLink.objects.create(viewer=self.A, source=self.A)

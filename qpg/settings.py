@@ -49,6 +49,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:4000",
     "http://127.0.0.1:4000",
+    "http://172.16.71.183:4000",
 ]
 
 
@@ -187,17 +188,19 @@ LOGOUT_REDIRECT_URL = '/login/'
 
 # Session settings - Force logout when browser is closed
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
-SESSION_COOKIE_AGE = 3600  # Session expires after 1 hour (3600 seconds)
-SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request
+SESSION_COOKIE_AGE = 24 * 3600  # Session expires after 24 hours
+SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request (sliding expiry while active)
 
 # Celery settings
 CELERY_BROKER_URL = "redis://127.0.0.1:6380/0"
 CELERY_RESULT_BACKEND = "redis://127.0.0.1:6380/0"
 # Hard ceiling so one hung LLM/image call can't pin a worker indefinitely. A full paper is
-# many LLM calls; 12 min soft (raises SoftTimeLimitExceeded → task can clean up) / 15 min hard
-# (worker kills the task). Prevents a couple of stuck tasks from freezing both schools' queues.
-CELERY_TASK_SOFT_TIME_LIMIT = 12 * 60
-CELERY_TASK_TIME_LIMIT = 15 * 60
+# many LLM calls; heavy language papers (e.g. a 60-question Tamil board paper) legitimately run
+# ~11 min, and a serial retry of a contention-failed section needs headroom on top — so 20 min
+# soft (raises SoftTimeLimitExceeded → task can clean up) / 25 min hard (worker kills the task).
+# Light papers for other subjects finish far under this, so the higher ceiling never bites them.
+CELERY_TASK_SOFT_TIME_LIMIT = 20 * 60
+CELERY_TASK_TIME_LIMIT = 25 * 60
 # Run multiple workers so one long paper can't block all others; ack late so a crash re-queues.
 CELERY_WORKER_CONCURRENCY = 4
 CELERY_TASK_ACKS_LATE = True
@@ -232,6 +235,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
     "http://127.0.0.1:4000",
+    "http://172.16.71.183:4000",
 ]
 
 CORS_ALLOW_CREDENTIALS = True

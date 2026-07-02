@@ -2422,9 +2422,23 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
         c = _fine_category(t if isinstance(t, str) else t.get("type", ""))
         if c and c != "other" and c not in allowed:
             allowed.append(c)
-    if not allowed or wo.mixed_marks or wo.is_map_work or _is_dedicated_cbq_section(wo) \
+
+    # Never blind-fill structurally heavy or mixed-marks sections — their questions carry
+    # passages, sub-questions, maps, or per-type marks that a generic top-up can't reproduce.
+    if wo.mixed_marks or wo.is_map_work or _is_dedicated_cbq_section(wo) \
             or wo.passage_instruction or wo.extract_instruction or "cbq" in allowed:
         return 0, 0
+
+    # ``loose`` mode: a plain uniform-marks written-answer section whose declared types are
+    # all free-form / descriptive ("2 Mark Questions", "Essay", "Letter Writing" — common in
+    # AI-generated patterns) so none classify to a canonical category. We can't filter the
+    # top-up by an exact type, but every question is worth the same and the section has no
+    # special structure, so accept any on-topic, non-duplicate question and force the section
+    # marks. When at least one type DID classify, keep the strict by-category filter unchanged
+    # (so sections that already work — MCQ/VSA/SA/LA/… — behave exactly as before).
+    loose = not allowed
+    if loose and not wo.marks_per_question:
+        return 0, 0          # no unambiguous per-question marks → unsafe; leave to retry
     allowed_set = set(allowed)
 
     eff_subject = wo.section_subject or wo.subject
@@ -2471,7 +2485,13 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
             break
         if not isinstance(q, dict) or not str(q.get("text", "")).strip():
             continue
-        if _fine_category(q.get("type", ""), str(q.get("subtype", "")).strip().lower()) not in allowed_set:
+        # Strict sections filter by category; loose (free-form-type) sections accept any
+        # written-answer question but still reject structural types they can't host.
+        cat = _fine_category(q.get("type", ""), str(q.get("subtype", "")).strip().lower())
+        if loose:
+            if cat in ("cbq", "map"):
+                continue
+        elif cat not in allowed_set:
             continue
         txt = str(q.get("text", "")).strip()
         low = txt.lower()
@@ -2491,7 +2511,7 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
     if added:
         section_data["questions"] = questions + added
         section_data["_topped_up"] = len(added)
-        _types = "/".join(c.upper() for c in allowed)
+        _types = "/".join(c.upper() for c in allowed) if allowed else "free-form"
         print(f"[Top-Up] '{wo.section_name}': added {len(added)}/{missing} missing {_types} question(s)")
     return in_tok, out_tok
 
@@ -3780,6 +3800,25 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
                 print(f"[Parallel-Gen] FAILED '{wo.section_name}': {e}")
                 print(traceback.format_exc())
                 failed.append(wo.section_name)
+
+    # A section can fail in the parallel burst purely from endpoint contention — the biggest
+    # section (e.g. a 30-question language section) starves while the other two stream and even
+    # its TLS handshake times out, so its base call never returns and the whole section is
+    # dropped (-30 marks, "Short Answer MISSING"). Give each failed section ONE more attempt
+    # SERIALLY, where it has the endpoint to itself; even a truncated base result is enough for
+    # the top-up path to fill it. Only runs on failure — the happy path is untouched.
+    if failed:
+        for wo in [w for w in work_orders if w.section_name in failed]:
+            print(f"[Parallel-Gen] serial retry of failed section '{wo.section_name}'")
+            try:
+                sec_dict, in_tok, out_tok = generate_section(wo)
+                paper_data.update(sec_dict)
+                total_input_tokens += in_tok
+                total_output_tokens += out_tok
+                failed.remove(wo.section_name)
+                print(f"[Parallel-Gen] ✅ serial retry recovered '{wo.section_name}'")
+            except Exception as e:
+                print(f"[Parallel-Gen] serial retry FAILED '{wo.section_name}': {e}")
 
     if len(failed) >= 2:
         raise RuntimeError(
