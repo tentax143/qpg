@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   HelpCircle,
   Database,
+  ListOrdered,
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -57,6 +58,7 @@ export default function Sidebar() {
     { href: '/superadmin/schools', icon: School, label: 'Schools' },
     { href: '/superadmin/vector-stores', icon: Database, label: 'Vector Stores' },
     { href: '/superadmin/cbse-patterns', icon: ClipboardList, label: 'CBSE Patterns' },
+    { href: '/superadmin/queue', icon: ListOrdered, label: 'Queue' },
   ];
 
   // SuperAdmin content management — populates the shared/global vector store.

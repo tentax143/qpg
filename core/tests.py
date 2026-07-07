@@ -200,6 +200,32 @@ class RenderGroupingTest(TestCase):
         groups = sg_gen._regroup_section(qs, {"name": "A", "subsections": []})
         self.assertEqual([lbl for lbl, _ in groups if lbl], [])
 
+    def test_render_stamps_display_qnums_on_shared_dicts(self):
+        # _render_paper_from_stored_data persists paper_data after rendering BECAUSE the
+        # renderer writes each question's PRINTED number back into the shared question dicts
+        # (blueprint section order + type regrouping), regardless of paper_data dict order or
+        # stale stored qnums. paper_edit.renumber() numbers in storage order instead, so
+        # without this write-back+save the ai_edit planner targets numbers the teacher
+        # doesn't see. This test pins the write-back contract the fix relies on.
+        blueprint = {
+            "Section A": {"title": "Objective", "marks": 2},
+            "Section B": {"title": "Short Answer", "marks": 3},
+        }
+        a_mcq = {"qnum": 99, "type": "MCQ", "subtype": "standard", "marks": 1, "text": "pick",
+                 "options": {"a": "1", "b": "2", "c": "3", "d": "4"}, "answer": "a"}
+        a_sa = {"qnum": 98, "type": "SA", "subtype": "standard", "marks": 1, "text": "why"}
+        b_sa = {"qnum": 97, "type": "SA", "subtype": "standard", "marks": 3, "text": "explain"}
+        # dict order (B first) deliberately differs from blueprint order (A first); Section A
+        # stores its SA before its MCQ while the print regroups MCQ first.
+        data = {
+            "Section B": {"questions": [b_sa]},
+            "Section A": {"questions": [a_sa, a_mcq]},
+        }
+        sg_gen.render_section_questions([], data, blueprint)
+        self.assertEqual({a_mcq["qnum"], a_sa["qnum"]}, {1, 2})   # Section A printed first
+        self.assertLess(a_mcq["qnum"], a_sa["qnum"])              # regrouped: MCQ before SA
+        self.assertEqual(b_sa["qnum"], 3)                         # B last despite dict order
+
 
 class CountBasedValidationTest(TestCase):
     """Section validation must check the right NUMBER of each type (renderer handles order),
@@ -338,6 +364,82 @@ class SectionTypeEnforcementTest(TestCase):
         paper_data = {"Section B": {"section_name": "Section B", "questions": [cbq]}}
         out = sg.enforce_section_question_types(paper_data, [wo])
         self.assertEqual(len(out["Section B"]["questions"]), 1)        # CBQ kept despite subtype
+
+    def _map_q(self, n, marks=1):
+        # Map questions are emitted as type "SA" + subtype "map_based" per the schema.
+        return {"qnum": n, "type": "SA", "subtype": "map_based",
+                "text": f"On the given outline map of India, locate and label: (a) place {n} (b) place {n + 1}",
+                "marks": marks, "map_note": "[Attach outline map of India — examiner to supply]",
+                "chapter_tag": "Ch", "competency_type": "application"}
+
+    def test_enforce_pass_keeps_map_based_in_pure_map_section(self):
+        # SS Section F ("Map location" / "Diagram-based"): every valid map question was
+        # stripped as a foreign SA, shipping the section 0/3.
+        from core import section_generator as sg
+        wo = self._wo(["Map location", "Diagram-based"], count=3, mpq=1.0)
+        paper_data = {"Section B": {"section_name": "Section B",
+                                    "questions": [self._map_q(1), self._map_q(2), self._map_q(3)]}}
+        out = sg.enforce_section_question_types(paper_data, [wo])
+        self.assertEqual(len(out["Section B"]["questions"]), 3)        # nothing dropped
+        self.assertNotIn("_dropped_wrong_type", out["Section B"])
+
+    def test_enforce_pass_keeps_map_and_la_in_mixed_section(self):
+        # SS Section D ("Long Answer" / "Map Work"): the map half was dropped, shipping 1/2.
+        from core import section_generator as sg
+        wo = self._wo(["Long Answer", "Map Work"], count=2, mpq=5.0)
+        la = {"qnum": 1, "type": "LA", "subtype": "standard", "text": "Explain in detail…",
+              "marks": 5, "or_alternative": {"text": "Or explain…"}}
+        paper_data = {"Section B": {"section_name": "Section B",
+                                    "questions": [la, self._map_q(2, marks=5)]}}
+        out = sg.enforce_section_question_types(paper_data, [wo])
+        self.assertEqual(len(out["Section B"]["questions"]), 2)        # LA and map both kept
+        self.assertNotIn("_dropped_wrong_type", out["Section B"])
+
+    def test_enforce_pass_keeps_map_by_map_note_when_subtype_missing(self):
+        from core import section_generator as sg
+        wo = self._wo(["Map Work"], count=1, mpq=2.0)
+        q = self._map_q(1, marks=2)
+        q["subtype"] = "standard"                                      # model forgot the subtype
+        paper_data = {"Section B": {"section_name": "Section B", "questions": [q]}}
+        out = sg.enforce_section_question_types(paper_data, [wo])
+        self.assertEqual(len(out["Section B"]["questions"]), 1)        # map_note is enough
+        self.assertNotIn("_dropped_wrong_type", out["Section B"])
+
+    def test_enforce_pass_still_strips_mcq_from_map_section(self):
+        from core import section_generator as sg
+        wo = self._wo(["Map location"], count=2, mpq=1.0)
+        paper_data = {"Section B": {"section_name": "Section B",
+                                    "questions": [self._map_q(1), self._mcq_q(2)]}}
+        out = sg.enforce_section_question_types(paper_data, [wo])
+        self.assertEqual(len(out["Section B"]["questions"]), 1)        # MCQ still removed
+        self.assertEqual(len(out["Section B"]["_dropped_wrong_type"]), 1)
+
+    def test_top_up_applies_to_map_section(self):
+        # A short map section used to be refused by the top-up (no recovery path at all).
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(["Map location"], count=3, mpq=1.0)
+        wo.is_map_work = True
+        sec = {"section_name": "Section B", "questions": [self._map_q(1), self._map_q(3)]}
+        reply = ('{"questions": [{"qnum": 3, "type": "SA", "subtype": "map_based", '
+                 '"text": "On the given outline map of India, locate and label: (a) Mumbai (b) Goa", '
+                 '"marks": 1, "map_note": "[Attach outline map of India — examiner to supply]", '
+                 '"chapter_tag": "Ch", "competency_type": "application"}]}')
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(reply, 10, 20)):
+            in_tok, out_tok = sg._top_up_short_section(sec, wo)
+        self.assertEqual(len(sec["questions"]), 3)                     # topped up to count
+        self.assertEqual(sec.get("_topped_up"), 1)
+        self.assertGreater(in_tok + out_tok, 0)
+
+    def test_top_up_still_refuses_cbq_section(self):
+        from unittest import mock
+        from core import section_generator as sg
+        wo = self._wo(["Case-Based Questions"], count=2, mpq=4.0)
+        sec = {"section_name": "Section B", "questions": []}
+        with mock.patch.object(sg.mantle_client, "converse") as conv:
+            in_tok, out_tok = sg._top_up_short_section(sec, wo)
+        self.assertEqual((in_tok, out_tok), (0, 0))
+        conv.assert_not_called()
 
 
 class MarksReconcileAndTopUpLoopTest(TestCase):

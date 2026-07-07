@@ -1,24 +1,31 @@
 {
   "meta": {
     "class": "9",
-    "subject": "Mathematics",
-    "difficulty": "Hard",
+    "subject": "Social Science",
+    "difficulty": "Easy",
     "chapters": [
-      "Introduction to Linear Polynomials",
-      "Orienting Yourself The Use of Coordinates"
+      "Understanding Social Science",
+      "Shaping of the Earth’s Surface",
+      "Atmosphere and Climate"
     ],
-    "total_questions": 23,
-    "input_tokens": 23175,
-    "output_tokens": 15137
+    "total_questions": 21,
+    "input_tokens": 19088,
+    "output_tokens": 4756
   },
   "sections": {
     "Section B — Very Short Answer (VSA)": {
       "title": "",
       "section_subject": "",
-      "marks": 6,
+      "marks": 4,
       "partial": false,
       "errors": [],
-      "grounding_issues": [],
+      "grounding_issues": [
+        {
+          "qnum": 2,
+          "text_snippet": "Name the external process which involves the wearing away of the Earth's surface",
+          "issue": "The reference text does not mention external processes like erosion caused by water and wind."
+        }
+      ],
       "quality_flags": [],
       "mcq_answer_warnings": [],
       "mcq_answer_corrections": [],
@@ -26,46 +33,24 @@
       "questions": [
         {
           "qnum": 11,
-          "type": "VSA",
+          "type": "SA",
           "subtype": "standard",
-          "text": "A rectangular garden of length l metres is to be fenced. The cost of fencing is ₹100 per metre for two lengths and ₹80 per metre for the two widths. Write a linear polynomial representing the total fencing cost, and identify its degree and constant term.",
-          "answer_explanation": "Total cost = 100 × (2l) + 80 × (2w) = 200l + 160w. This is not a univariate linear polynomial; it involves two variables. For it to be a linear polynomial in one variable, either l or w must be expressed in terms of the other, or one must be fixed.",
-          "marks": 1.5,
-          "chapter_tag": "Introduction to Linear Polynomials",
+          "text": "State the discipline of Social Science that studies systems of governance, power, and citizens' rights and responsibilities.",
+          "marks": 2.0,
+          "answer_explanation": "Political Science is the discipline that analyses systems of governance, power distribution, and the rights and responsibilities of citizens.",
+          "chapter_tag": "Understanding Social Science",
           "competency_type": "application",
           "options": {}
         },
         {
           "qnum": 12,
-          "type": "VSA",
+          "type": "SA",
           "subtype": "standard",
-          "text": "The point (a, 0) lies on the x-axis. If the line joining the origin to this point makes an angle of 45° with the positive x-axis, find the coordinates of the point. Justify your answer.",
-          "answer_explanation": "For a 45° angle, tan 45° = y/x = 1. Since the point is on the x-axis, y=0. This creates a contradiction unless the point is the origin itself. Therefore, the only point satisfying both conditions is (0,0).",
-          "marks": 1.5,
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
-          "competency_type": "application",
-          "options": {}
-        },
-        {
-          "qnum": 13,
-          "type": "VSA",
-          "subtype": "standard",
-          "text": "A function is defined as f(x) = ax + a, where a > 0. Explain why the graph of this function will always intersect the x-axis at the same point, regardless of the value of 'a'.",
-          "answer_explanation": "To find the x-intercept, set f(x)=0 ⇒ ax + a = 0 ⇒ a(x+1)=0. Since a > 0, we get x+1=0 ⇒ x=-1. Thus, the x-intercept is always (-1, 0), independent of the positive value of 'a'.",
-          "marks": 1.5,
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "constructed",
-          "options": {}
-        },
-        {
-          "qnum": 14,
-          "type": "VSA",
-          "subtype": "standard",
-          "text": "A point P has coordinates (k, k+2). Determine the condition on 'k' for which the point P lies in the second quadrant. Explain the reasoning.",
-          "answer_explanation": "In the second quadrant, x < 0 and y > 0. Therefore, for point P(k, k+2), we require k < 0 AND k+2 > 0. The second inequality gives k > -2. Combining: -2 < k < 0.",
-          "marks": 1.5,
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
-          "competency_type": "constructed",
+          "text": "Name the external process which involves the wearing away of the Earth's surface by agents like water and wind.",
+          "marks": 2.0,
+          "answer_explanation": "The external process is called erosion. It involves the wearing down and transportation of Earth's surface materials by agents like water, wind, and ice.",
+          "chapter_tag": "Shaping of the Earth’s Surface",
+          "competency_type": "recall",
           "options": {}
         }
       ]
@@ -73,14 +58,19 @@
     "Section C — Short Answer (SA)": {
       "title": "",
       "section_subject": "",
-      "marks": 6,
+      "marks": 9,
       "partial": false,
       "errors": [],
       "grounding_issues": [
         {
+          "qnum": 2,
+          "text_snippet": "Describe how wind erosion shapes the land surface. Name two landforms created by",
+          "issue": "The topic of wind erosion and landforms is not covered in the provided reference text."
+        },
+        {
           "qnum": 3,
-          "text_snippet": "A point lies on the line segment joining A(2, 3) and B(8, 9). It is known that i",
-          "issue": "The reference text does not discuss coordinate geometry, line segments, or finding points with equal x and y coordinates."
+          "text_snippet": "Explain how the greenhouse effect helps in keeping the Earth warm. Name any two ",
+          "issue": "The greenhouse effect and greenhouse gases are not discussed in the provided reference text."
         }
       ],
       "quality_flags": [],
@@ -89,41 +79,41 @@
       "uniqueness_warnings": [],
       "questions": [
         {
+          "qnum": 13,
+          "type": "SA",
+          "subtype": "standard",
+          "text": "Why is Social Science described as a group of related disciplines rather than a single subject? Explain with the help of an example.",
+          "marks": 3.0,
+          "answer_explanation": "Human society is complex and no single field can fully explain it. For example, a drought affects crops (environment/Geography), farmers' incomes (Economics), government relief (Politics), and migration (Society). Different disciplines like Geography, History, Political Science, and Economics together provide a comprehensive understanding.",
+          "chapter_tag": "Understanding Social Science",
+          "competency_type": "constructed",
+          "options": {}
+        },
+        {
+          "qnum": 14,
+          "type": "SA",
+          "subtype": "standard",
+          "text": "Describe how wind erosion shapes the land surface. Name two landforms created by wind erosion.",
+          "marks": 3.0,
+          "answer_explanation": "Wind erosion occurs when strong winds pick up and transport loose sand and soil particles. These particles act as abrasives, wearing away rocks over time. Two landforms created by wind erosion are: (i) Mushroom rocks (or pedestal rocks) and (ii) Deflation hollows (or blowouts).",
+          "chapter_tag": "Shaping of the Earth’s Surface",
+          "competency_type": "constructed",
+          "options": {}
+        },
+        {
           "qnum": 15,
           "type": "SA",
           "subtype": "standard",
-          "text": "A rectangle is formed by bending a wire of length 40 cm. If the length of the rectangle is expressed as 'l' cm, derive a linear polynomial in 'l' that represents its perimeter. Justify why the expression for the area, l(20 - l), is not a linear polynomial.",
-          "marks": 2.0,
-          "answer_explanation": "Perimeter = 2l + 2w. Given total length 40 cm, w = (40 - 2l)/2 = 20 - l. Perimeter polynomial = 2l + 2(20 - l) = 40, a constant polynomial (degree 0). The area l(20 - l) = 20l - l² is a quadratic polynomial (degree 2) because the highest power of the variable is 2.",
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "constructed",
-          "options": {}
-        },
-        {
-          "qnum": 16,
-          "type": "SA",
-          "subtype": "standard",
-          "text": "Consider two linear polynomials: P(x) = ax + a and Q(x) = ax - a, where a > 0. Compare their graphs by predicting the common feature they share regarding their x-intercepts. Justify your prediction algebraically.",
-          "marks": 2.0,
-          "answer_explanation": "For P(x)=ax+a, x-intercept is found by setting ax+a=0 → a(x+1)=0 → x=-1. For Q(x)=ax-a, set ax-a=0 → a(x-1)=0 → x=1. They do NOT share the same x-intercept. A common feature could be that their slopes (value of 'a') are identical, leading to parallel lines. The x-intercepts are symmetric about the y-axis (x=-1 and x=1).",
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "constructed",
-          "options": {}
-        },
-        {
-          "qnum": 17,
-          "type": "SA",
-          "subtype": "standard",
-          "text": "A point lies on the line segment joining A(2, 3) and B(8, 9). It is known that its x-coordinate and y-coordinate are equal. Without using the section formula directly, explain why this point must be (5, 5) by relating it to the property of the line's equation.",
-          "marks": 2.0,
-          "answer_explanation": "The line through A(2,3) and B(8,9) has slope = (9-3)/(8-2)=1. Equation: y - 3 = 1(x - 2) → y = x + 1. For a point where x-coordinate equals y-coordinate, set y = x. Substituting gives x = x + 1, which leads to 0=1, a contradiction. Therefore, no point on the segment AB has x=y. Wait, re-check: For A(2,3), slope=1, equation is y-3=1(x-2) → y=x+1. For x=y, we get x=x+1 → 0=1 (impossible). So the point (5,5) does NOT lie on AB as 5 ≠ 5+1. The question contains a trick: (5,5) is the midpoint, but it does not satisfy y=x+1. The correct point with x=y on line y=x+1 would require solving x=x+1, which has no solution. Therefore, the premise is flawed; the point cannot have equal coordinates unless the line equation is y=x, which it is not.",
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
+          "text": "Explain how the greenhouse effect helps in keeping the Earth warm. Name any two greenhouse gases.",
+          "marks": 3.0,
+          "answer_explanation": "The greenhouse effect is a natural process where certain gases in the Earth's atmosphere trap some of the Sun's heat. They allow sunlight to pass through but absorb and re-radiate the heat energy, preventing it from escaping back into space, thus keeping the planet warm. Two greenhouse gases are Carbon dioxide (CO²) and Methane (CH⁴).",
+          "chapter_tag": "Atmosphere and Climate",
           "competency_type": "constructed",
           "options": {}
         }
       ]
     },
-    "Section D — Long Answer (LA)": {
+    "Section D — Long Answer / Map Work": {
       "title": "",
       "section_subject": "",
       "marks": 10,
@@ -131,11 +121,53 @@
       "errors": [],
       "grounding_issues": [
         {
+          "qnum": 1,
+          "text_snippet": "Describe the role of wind in the process of erosion and deposition, giving at le",
+          "issue": "The question about wind erosion and landforms is related to Geography but is not addressed or mentioned in the provided NCERT reference text."
+        },
+        {
           "qnum": 2,
-          "text_snippet": "Points A(2, 3), B(5, 7), and C(8, 11) are three collinear points. (i) Find the l",
-          "issue": "The reference text does not discuss finding equations of lines through collinear points or coordinate geometry."
+          "text_snippet": "On the given outline map of India, locate and label the following: (a) A region ",
+          "issue": "The question about rainfall patterns and map labeling is related to Geography but is not addressed or mentioned in the provided NCERT reference text."
         }
       ],
+      "quality_flags": [],
+      "mcq_answer_warnings": [],
+      "mcq_answer_corrections": [],
+      "uniqueness_warnings": [],
+      "questions": [
+        {
+          "qnum": 16,
+          "type": "LA",
+          "subtype": "standard",
+          "text": "Describe the role of wind in the process of erosion and deposition, giving at least three examples of landforms created by each. (5 marks)",
+          "marks": 5.0,
+          "or_alternative": "OR\nExplain the various stages in the formation of a river valley from its source to its mouth, describing at least three major landforms created by a river in its course. (5 marks)",
+          "chapter_tag": "Shaping of the Earth’s Surface",
+          "competency_type": "constructed",
+          "answer_explanation": "Model Answer for Wind Erosion & Deposition:\n- Wind erosion occurs through deflation (removal of loose particles) and abrasion (sandblasting of rocks).\n- Erosional landforms include: (i) Mushroom rocks/pedestal rocks (narrow base formed by abrasion), (ii) Yardangs (streamlined ridges in soft rock), (iii) Desert pavement/lag deposits (deflation leaves behind coarse pebbles).\n- Wind deposition occurs when wind speed drops, depositing sand and silt.\n- Depositional landforms include: (i) Sand dunes (ridges/hills of sand - barchan, longitudinal), (ii) Loess plains (thick deposits of fine, fertile silt), (iii) Sand sheets (extensive flat areas of sand).\n- The size of particles transported depends on wind velocity.\n- Vegetation and obstacles influence dune shape and location.",
+          "options": {}
+        },
+        {
+          "qnum": 17,
+          "type": "SA",
+          "subtype": "map_based",
+          "text": "On the given outline map of India, locate and label the following: (a) A region receiving rainfall less than 20 cm annually (b) A region receiving rainfall over 400 cm annually (c) The place where the monsoon first arrives in India (d) A region experiencing a retreating monsoon (e) A hill station with a moderate climate throughout the year",
+          "marks": 5.0,
+          "map_note": "[Attach outline map of India — examiner to supply]",
+          "chapter_tag": "Atmosphere and Climate",
+          "competency_type": "application",
+          "options": {}
+        }
+      ]
+    },
+    "Section E — Case-based Questions": {
+      "title": "",
+      "section_subject": "",
+      "marks": 4,
+      "partial": false,
+      "errors": [],
+      "grounding_issues": [],
       "quality_flags": [],
       "mcq_answer_warnings": [],
       "mcq_answer_corrections": [],
@@ -143,59 +175,96 @@
       "questions": [
         {
           "qnum": 18,
-          "type": "LA",
-          "subtype": "standard",
-          "text": "A wire of length 40 cm is bent to form different rectangles. Let the length of the rectangle be 'l' cm. (i) Express the width 'w' of the rectangle in terms of 'l'. (ii) Show that the area 'A' of the rectangle is given by the quadratic polynomial A = -l² + 20l. (iii) For what value of 'l' will the area be maximum? Justify your answer by analyzing the polynomial and relating it to the geometric property of a rectangle with fixed perimeter. (iv) What special shape does the rectangle become when the area is maximum?",
-          "marks": 3.33,
-          "answer_explanation": [
-            "(i) Perimeter = 40 cm → 2(l + w) = 40 → l + w = 20 → w = (20 - l) cm.",
-            "(ii) Area A = l × w = l(20 - l) = 20l - l². This is a quadratic polynomial A = -l² + 20l.",
-            "(iii) The polynomial A = -l² + 20l is a downward-opening parabola. Maximum area occurs at the vertex where l = -b/(2a) = -20/(2 × -1) = 10 cm. Alternatively, for a fixed perimeter, a rectangle has maximum area when it is a square.",
-            "(iv) When l = 10 cm, w = 20 - 10 = 10 cm. Length and width are equal, so the rectangle becomes a square."
+          "type": "CBQ",
+          "subtype": "source_based",
+          "source_text": "In a rural district of India, a severe drought has affected the lives of people in multiple ways. Due to lack of rainfall, crops have failed, leading to a sharp decline in farmers' incomes. The local government has stepped in to provide relief measures, such as subsidised food grains and work under the Mahatma Gandhi National Rural Employment Guarantee Act (MGNREGA). This has prompted political discussions on the efficiency and reach of these schemes. As a result, many farming families have migrated to nearby cities in search of livelihood, altering the social structure of both the villages they left and the urban areas they joined. The community's traditional methods of conserving water and sharing resources, a part of their cultural heritage, are being revisited and discussed. Environmentalists are studying the changing patterns of the local climate and soil, while economists are analysing the impact on the regional economy. Historians are looking at how similar droughts were handled in the past and what lessons can be applied today. This single event of a drought, therefore, touches upon the environment, economy, politics, society, and culture, showing how different aspects of human life are deeply interconnected.",
+          "text": "Read the source above and answer the following:",
+          "marks": 4.0,
+          "chapter_tag": "Understanding Social Science",
+          "competency_type": "application",
+          "sub_questions": [
+            {
+              "text": "The case study of the drought demonstrates that Social Science is not a single subject but a group of disciplines. Which of the following disciplines would primarily study the 'changing patterns of the local climate and soil' mentioned in the passage?",
+              "marks": 1,
+              "answer_explanation": "Geography is the discipline that studies the Earth, its environments, and the relationships between people and their surroundings, including climate and soil patterns."
+            },
+            {
+              "text": "The passage states that historians are looking at how similar droughts were handled in the past. What is the primary focus of the discipline of History?",
+              "marks": 1,
+              "answer_explanation": "History examines the human past and helps us understand how societies change over time, which includes studying past events and responses."
+            },
+            {
+              "text": "The discussion on government relief schemes and their efficiency falls under the domain of which Social Science discipline?",
+              "marks": 1,
+              "answer_explanation": "Political Science analyses systems of governance, power, and public policies, which includes the implementation and efficiency of government schemes."
+            },
+            {
+              "text": "The migration of farming families to cities and its impact on social structure is a key concern for which of the following disciplines?",
+              "marks": 1,
+              "answer_explanation": "Sociology, which is part of the broader Social Science family, explores social relationships, structures, and changes within society, such as migration patterns."
+            }
           ],
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "constructed",
-          "or_alternative": "A chess club charges a joining fee of ₹200 plus ₹50 for every match played. (i) Write a linear polynomial, C(n), for the total cost for a player who plays 'n' matches. (ii) Another sports club has a pricing model where the total cost D(n) is given by D(n) = 60n + 100. After how many matches will the cost at the chess club exceed the cost at the sports club? Solve using the linear polynomials and interpret your answer. (iii) A player has a budget of ₹800. At which club can she play more matches? Derive and compare.",
-          "options": {}
-        },
-        {
-          "qnum": 19,
-          "type": "LA",
-          "subtype": "standard",
-          "text": "Points A(2, 3), B(5, 7), and C(8, 11) are three collinear points. (i) Find the linear relationship (equation of the line) that passes through these points in the form y = mx + c. (ii) A fourth point D(k, 15) also lies on this line. Find the value of k. (iii) Point P(a, b) is the midpoint of segment AB. Verify algebraically that point P also satisfies the equation of the line found in part (i). What does this verification confirm about the collinearity of A, B, and C?",
-          "marks": 3.33,
-          "answer_explanation": [
-            "(i) Using points A(2,3) and B(5,7): Slope m = (7-3)/(5-2) = 4/3. Equation: y - 3 = (4/3)(x - 2) → 3y - 9 = 4x - 8 → 3y = 4x + 1 → y = (4/3)x + (1/3). Check with C(8,11): (4/3)*8 + 1/3 = 32/3 + 1/3 = 33/3 = 11. Verified.",
-            "(ii) For D(k,15) on the line: 15 = (4/3)k + (1/3) → Multiply by 3: 45 = 4k + 1 → 4k = 44 → k = 11.",
-            "(iii) Midpoint P of A(2,3) and B(5,7): P = ((2+5)/2, (3+7)/2) = (7/2, 5) = (3.5, 5). Check in y = (4/3)x + 1/3: LHS = 5, RHS = (4/3)*(7/2) + 1/3 = (28/6) + 1/3 = (14/3) + (1/3) = 15/3 = 5. Satisfied. This confirms that the midpoint of two collinear points also lies on the same line, reinforcing the concept of collinearity."
-          ],
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
-          "competency_type": "constructed",
-          "or_alternative": "Consider the linear function f(x) = ax + a, where a > 0. (i) All such functions have a common point of intersection. Find its coordinates and justify why it is common for all a > 0. (ii) These lines also intersect the x-axis at various points. Is there any pattern or common property in these x-intercepts as 'a' varies? Analyze and explain. (iii) On a coordinate plane, sketch two such lines for a=2 and a=4. Use your graph to illustrate the answers to parts (i) and (ii).",
-          "options": {}
-        },
-        {
-          "qnum": 20,
-          "type": "LA",
-          "subtype": "standard",
-          "text": "A rectangular garden of length L metres and width W metres is to be fenced and decorated. A wire fence costing ₹100 per metre is to be laid along the two lengths. A wooden fence costing ₹80 per metre is to be built along the two widths. Special seeds costing ₹50 per square metre are to be sown in the entire garden. (i) Derive an algebraic expression, T(L, W), for the total cost. (ii) If the total budget is fixed at ₹5000 and the length L is chosen to be 10 metres, determine the possible range of widths W that fit within the budget. Solve the resulting linear inequality. (iii) Critically evaluate: For the fixed budget of ₹5000, if we decide to make the garden a square (L = W), what would be its side length? Is this feasible given the cost structure? Solve and conclude.",
-          "marks": 3.33,
-          "answer_explanation": [
-            "(i) Cost components: Wire fence for 2 lengths = 2L × 100 = 200L. Wooden fence for 2 widths = 2W × 80 = 160W. Seeds for area L×W = 50LW. Total T(L,W) = 200L + 160W + 50LW.",
-            "(ii) Budget: 200(10) + 160W + 50(10)W ≤ 5000 → 2000 + 160W + 500W ≤ 5000 → 2000 + 660W ≤ 5000 → 660W ≤ 3000 → W ≤ 3000/660 ≈ 4.545. Since W > 0, the range is 0 < W ≤ 4.55 m (approximately).",
-            "(iii) For a square, L = W = s. Equation: 200s + 160s + 50s² ≤ 5000 → 50s² + 360s - 5000 ≤ 0. Divide by 2: 25s² + 180s - 2500 ≤ 0. Solve quadratic: Discriminant = 180² - 4×25×(-2500)=32400+250000=282400. √282400 ≈ 531.45. s = [-180 ± 531.45] / (50). Positive root: s = (351.45)/50 ≈ 7.03 m. The inequality holds for s between the roots. The physically possible s > 0, so 0 < s ≤ 7.03 m. However, this is the mathematical solution. Feasibility depends on practical garden dimensions."
-          ],
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
-          "competency_type": "constructed",
-          "or_alternative": "The vertices of a triangle are A(0, 0), B(4, 0), and C(2, 3). (i) Plot these points on a coordinate plane and find the area of triangle ABC. (ii) A point P lies inside the triangle such that its distance from the y-axis is twice its distance from the x-axis. Find all possible coordinates of P, given that it lies within or on the boundary of triangle ABC. (Hint: Set P = (x, y) and use the condition y = 2x or x = 2y? Analyze the geometric meaning of 'distance from axes'). (iii) Does your solution point P lie on any of the medians or altitudes of triangle ABC? Justify by finding equations of relevant lines.",
           "options": {}
         }
       ]
     },
-    "Section E — Case Study-Based": {
+    "Section F — Map or Diagram": {
       "title": "",
       "section_subject": "",
-      "marks": 8,
+      "marks": 3,
+      "partial": false,
+      "errors": [],
+      "grounding_issues": [
+        {
+          "qnum": 1,
+          "text_snippet": "On the given outline map of India, locate and label the following: (a) A state w",
+          "issue": "The question refers to Panchayati Raj institutions and social movements for effective governance, which are related to Political Science and Sociology. While the reference text mentions Political Science and the broader Social Science disciplines, it does not specifically discuss Panchayati Raj institutions or social movements in governance."
+        }
+      ],
+      "quality_flags": [],
+      "mcq_answer_warnings": [],
+      "mcq_answer_corrections": [],
+      "uniqueness_warnings": [],
+      "questions": [
+        {
+          "qnum": 19,
+          "type": "SA",
+          "subtype": "map_based",
+          "text": "On the given outline map of India, locate and label the following: (a) A state with extensive Panchayati Raj institutions (b) A state where a major social movement for effective governance has historically occurred",
+          "marks": 1.0,
+          "map_note": "[Attach outline map of India — examiner to supply]",
+          "chapter_tag": "Understanding Social Science",
+          "competency_type": "application",
+          "options": {}
+        },
+        {
+          "qnum": 20,
+          "type": "SA",
+          "subtype": "map_based",
+          "text": "On the given outline map of India, locate and label the following: (a) An area in Northern India known for major erosional landforms (b) An area in Southern India known for its distinct plateau landform shaped by geological processes",
+          "marks": 1.0,
+          "map_note": "[Attach outline map of India — examiner to supply]",
+          "chapter_tag": "Shaping of the Earth’s Surface",
+          "competency_type": "application",
+          "options": {}
+        },
+        {
+          "qnum": 21,
+          "type": "SA",
+          "subtype": "map_based",
+          "text": "On the given outline map of India, locate and label the following: (a) A region that receives very low annual rainfall (b) A region that experiences a very cold desert type of climate",
+          "marks": 1.0,
+          "map_note": "[Attach outline map of India — examiner to supply]",
+          "chapter_tag": "Atmosphere and Climate",
+          "competency_type": "application",
+          "options": {}
+        }
+      ]
+    },
+    "Section A — Objective Type": {
+      "title": "",
+      "section_subject": "",
+      "marks": 10,
       "partial": false,
       "errors": [],
       "grounding_issues": [],
@@ -205,302 +274,147 @@
       "uniqueness_warnings": [],
       "questions": [
         {
-          "qnum": 21,
-          "type": "CBQ",
-          "subtype": "source_based",
-          "source_text": "A furniture designer creates a new modular shelving system. The total cost C (in rupees) for a customer is modelled by a linear polynomial C = 80L + 120, where L is the number of shelf units purchased. However, the company offers two alternative pricing schemes for bulk orders:\nScheme A: For orders above 5 units, the cost becomes C = 70L + 200.\nScheme B: For orders above 8 units, the cost becomes C = 65L + 280.\nThe designer also notes that the expression for the area A of the rectangular wall space needed for L shelf units is given by A = 2L² + 5L, assuming each unit has a standard width and the arrangement requires additional spacing.",
-          "text": "Read the source above and answer the following:",
-          "marks": 2.67,
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "application",
-          "sub_questions": [
-            {
-              "text": "A customer needs 10 shelf units. By analyzing the three cost expressions (original, Scheme A, Scheme B), determine which scheme offers the minimum cost. Justify your choice by comparing the total costs.",
-              "marks": 0.89,
-              "answer_explanation": "Original: C = 80(10)+120 = 920. Scheme A: C = 70(10)+200 = 900. Scheme B: C = 65(10)+280 = 930. Scheme A offers minimum cost (₹900)."
-            },
-            {
-              "text": "The area expression A = 2L² + 5L is not a linear polynomial. By comparing its structure with the cost polynomials, identify the fundamental algebraic difference that classifies A as a non-linear polynomial. Explain using the concept of degree.",
-              "marks": 0.89,
-              "answer_explanation": "The cost polynomials are of degree 1 (highest power of L is 1). In A = 2L² + 5L, the highest power of variable L is 2 (the term 2L²). Therefore, its degree is 2, making it a quadratic polynomial, not linear."
-            },
-            {
-              "text": "For what number of shelf units L will the costs under the original scheme and Scheme A be exactly equal? Derive this algebraically and interpret what this point represents in the context of the pricing models.",
-              "marks": 0.89,
-              "answer_explanation": "Set 80L + 120 = 70L + 200 → 10L = 80 → L = 8. At L=8, both schemes cost ₹760. This is the 'break-even' point between the two schemes for 8 units; for L>8, Scheme A becomes cheaper than the original."
-            }
-          ],
-          "options": {}
-        },
-        {
-          "qnum": 22,
-          "type": "CBQ",
-          "subtype": "source_based",
-          "source_text": "In a coordinate geometry experiment, a student plots the path of a robot. The robot starts at point A(2, 3). Its movement for the first segment is defined by the linear equation y = 2x - 1. It stops at point B, which is the x-intercept of this line. For the second segment, the robot moves horizontally to the right until it reaches point C, which has an x-coordinate 5 units more than that of B. Finally, it moves vertically downward to meet the x-axis at point D.\nThe student also considers an alternative path where the first segment follows y = mx + c such that it passes through A(2,3) and has an x-intercept at (4,0).",
-          "text": "Read the source above and answer the following:",
-          "marks": 2.67,
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
-          "competency_type": "application",
-          "sub_questions": [
-            {
-              "text": "Determine the coordinates of points B, C, and D. Show the steps for finding B using the concept of x-intercept, and then derive C and D using the described movements.",
-              "marks": 0.89,
-              "answer_explanation": "For y=2x-1, x-intercept B: set y=0 → 0=2x-1 → x=0.5. Thus B(0.5,0). C is 5 units right of B: C(0.5+5, 0) = C(5.5,0). D is vertically down from C to x-axis, so y=0. Since C is already on x-axis, D coincides with C? Wait, re-read: 'moves vertically downward to meet the x-axis'. If C is at (5.5,0), it's already on x-axis. So moving down keeps y=0. Thus D(5.5,0). Perhaps a trick: C has y-coordinate from B? No, horizontal move from B: B(0.5,0), horizontal right → y remains 0. So C(5.5,0). Then D is same as C. So B(0.5,0), C(5.5,0), D(5.5,0)."
-            },
-            {
-              "text": "For the alternative path line passing through A(2,3) and x-intercept (4,0), find the values of m and c in y = mx + c. Then, compare the steepness (absolute slope) of this line with the original line y=2x-1. Which path has a steeper initial segment?",
-              "marks": 0.89,
-              "answer_explanation": "Slope m = (0-3)/(4-2) = -3/2 = -1.5. Using point (4,0): 0 = -1.5(4) + c → c = 6. Equation: y = -1.5x + 6. Absolute slope of original line is |2| = 2. Absolute slope of alternative is |-1.5| = 1.5. Since 2 > 1.5, the original path (y=2x-1) is steeper."
-            },
-            {
-              "text": "The path ABCD forms a geometric shape on the coordinate plane. Identify this shape and calculate its area using the coordinates you found. Justify why the shape is not a triangle despite having four points.",
-              "marks": 0.89,
-              "answer_explanation": "Points: A(2,3), B(0.5,0), C(5.5,0), D(5.5,0). Since C and D coincide, the points are effectively A, B, C. This forms triangle ABC. Area = 1/2 × base × height. Base BC = 5.5 - 0.5 = 5 units. Height from A to x-axis = 3 units. Area = 1/2 × 5 × 3 = 7.5 sq units. The shape is a triangle because D is not a distinct point; the fourth point is redundant (C and D are same)."
-            }
-          ],
-          "options": {}
-        },
-        {
-          "qnum": 23,
-          "type": "CBQ",
-          "subtype": "source_based",
-          "source_text": "A city's water tank is being filled. The height of water (H in metres) at time t hours is observed to follow a linear polynomial relationship of the form H(t) = at + b. Initially (t=0), the height is 2m. After 3 hours, the height is 5m.\nDue to a change in inflow rate after 3 hours, the relationship for t ≥ 3 changes to H(t) = pt + q. It is noted that at t=5 hours, the height is 8m, and the new linear relationship is continuous with the first at t=3.\nAn engineer models the total volume V (in m³) of water in the cylindrical tank as V = 50πH, where 50π is the cross-sectional area.",
-          "text": "Read the source above and answer the following:",
-          "marks": 2.67,
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "application",
-          "sub_questions": [
-            {
-              "text": "Derive the two linear polynomials H(t) for 0 ≤ t ≤ 3 and for t ≥ 3. Show how you use the conditions of continuity and given points to find the coefficients.",
-              "marks": 0.89,
-              "answer_explanation": "For 0≤t≤3: H=at+b. At t=0, H=2 → b=2. At t=3, H=5 → 5=3a+2 → a=1. So H(t)=t+2 for 0≤t≤3.\nFor t≥3: H=pt+q. Continuity at t=3: value from first polynomial is 5. So 5=3p+q. At t=5, H=8 → 8=5p+q. Subtracting equations: (8-5)=(5p-3p)+(q-q) → 3=2p → p=1.5. Then 5=3(1.5)+q → 5=4.5+q → q=0.5. So H(t)=1.5t+0.5 for t≥3."
-            },
-            {
-              "text": "At what time t would the two different filling rates, if continued indefinitely from their start, have resulted in the same height? Set up the equation and solve for t. Interpret the meaning of this time in relation to the actual two-stage process.",
-              "marks": 0.89,
-              "answer_explanation": "Set t+2 = 1.5t+0.5. Solve: t - 1.5t = 0.5 - 2 → -0.5t = -1.5 → t = 3. This shows the two rates give the same height exactly at the transition time t=3. This is why the process is continuous; the engineer designed the second rate to start precisely when the first rate's projection would be matched, avoiding a sudden jump."
-            },
-            {
-              "text": "Using the volume formula V = 50πH and the piecewise linear function H(t), express V(t) as a piecewise linear function in terms of t. Then, predict the time (t > 3) when the volume will reach 200π m³. Show your reasoning.",
-              "marks": 0.89,
-              "answer_explanation": "V(t) = 50π * H(t). So for 0≤t≤3: V(t)=50π(t+2)=50πt+100π. For t≥3: V(t)=50π(1.5t+0.5)=75πt+25π.\nTo find t when V=200π for t>3, use second piece: 200π = 75πt+25π → Divide by π: 200=75t+25 → 175=75t → t=175/75=7/3≈2.333? But t must be >3. Check: 7/3≈2.33 is not >3. So maybe volume 200π occurs in first piece? For first piece: 200π=50πt+100π → 200=50t+100 → 100=50t → t=2. So at t=2 (within first period), volume is 200π. The question asks for t>3. So for t>3, solve 200π=75πt+25π → as above t=7/3≈2.33, which is not >3. Therefore, for t>3, volume is always >200π? Check at t=3, V=75π(3)+25π=225π+25π=250π. So at t=3, V=250π which is >200π. Thus, volume reaches 200π at t=2 hours (during first phase), and for all t>3, volume exceeds 200π. So no t>3 gives V=200π."
-            }
-          ],
-          "options": {}
-        }
-      ]
-    },
-    "Section A — MCQ + Assertion-Reason": {
-      "title": "",
-      "section_subject": "",
-      "marks": 20,
-      "partial": false,
-      "errors": [],
-      "grounding_issues": [],
-      "quality_flags": [],
-      "mcq_answer_warnings": [
-        {
-          "qnum": 8,
-          "stored": "c",
-          "llm_answer": "a",
-          "confidence": "high",
-          "suspect": true,
-          "corrected": false
-        }
-      ],
-      "mcq_answer_corrections": [
-        {
-          "qnum": 2,
-          "stored": "b",
-          "llm_answer": "c",
-          "confidence": "high",
-          "suspect": false,
-          "corrected": true
-        },
-        {
-          "qnum": 3,
-          "stored": "b",
-          "llm_answer": "c",
-          "confidence": "high",
-          "suspect": false,
-          "corrected": true
-        },
-        {
-          "qnum": 5,
-          "stored": "c",
-          "llm_answer": "a",
-          "confidence": "high",
-          "suspect": false,
-          "corrected": true
-        },
-        {
-          "qnum": 6,
-          "stored": "a",
-          "llm_answer": "b",
-          "confidence": "high",
-          "suspect": false,
-          "corrected": true
-        },
-        {
-          "qnum": 9,
-          "stored": "d",
-          "llm_answer": "a",
-          "confidence": "high",
-          "suspect": false,
-          "corrected": true
-        },
-        {
-          "qnum": 10,
-          "stored": "d",
-          "llm_answer": "a",
-          "confidence": "high",
-          "suspect": false,
-          "corrected": true
-        }
-      ],
-      "uniqueness_warnings": [],
-      "questions": [
-        {
           "qnum": 1,
           "type": "MCQ",
-          "subtype": "standard",
-          "text": "A wire of length 20 cm is bent to form a rectangle. If the length is represented by x cm, the area A of the rectangle is given by A = x(10 - x). Which of the following statements correctly compares the nature of the polynomial expressions for the perimeter P and the area A?",
+          "subtype": "assertion_reason",
+          "text": "Assertion (A): To understand the impact of a drought, one must examine it from the perspectives of Geography, Economics, and Political Science.\nReason (R): Social Science is a group of related disciplines, each focusing on a different aspect of human life, to provide a comprehensive understanding.",
           "options": {
-            "a": "P is a linear polynomial in x, while A is a quadratic polynomial in x.",
-            "b": "Both P and A are linear polynomials in x, but with different constant terms.",
-            "c": "Both P and A are quadratic polynomials in x, derived from the same constraint.",
-            "d": "P is a constant polynomial (degree 0), while A is a linear polynomial in x."
+            "a": "Both A and R are true and R is the correct explanation of A",
+            "b": "Both A and R are true but R is NOT the correct explanation of A",
+            "c": "A is true but R is false",
+            "d": "A is false but R is true"
           },
           "answer": "a",
-          "answer_explanation": "Perimeter P = 20 cm (constant), or expressed in terms of sides, P = 2x + 2(10 - x) = 20, a constant polynomial (degree 0). Area A = 10x - x², which is a quadratic polynomial (degree 2). Option a correctly identifies A as quadratic.",
-          "marks": 2.0,
-          "chapter_tag": "Introduction to Linear Polynomials",
+          "answer_explanation": "Both statements are true. The reason correctly explains why a multi-disciplinary approach is needed.",
+          "marks": 1.0,
+          "chapter_tag": "Understanding Social Science",
           "competency_type": "application"
         },
         {
           "qnum": 2,
           "type": "MCQ",
           "subtype": "standard",
-          "text": "Consider the linear polynomial f(x) = ax + a, where a > 0. If the graph of this polynomial meets the x-axis at point K and the y-axis at point L, what is the area of triangle OKL, where O is the origin?",
+          "text": "Which of the following disciplines primarily studies systems of governance and citizens' rights?",
           "options": {
-            "a": "a/2",
-            "b": "1/2",
-            "c": "a²/2",
-            "d": "The points O, K, and L are collinear, so no triangle is formed."
+            "a": "History",
+            "b": "Geography",
+            "c": "Political Science",
+            "d": "Economics"
           },
           "answer": "c",
-          "answer_explanation": "For f(x)=ax+a, y-intercept (L) is at (0, a). x-intercept (K) is found by solving ax+a=0, giving x=-1, so K=(-1,0). Area of triangle with vertices (0,0), (-1,0), (0,a) is (1/2)×base×height = (1/2)×1×a = a/2. However, careful calculation: base OK = 1 unit, height OL = a units. Area = 1/2 * 1 * a = a/2. But this is not one of the final simplified constants given? Wait, re-evaluate: The area is (1/2)*|det([-1 0; 0 a])| = (1/2)*|(-1*a - 0*0)| = a/2. None match a/2 except option a. There's a trick: For all a>0, the x-intercept is always -1 and y-intercept is a. The area is proportional to a, not constant. Option b says 1/2, which is false. Option d says points are collinear, which is false because (0,0), (-1,0), (0,a) are not collinear for a≠0. So correct answer should be a: a/2. The question tests understanding of intercepts and area calculation.",
-          "marks": 2.0,
-          "chapter_tag": "Introduction to Linear Polynomials",
+          "answer_explanation": "Political Science analyses systems of governance, power, and the rights and responsibilities of citizens.",
+          "marks": 1.0,
+          "chapter_tag": "Understanding Social Science",
           "competency_type": "application"
         },
         {
           "qnum": 3,
           "type": "MCQ",
           "subtype": "standard",
-          "text": "The total cost C (in ₹) of fencing a rectangular garden with length l metres and width w metres is given by C = 200l + 160w + 50lw. If the width w is fixed at 5 metres, which of the following best describes the resulting expression for cost C as a function of length l?",
+          "text": "Which of the following is a primary agent of erosion that shapes the Earth's surface?",
+          "image_prompt": "A simple line drawing showing a river flowing through a valley with arrows indicating the movement of water eroding the riverbanks.",
           "options": {
-            "a": "A constant polynomial, as l and w are independent dimensions.",
-            "b": "A linear polynomial in l, because the term 50lw becomes 250l, which is linear.",
-            "c": "A quadratic polynomial in l, since the product lw involves multiplication of variables.",
-            "d": "It remains an expression in two variables and cannot be classified as a univariate polynomial."
+            "a": "Volcanic eruption",
+            "b": "Running water",
+            "c": "Earthquake",
+            "d": "Glaciers"
           },
-          "answer": "c",
-          "answer_explanation": "Substituting w=5, C = 200l + 160(5) + 50l(5) = 200l + 800 + 250l = 450l + 800. This is of the form al + b, a linear polynomial in l.",
-          "marks": 2.0,
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "application"
+          "answer": "b",
+          "answer_explanation": "Running water (rivers, streams) is a major agent of erosion, constantly wearing away and transporting Earth's materials.",
+          "marks": 1.0,
+          "chapter_tag": "Shaping of the Earth’s Surface",
+          "competency_type": "recall"
         },
         {
           "qnum": 4,
           "type": "MCQ",
           "subtype": "standard",
-          "text": "A point P lies on the line segment joining A(2, 3) and B(8, 6). The coordinates of P are such that AP : PB = 1 : 2. If a point Q is the reflection of P across the x-axis, in which quadrant does Q lie?",
+          "text": "The layer of gases surrounding the Earth is called the:",
           "options": {
-            "a": "Quadrant I",
-            "b": "Quadrant II",
-            "c": "Quadrant III",
-            "d": "Quadrant IV"
+            "a": "Hydrosphere",
+            "b": "Lithosphere",
+            "c": "Atmosphere",
+            "d": "Biosphere"
           },
-          "answer": "d",
-          "answer_explanation": "Using section formula, coordinates of P are ((1*8+2*2)/(1+2), (1*6+2*3)/(1+2)) = ((8+4)/3, (6+6)/3) = (12/3, 12/3) = (4, 4). Reflection across x-axis gives Q = (4, -4). This lies in Quadrant IV (x positive, y negative).",
-          "marks": 2.0,
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
-          "competency_type": "application"
+          "answer": "c",
+          "answer_explanation": "The atmosphere is the blanket of air (gases) surrounding the Earth.",
+          "marks": 1.0,
+          "chapter_tag": "Atmosphere and Climate",
+          "competency_type": "recall"
         },
         {
           "qnum": 5,
           "type": "MCQ",
-          "subtype": "standard",
-          "text": "In the coordinate plane, the vertices of a square are A(0,0), B(a,0), C(a,a), and D(0,a). The square is rotated 90° clockwise about the origin and then reflected across the line y = x. What are the coordinates of the image of vertex B after these two transformations?",
+          "subtype": "assertion_reason",
+          "text": "Assertion (A): Social Science helps us understand how past decisions shape the present.\nReason (R): Subjects like Physics and Chemistry focus on the natural world, while Social Science focuses on society and human interactions.",
           "options": {
-            "a": "(0, -a)",
-            "b": "(a, 0)",
-            "c": "(0, a)",
-            "d": "(-a, 0)"
+            "a": "Both A and R are true and R is the correct explanation of A",
+            "b": "Both A and R are true but R is NOT the correct explanation of A",
+            "c": "A is true but R is false",
+            "d": "A is false but R is true"
           },
-          "answer": "a",
-          "answer_explanation": "Original B = (a,0). 90° clockwise rotation about origin maps (x,y) to (y, -x). So after rotation: (0, -a). Reflection across y=x maps (x,y) to (y,x). So final image: (-a, 0). Wait, check: (0, -a) reflected over y=x becomes (-a, 0). That is option d. But let's verify: Option d is (-a, 0). However, re-check transformation order: First rotation: 90° clockwise: (a,0) -> (0, -a). Then reflect over y=x: (0, -a) -> (-a, 0). So answer is d, not c. The options: a:(0,-a), b:(a,0), c:(0,a), d:(-a,0). So correct is d. The question tests sequence of transformations.",
-          "marks": 2.0,
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
+          "answer": "b",
+          "answer_explanation": "Both statements are individually true, but the reason (R) does not explain the assertion (A). A is explained by the fact that History, a part of Social Science, examines the human past.",
+          "marks": 1.0,
+          "chapter_tag": "Understanding Social Science",
           "competency_type": "application"
         },
         {
           "qnum": 6,
           "type": "MCQ",
           "subtype": "standard",
-          "text": "The polynomial p(x) = (k² - 4)x³ + (k - 2)x² + 3x + 5 is given. For what value of k does p(x) become a linear polynomial?",
+          "text": "Which process involves the breaking down of rocks into smaller particles by physical, chemical, or biological means?",
           "options": {
-            "a": "k = 2 only",
-            "b": "k = -2 only",
-            "c": "k = 2 or k = -2",
-            "d": "No real value of k; it can never be a linear polynomial."
+            "a": "Erosion",
+            "b": "Deposition",
+            "c": "Weathering",
+            "d": "Transportation"
           },
-          "answer": "b",
-          "answer_explanation": "For p(x) to be linear, coefficients of x³ and x² must be zero. So k² - 4 = 0 ⇒ k = ±2. Also k - 2 = 0 ⇒ k = 2. Both conditions are satisfied only when k = 2. If k = -2, then coefficient of x² becomes -4 (non-zero), so polynomial is quadratic, not linear.",
-          "marks": 2.0,
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "application"
+          "answer": "c",
+          "answer_explanation": "Weathering is the process of breaking down rocks in their place, while erosion involves the movement of the weathered material.",
+          "marks": 1.0,
+          "chapter_tag": "Shaping of the Earth’s Surface",
+          "competency_type": "recall"
         },
         {
           "qnum": 7,
           "type": "MCQ",
           "subtype": "standard",
-          "text": "Points A(3, 4) and B(7, 7) are given. Point C lies on the x-axis such that AC + BC is minimized. What is the x-coordinate of C?",
+          "text": "The study of how societies produce, distribute, and utilise resources is the focus of:",
           "options": {
-            "a": "3",
-            "b": "4",
-            "c": "5",
-            "d": "7"
+            "a": "Geography",
+            "b": "History",
+            "c": "Political Science",
+            "d": "Economics"
           },
-          "answer": "c",
-          "answer_explanation": "To minimize AC+BC with C on x-axis, reflect A across x-axis to A'(3, -4). The straight line A'B intersects x-axis at C. Equation of A'B: slope = (7 - (-4))/(7-3) = 11/4. Line through (3,-4): y+4 = (11/4)(x-3). Set y=0: 4 = (11/4)(x-3) ⇒ 16 = 11(x-3) ⇒ 16 = 11x - 33 ⇒ 11x = 49 ⇒ x = 49/11 ≈ 4.45. Not matching options. Alternatively, using geometry: The minimal path occurs when angles of incidence equal reflection, so C is such that slopes of AC and BC are equal in magnitude but opposite sign relative to x-axis. Let C=(h,0). Slope AC = (4-0)/(3-h) = 4/(3-h). Slope BC = (7-0)/(7-h)=7/(7-h). For reflection condition, angles with x-axis are equal so slopes are opposites? Actually, if light reflects off x-axis, angle of incidence = angle of reflection, meaning the line segments make equal angles with the x-axis, so their slopes are equal in magnitude but opposite sign? Let's compute: tan(θ1) = 4/(3-h) (positive if 3-h>0). tan(θ2) = 7/(7-h). For equal angles, 4/(3-h) = 7/(7-h) but sign? Actually, if C is between A and B's projections, one slope is positive, the other negative relative to horizontal? If A is above, B is above, and C is between, then both segments AC and BC go downwards to x-axis? Wait, both A and B are above x-axis. To go from A to C on x-axis, the slope is negative if C is to the right of A. Similarly, from B to C, slope is negative if C is to the left of B. So both slopes could be negative. The condition for equal angles with the normal (vertical) is that the slopes are equal. So set 4/(h-3) = 7/(7-h) because distances are positive. Cross multiply: 4(7-h) = 7(h-3) ⇒ 28 - 4h = 7h - 21 ⇒ 28+21 = 7h+4h ⇒ 49 = 11h ⇒ h=49/11 ≈4.45. Not in options. Perhaps they expect using the property that the minimal sum is when C is the intersection of x-axis and line joining A and reflection of B across x-axis? Reflect B to B'(7,-7). Line A B': slope = (-7-4)/(7-3) = -11/4. Equation: y-4 = (-11/4)(x-3). Set y=0: -4 = (-11/4)(x-3) ⇒ 4 = (11/4)(x-3) ⇒ same as before. So h=49/11. Not an integer option. Possibly the question expects C to be the midpoint of the projections? That would be (3+7)/2=5. Option c is 5. In many simplified problems, they assume C is the midpoint for minimization, which is incorrect generally but a common mistake. The correct answer is 49/11, but since it's not an option, and given the pattern, they might expect 5 as an approximation or from erroneous reasoning. Given the options, 5 is the closest. The question is flawed, but for the sake of answering, choose c: 5, as it's the midpoint of the x-coordinates of A and B.",
-          "marks": 2.0,
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
-          "competency_type": "application"
+          "answer": "d",
+          "answer_explanation": "Economics explores how societies produce, distribute, and utilise resources to meet their needs.",
+          "marks": 1.0,
+          "chapter_tag": "Understanding Social Science",
+          "competency_type": "recall"
         },
         {
           "qnum": 8,
           "type": "MCQ",
           "subtype": "standard",
-          "text": "A linear polynomial f(x) = ax + b is such that f(1) = 3 and f(3) = 7. Another linear polynomial g(x) = cx + d is perpendicular to f(x) and passes through the point (2,5). What is the value of g(0)?",
+          "text": "The average weather conditions of a place over a long period (30 years or more) is called its:",
           "options": {
-            "a": "1",
-            "b": "2",
-            "c": "3",
-            "d": "4"
+            "a": "Weather",
+            "b": "Humidity",
+            "c": "Climate",
+            "d": "Temperature"
           },
           "answer": "c",
-          "answer_explanation": "From f(1)=3 and f(3)=7, we get a+b=3 and 3a+b=7. Solving gives a=2, b=1. So f(x)=2x+1, slope m1=2. For perpendicular line, slope m2 = -1/2. g(x) = (-1/2)x + d. Passes through (2,5): 5 = (-1/2)(2) + d ⇒ 5 = -1 + d ⇒ d=6. So g(x)=(-1/2)x+6. Then g(0)=6. Not in options. Wait, recalc: g(0)=d=6. Options: 1,2,3,4. So none match. Possibly they made a mistake: if they meant parallel instead of perpendicular? If parallel, slope m2=2, then g(x)=2x+d, through (2,5): 5=4+d ⇒ d=1, g(0)=1 (option a). If they meant perpendicular and passing through a different point? Let's check: Perhaps they meant passes through the intersection of f(x) with something? The problem as stated yields g(0)=6. Since 6 is not an option, maybe the intended answer is 3? Possibly they miscomputed d. If they used point (2,5) incorrectly: slope -1/2, equation y-5=(-1/2)(x-2) ⇒ y = (-1/2)x + 1 +5 = (-1/2)x+6. Yes, 6. So maybe the correct answer is not among options, but for exam, choose closest? The question is flawed. Given the pattern, I'll assign answer c: 3, as a common error might yield that.",
-          "marks": 2.0,
-          "chapter_tag": "Introduction to Linear Polynomials",
-          "competency_type": "application"
+          "answer_explanation": "Climate refers to the long-term pattern of weather in a particular area, while weather describes short-term atmospheric conditions.",
+          "marks": 1.0,
+          "chapter_tag": "Atmosphere and Climate",
+          "competency_type": "recall"
         },
         {
           "qnum": 9,
           "type": "MCQ",
           "subtype": "assertion_reason",
-          "text": "Assertion (A): The distance between the points where the graphs of the linear polynomials f(x) = 3x - 6 and g(x) = -2x + 4 intersect the x-axis is 2 units.\nReason (R): For any linear polynomial ax + b (a ≠ 0), the graph intersects the x-axis at the point (-b/a, 0). Therefore, the distance between intersections of two different linear polynomials with the x-axis is |(-b₁/a₁) - (-b₂/a₂)|.",
+          "text": "Assertion (A): Wind is an agent of erosion that can shape landscapes like deserts.\nReason (R): Wind picks up and carries sand and dust, which abrades rock surfaces.",
           "options": {
             "a": "Both A and R are true and R is the correct explanation of A",
             "b": "Both A and R are true but R is NOT the correct explanation of A",
@@ -508,27 +422,27 @@
             "d": "A is false but R is true"
           },
           "answer": "a",
-          "answer_explanation": "Reason (R) is true: For a linear polynomial ax + b (a ≠ 0), it intersects the x-axis when ax + b = 0 ⇒ x = -b/a, so the point is (-b/a, 0).\n\nAssertion (A) is false:\nFor f(x) = 3x - 6, intersection with x-axis: 3x - 6 = 0 ⇒ x = 2 ⇒ point (2, 0).\nFor g(x) = -2x + 4, intersection: -2x + 4 = 0 ⇒ x = 2 ⇒ point (2, 0).\nBoth intersect at the same point (2, 0) on the x-axis, so the distance between their intersections is 0, not 2 units. Hence A is false.",
-          "marks": 2.0,
-          "chapter_tag": "Introduction to Linear Polynomials, Orienting Yourself The Use of Coordinates",
+          "answer_explanation": "Both statements are true. The reason correctly explains how wind acts as an agent of erosion.",
+          "marks": 1.0,
+          "chapter_tag": "Shaping of the Earth’s Surface",
           "competency_type": "application"
         },
         {
           "qnum": 10,
           "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): The points A(-2, 3), B(3, -2), and C(4, 1) are the vertices of an isosceles right-angled triangle.\nReason (R): In an isosceles right-angled triangle, two sides are equal and the angle between them is 90°.",
+          "subtype": "standard",
+          "text": "Which gas is most abundant in the Earth's atmosphere?",
           "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
+            "a": "Oxygen",
+            "b": "Carbon Dioxide",
+            "c": "Nitrogen",
+            "d": "Argon"
           },
-          "answer": "a",
-          "answer_explanation": "Calculate distances: AB² = (3+2)²+(-2-3)² = 25+25=50. BC² = (4-3)²+(1+2)² = 1+9=10. CA² = (4+2)²+(1-3)² = 36+4=40. Sides are √50, √10, √40. No two sides are equal (√40=2√10, √50=5√2). So triangle is not isosceles. So A is false. Reason R is a true geometric property. Thus, A false, R true.",
-          "marks": 2.0,
-          "chapter_tag": "Orienting Yourself The Use of Coordinates",
-          "competency_type": "application"
+          "answer": "c",
+          "answer_explanation": "Nitrogen makes up about 78% of the Earth's atmosphere, making it the most abundant gas.",
+          "marks": 1.0,
+          "chapter_tag": "Atmosphere and Climate",
+          "competency_type": "recall"
         }
       ]
     }
@@ -537,21 +451,22 @@
     "coherent": true,
     "issues": [],
     "chapter_balance": {
-      "Introduction to Linear Polynomials": "50%",
-      "Orienting Yourself The Use of Coordinates": "50%"
+      "Understanding Social Science": "25%",
+      "Shaping of the Earth’s Surface": "35%",
+      "Atmosphere and Climate": "40%"
     },
     "missing_chapters": [],
-    "recommendation": ""
+    "recommendation": "The distribution of chapters is balanced with no single chapter over-represented. All requested chapters are covered. The question types align with CBSE expectations, progressing from MCQs to SA and LA types. No structural issues identified."
   },
   "final_audit": {
-    "quality_score": 6,
-    "ready_to_issue": "needs-minor-fix",
+    "quality_score": 5,
+    "ready_to_issue": "no",
     "top_issues": [
-      "High concept overlap between Section A (MCQ/AR) and Sections D/E (e.g., Q6 overlaps with Q18, Q21, Q23)",
-      "Answer key mismatch in Section A Q8 (stored 'c' vs LLM 'a')",
-      "Grounding issues in Section C Q3 and Section D Q2 (topics not covered in reference text)"
+      "Multiple questions are not grounded in the provided NCERT syllabus (e.g., wind erosion, greenhouse effect, Panchayati Raj).",
+      "Significant concept duplication across sections (e.g., Q11 & Q2, Q14 & Q16, Q17 & Q21).",
+      "Section B VSA Q2 references external processes not mentioned in the text."
     ],
-    "verdict": "Paper requires fixing answer key and reducing topic repetition before use.",
-    "total_warnings": 48
+    "verdict": "Paper requires major revisions to align with syllabus and reduce redundancy.",
+    "total_warnings": 24
   }
 }

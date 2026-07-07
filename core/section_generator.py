@@ -1387,6 +1387,15 @@ _STOP_WORDS = {
 }
 
 
+def _map_locations_text(txt: str) -> str:
+    """Comparable text for a map question: the part AFTER the boilerplate stem — i.e. the
+    location list of 'On the given outline map of India, locate and label: (a) … (b) …'.
+    The shared stem alone makes any two map questions score as near-duplicates."""
+    _, sep, tail = str(txt or "").partition(":")
+    tail = tail.strip()
+    return tail if (sep and tail) else str(txt or "")
+
+
 def _concept_overlap(t1: str, t2: str) -> float:
     """Token-overlap ratio between two question texts. Returns 0.0–1.0."""
     def tokens(s):
@@ -2405,8 +2414,11 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
     Scoped to UNIFORM-MARKS sections (every question worth the same — e.g. a 16-mark
     Section A of MCQ + Assertion-Reason, or an all-VSA/SA/LA section) where the missing
     question's marks are unambiguous and any of the section's declared types is acceptable.
-    Mixed-marks, CBQ, passage/extract and map sections are left to the normal retry path —
-    topping them up blindly is unsafe.
+    Mixed-marks, CBQ and passage/extract sections are left to the normal retry path —
+    topping them up blindly is unsafe. Map sections ARE topped up: a map question is
+    structurally simple (text + map_note), the rebuilt prompt carries the map-work
+    instruction block, and the by-category filter below keeps only correctly-typed
+    questions — without this a short map section had no recovery path at all.
     """
     questions = [q for q in section_data.get("questions", []) if isinstance(q, dict)]
     expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
@@ -2424,8 +2436,8 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
             allowed.append(c)
 
     # Never blind-fill structurally heavy or mixed-marks sections — their questions carry
-    # passages, sub-questions, maps, or per-type marks that a generic top-up can't reproduce.
-    if wo.mixed_marks or wo.is_map_work or _is_dedicated_cbq_section(wo) \
+    # passages, sub-questions, or per-type marks that a generic top-up can't reproduce.
+    if wo.mixed_marks or _is_dedicated_cbq_section(wo) \
             or wo.passage_instruction or wo.extract_instruction or "cbq" in allowed:
         return 0, 0
 
@@ -2499,8 +2511,15 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
             continue
         # Reject a near-duplicate of anything already in the section (the model can echo an
         # existing question despite the "different concepts" instruction) — the topped-up
-        # questions don't otherwise pass through the V5 dedup chain.
-        if any(_concept_overlap(txt, e) > 0.6 for e in kept_texts):
+        # questions don't otherwise pass through the V5 dedup chain. Map questions all share
+        # the same boilerplate stem ("On the given outline map of India, locate and label:"),
+        # which alone scores ~0.8 overlap — compare only the location list after the stem, or
+        # every legitimate extra map question is rejected and the section can never be filled.
+        if cat == "map":
+            cand = _map_locations_text(txt)
+            if any(_concept_overlap(cand, _map_locations_text(e)) > 0.6 for e in kept_texts):
+                continue
+        elif any(_concept_overlap(txt, e) > 0.6 for e in kept_texts):
             continue
         # Force the section's per-question marks (the model occasionally drifts on the top-up).
         q["marks"] = wo.marks_per_question
@@ -3802,8 +3821,14 @@ def enforce_section_question_types(paper_data: dict, work_orders: list) -> dict:
         for q in questions:
             if not isinstance(q, dict):
                 continue
-            if str(q.get("subtype", "")).strip().lower() == "assertion_reason":
+            q_subtype = str(q.get("subtype", "")).strip().lower()
+            if q_subtype == "assertion_reason":
                 cat = "mcq"   # AR renders as MCQ — treat it as such
+            elif q_subtype == "map_based" or str(q.get("map_note", "")).strip():
+                # Map questions are emitted as type "SA" per the schema — classifying them by
+                # the coarse type stripped every valid map question from Map-Work sections
+                # (allowed={la,map} / {map}), shipping them 1/2 and 0/3.
+                cat = "map"
             else:
                 cat = _type_category(str(q.get("type", "") or ""))
             if cat == "other" or cat in allowed:

@@ -171,7 +171,13 @@ def _render_paper_from_stored_data(paper, request=None):
     )
     if os.path.exists(os.path.join(_dj.MEDIA_ROOT, file_path)):
         paper.file.name = file_path        # assign directly — file.save() renames on collision → 404
-    paper.save(update_fields=['file', 'updated_at'])
+    # Persist paper_data too: the renderer stamps every question with its PRINTED number
+    # (blueprint section order, questions regrouped by type) by mutating the question dicts
+    # shared with paper.paper_data. paper_edit.renumber() numbers in STORAGE order instead,
+    # which diverges from the printed order after any edit — without saving the renderer's
+    # numbering, the next "change question N" resolves N against stale qnums and edits a
+    # different question than the one the teacher reads in the DOCX.
+    paper.save(update_fields=['file', 'paper_data', 'updated_at'])
     return signed_file_url(request, paper.file)
 
 
