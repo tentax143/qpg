@@ -5,7 +5,7 @@ alternatives?, parts?, attempt?, source?, condition?}. Slots are the source of
 truth for slot-authored patterns; the legacy section aggregates
 (questions_count / marks / marks_per_question / question_types) are derived
 from them so every existing consumer keeps working. See
-PER_QUESTION_STRUCTURE.md for the full contract.
+docs/PER_QUESTION_STRUCTURE.md for the full contract.
 """
 
 # Canonical slot type -> pipeline category (the vocabulary of

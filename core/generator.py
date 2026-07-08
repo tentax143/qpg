@@ -2992,7 +2992,7 @@ def pattern_sections_to_blueprint_dict(pattern):
             'provided_count': q_count,   # questions_count = the full provided set
             # Store raw question_types detail for mixed-marks detection
             'question_type_details': section.get('question_types', []),
-            # Per-question structure (PER_QUESTION_STRUCTURE.md): slots drive the
+            # Per-question structure (docs/PER_QUESTION_STRUCTURE.md): slots drive the
             # work order and disable render-time regrouping/marks re-stamping.
             'question_slots': section.get('question_slots', []),
         }

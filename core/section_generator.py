@@ -115,7 +115,7 @@ class SectionWorkOrder:
     subsections: list = field(default_factory=list)
     context_by_type: dict = field(default_factory=dict)  # 3.2: {type_key: context_str}
     chapter_plan: list = field(default_factory=list)     # one chapter name per question slot (weighted allocation)
-    slots: list = field(default_factory=list)            # question_slots (per-question structure) — see PER_QUESTION_STRUCTURE.md
+    slots: list = field(default_factory=list)            # question_slots (per-question structure) — see docs/PER_QUESTION_STRUCTURE.md
 
 
 # ─────────────────────────────────────────────
@@ -3441,7 +3441,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         # Per-question structure (question_slots) — slots are the source of truth.
         # Derive the aggregates from them and feed the pipeline typed dicts built from
         # the slots, so the count/marks inference heuristics below never run against
-        # inconsistent section-level fields. See PER_QUESTION_STRUCTURE.md.
+        # inconsistent section-level fields. See docs/PER_QUESTION_STRUCTURE.md.
         slots = sec_data.get("question_slots") or ps.get("question_slots") or []
         slots = [s for s in slots if isinstance(s, dict)]
         if slots:

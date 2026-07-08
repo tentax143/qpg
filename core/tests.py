@@ -2147,7 +2147,7 @@ class CrossSchoolLinkTest(TestCase):
 
 
 # ─────────────────────────────────────────────
-# Per-question structure (question_slots) — PER_QUESTION_STRUCTURE.md
+# Per-question structure (question_slots) — docs/PER_QUESTION_STRUCTURE.md
 # ─────────────────────────────────────────────
 
 from core import pattern_structure as psx
