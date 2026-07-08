@@ -227,6 +227,45 @@ class RenderGroupingTest(TestCase):
         self.assertEqual(b_sa["qnum"], 3)                         # B last despite dict order
 
 
+class SectionHeaderLabelTest(TestCase):
+    """AI/teacher-authored patterns often name a section 'Section A — Objective Type'
+    (the label already spelled out) rather than a bare letter. The renderer used to
+    always prefix 'SECTION – ', producing a doubled word: 'SECTION – Section A —
+    Objective Type'. Reported production bug on a Social Science paper."""
+
+    def _headers(self, blueprint, data):
+        all_q = []
+        sg_gen.render_section_questions(all_q, data, blueprint)
+        return [text for typ, text in all_q if typ == "header"]
+
+    def test_no_duplicate_section_word_when_name_already_labelled(self):
+        blueprint = {"Section A — Objective Type": {"title": "", "marks": 10}}
+        data = {"Section A — Objective Type": {"questions": []}}
+        self.assertEqual(self._headers(blueprint, data),
+                         ["Section A — Objective Type (10 MARKS)"])
+
+    def test_bare_letter_keeps_section_prefix(self):
+        blueprint = {"A": {"title": "", "marks": 5}}
+        data = {"A": {"questions": []}}
+        self.assertEqual(self._headers(blueprint, data), ["SECTION – A (5 MARKS)"])
+
+    def test_title_suffix_still_appended_for_bare_letter(self):
+        blueprint = {"A": {"title": "Objective Type", "marks": 5}}
+        data = {"A": {"questions": []}}
+        self.assertEqual(self._headers(blueprint, data),
+                         ["SECTION – A: OBJECTIVE TYPE (5 MARKS)"])
+
+    def test_compound_sub_subject_no_duplicate_when_already_labelled(self):
+        blueprint = {"Section A": {"title": "", "marks": 26, "section_subject": "Biology"}}
+        data = {"Section A": {"questions": []}}
+        self.assertEqual(self._headers(blueprint, data), ["Section A — BIOLOGY (26 MARKS)"])
+
+    def test_compound_sub_subject_bare_letter_unchanged(self):
+        blueprint = {"A": {"title": "", "marks": 26, "section_subject": "Biology"}}
+        data = {"A": {"questions": []}}
+        self.assertEqual(self._headers(blueprint, data), ["SECTION A — BIOLOGY (26 MARKS)"])
+
+
 class CountBasedValidationTest(TestCase):
     """Section validation must check the right NUMBER of each type (renderer handles order),
     not that each type sits at an exact position."""
@@ -2105,3 +2144,302 @@ class CrossSchoolLinkTest(TestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 SchoolVectorLink.objects.create(viewer=self.A, source=self.A)
+
+
+# ─────────────────────────────────────────────
+# Per-question structure (question_slots) — PER_QUESTION_STRUCTURE.md
+# ─────────────────────────────────────────────
+
+from core import pattern_structure as psx
+from core.tasks import _fill_section_counts
+
+
+def _slot_sections():
+    """Compact PT-1-style pattern: a uniform Grammar section with per-slot topics
+    (incl. the teacher's real 9×1-vs-7 marks conflict) and a mixed Literature
+    section with an extract (sub-parts), an open-choice group and internal choice."""
+    return [
+        {"id": "SEC_C", "name": "Grammar", "marks": 7, "question_slots": [
+            {"qnum": 1, "type": "mcq", "topic": "Homophones", "format": "Homophones MCQ", "marks": 1},
+            {"qnum": 2, "type": "fill_blank", "topic": "Conjunctions", "marks": 1},
+            {"qnum": 3, "type": "fill_blank", "topic": "Conjunctions", "marks": 1},
+            {"qnum": 4, "type": "punctuation", "topic": "Contracted words", "marks": 1},
+            {"qnum": 5, "type": "mcq", "topic": "Present progressive", "marks": 1},
+            {"qnum": 6, "type": "rewrite", "topic": "Punctuation", "marks": 1},
+            {"qnum": 7, "type": "error_correction", "topic": "Past tense", "marks": 1},
+            {"qnum": 8, "type": "mcq", "topic": "Past progressive", "marks": 1},
+            {"qnum": 9, "type": "error_correction", "topic": "Past perfect", "marks": 1},
+        ]},
+        {"id": "SEC_D", "name": "Literature", "marks": 19, "question_slots": [
+            {"qnum": 10, "type": "extract", "marks": 5, "source": "textbook",
+             "parts": [{"label": "A", "type": "mcq", "marks": 1},
+                       {"label": "B", "type": "mcq", "marks": 1},
+                       {"label": "C", "type": "sa", "marks": 1},
+                       {"label": "D", "type": "sa", "marks": 1},
+                       {"label": "E", "type": "sa", "marks": 1}]},
+            {"qnum": 11, "type": "sa", "marks": 10, "choice": "open", "attempt": 5,
+             "parts": [{"label": l, "type": "sa", "marks": 2} for l in "ABCDEF"]},
+            {"qnum": 12, "type": "la", "marks": 4, "choice": "internal",
+             "alternatives": ["critical from prose/poem", "direct from supplementary reader"]},
+        ]},
+    ]
+
+
+class SlotStructureValidatorTest(TestCase):
+    def test_normalize_coerces_and_canonicalises(self):
+        secs = [{"name": "A", "question_slots": [
+            {"qnum": "3", "type": "Fill in the blanks", "marks": "1", "choice": None},
+        ]}]
+        psx.normalize_slots(secs)
+        s = secs[0]["question_slots"][0]
+        self.assertEqual(s["qnum"], 3)
+        self.assertEqual(s["type"], "fill_blank")
+        self.assertEqual(s["marks"], 1)
+        self.assertEqual(s["choice"], "none")
+
+    def test_flags_teacher_marks_conflict(self):
+        secs = psx.normalize_slots(_slot_sections())
+        errors = psx.validate_pattern_structure(secs, declared_total=26)
+        msgs = " | ".join(e["msg"] for e in errors)
+        self.assertIn("slot marks sum to 9 but the section declares 7", msgs)
+        # paper sum uses slot sums (9 + 19 = 28) vs the declared 26
+        self.assertIn("paper marks sum to 28", msgs)
+
+    def test_clean_pattern_validates(self):
+        secs = psx.normalize_slots(_slot_sections())
+        secs[0]["marks"] = 9
+        self.assertEqual(psx.validate_pattern_structure(secs, declared_total=28), [])
+
+    def test_qnum_duplicates_and_gaps(self):
+        secs = [{"name": "A", "marks": 2, "question_slots": [
+            {"qnum": 1, "type": "mcq", "marks": 1},
+            {"qnum": 3, "type": "mcq", "marks": 1},
+        ]}]
+        msgs = " | ".join(e["msg"] for e in psx.validate_pattern_structure(secs))
+        self.assertIn("no gaps", msgs)
+        secs[0]["question_slots"][1]["qnum"] = 1
+        msgs = " | ".join(e["msg"] for e in psx.validate_pattern_structure(secs))
+        self.assertIn("ascending", msgs)
+        self.assertIn("duplicate", msgs)
+
+    def test_open_choice_rules(self):
+        base = {"qnum": 1, "type": "sa", "marks": 4, "choice": "open",
+                "parts": [{"label": "A", "marks": 2}, {"label": "B", "marks": 2}]}
+        # attempt missing
+        errs = psx.validate_pattern_structure([{"name": "A", "question_slots": [dict(base)]}])
+        self.assertTrue(any("requires 'attempt'" in e["msg"] for e in errs))
+        # attempt == len(parts) → not a choice
+        errs = psx.validate_pattern_structure([{"name": "A", "question_slots": [dict(base, attempt=2)]}])
+        self.assertTrue(any("less than the number of parts" in e["msg"] for e in errs))
+        # valid: attempt 2 of 3 → 2×2 == marks 4
+        ok = dict(base, attempt=2, parts=[{"label": c, "marks": 2} for c in "ABC"])
+        self.assertEqual(psx.validate_pattern_structure([{"name": "A", "question_slots": [ok]}]), [])
+
+    def test_parts_sum_rule(self):
+        secs = [{"name": "A", "question_slots": [
+            {"qnum": 1, "type": "extract", "marks": 5,
+             "parts": [{"label": "A", "marks": 1}, {"label": "B", "marks": 1}]},
+        ]}]
+        msgs = " | ".join(e["msg"] for e in psx.validate_pattern_structure(secs))
+        self.assertIn("parts marks sum to 2 but slot marks is 5", msgs)
+
+
+class SlotAggregateDerivationTest(TestCase):
+    def test_derive_uniform_and_mixed(self):
+        secs = psx.normalize_slots(_slot_sections())
+        secs[0]["marks_per_question"] = [1] * 9        # stale mpq-list must be replaced
+        psx.derive_aggregates_from_slots(secs)
+        g, l = secs
+        self.assertEqual((g["questions_count"], g["marks"], g["marks_per_question"]), (9, 9, 1))
+        self.assertEqual((l["questions_count"], l["marks"]), (3, 19))
+        self.assertNotIn("marks_per_question", l)       # mixed marks → no scalar mpq
+        # typed dicts with real qnum ranges, contiguous same-(type,marks) runs merged
+        self.assertEqual(g["question_types"][1],
+                         {"type": "Fill in the blank", "count": 2, "marks_each": 1, "range": "Q2-Q3"})
+        self.assertTrue(all(isinstance(qt, dict) for qt in l["question_types"]))
+
+    def test_model_totals_prefer_slots(self):
+        p = ExamPattern(name="slots", sections=psx.normalize_slots(_slot_sections()))
+        self.assertEqual(p.get_total_marks(), 28)       # 9 + 19 from slots (not section 7)
+        self.assertEqual(p.get_total_questions(), 12)
+
+    def test_fill_section_counts_skips_slot_sections(self):
+        secs = psx.normalize_slots(_slot_sections())
+        psx.derive_aggregates_from_slots(secs)
+        out = _fill_section_counts(secs)
+        self.assertNotIn("marks_per_question", out[1])  # no bogus avg re-invented for mixed
+
+
+class SlotTypeCategoryTest(TestCase):
+    def test_slot_types_never_other(self):
+        for t, cat in psx.SLOT_TYPE_CATEGORY.items():
+            self.assertEqual(sg._type_category(t), cat, t)
+
+    def test_free_text_spellings(self):
+        self.assertEqual(sg._type_category("Fill in the blanks"), "vsa")
+        self.assertEqual(sg._type_category("Error correction"), "vsa")
+        self.assertEqual(sg._type_category("Rewrite sentences"), "vsa")
+        self.assertEqual(sg._type_category("Descriptive Paragraph"), "la")
+        self.assertEqual(sg._type_category("Story Writing"), "la")
+
+    def test_legacy_classifications_unchanged(self):
+        self.assertEqual(sg._type_category("MCQ"), "mcq")
+        self.assertEqual(sg._type_category("Short Answer"), "sa")
+        self.assertEqual(sg._type_category("Long Answer"), "la")
+        self.assertEqual(sg._type_category("Source-Based/CBQ"), "cbq")
+        self.assertEqual(sg._type_category("Map work"), "map")
+
+
+class SlotWorkOrderTest(TestCase):
+    def _wos(self):
+        secs = psx.normalize_slots(_slot_sections())
+        secs[0]["marks"] = 9
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        blueprint = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        return sg.build_work_orders(blueprint, pattern, {}, "Medium", "6", "English", ["Ch1"])
+
+    def test_counts_marks_and_slots(self):
+        g, l = self._wos()
+        self.assertEqual((g.questions_count, g.marks, g.marks_per_question, g.mixed_marks),
+                         (9, 9, 1.0, False))
+        self.assertEqual((l.questions_count, l.marks, l.mixed_marks), (3, 19, True))
+        self.assertEqual(len(g.slots), 9)
+        self.assertEqual(len(l.slots), 3)
+        self.assertEqual(l.subsections, [])
+
+    def test_parts_slots_count_as_cbq(self):
+        _, l = self._wos()
+        cats = [sg._fine_category(qt["type"]) for qt in l.question_types]
+        self.assertEqual(cats, ["cbq", "cbq", "la"])    # extract + open-choice group + LA
+
+    def test_slot_prompt_block(self):
+        g, l = self._wos()
+        pg, pl = sg.build_section_prompt(g), sg.build_section_prompt(l)
+        self.assertIn("PER-QUESTION SPECIFICATION", pg)
+        self.assertIn("Homophones", pg)                          # topics reach the LLM
+        self.assertNotIn("QUESTION-POSITION BLUEPRINT", pl)      # superseded for slot sections
+        self.assertIn("INTERNAL CHOICE", pl)
+        self.assertIn("attempt any 5", pl.lower())
+        self.assertIn('"source_text"', pl)
+        # No blanket LA OR-rule: only slot-flagged questions get or_alternative
+        self.assertIn('Do NOT add "or_alternative" to any other question', pl)
+
+    def test_or_gating_in_validation(self):
+        _, l = self._wos()
+        qs = [
+            {"type": "CBQ", "subtype": "source_based", "marks": 5, "text": "Read the extract " * 10,
+             "source_text": "x" * 100, "competency_type": "application",
+             "sub_questions": [{"text": "a", "marks": 1}] * 5},
+            {"type": "CBQ", "subtype": "standard", "marks": 10, "text": "Attempt any 5 " * 5,
+             "competency_type": "constructed",
+             "sub_questions": [{"text": "b", "marks": 2}] * 6},   # 12 provided vs 10 attempted
+            {"type": "LA", "marks": 4, "text": "Discuss the theme of the poem in detail.",
+             "competency_type": "constructed", "answer_explanation": "points",
+             "or_alternative": "Describe the character of the mongoose."},
+        ]
+        errors = sg.validate_section_output({"questions": qs}, l)
+        self.assertEqual(errors, [])
+        # internal-choice slot without or_alternative must fail
+        del qs[2]["or_alternative"]
+        errors = sg.validate_section_output({"questions": qs}, l)
+        self.assertTrue(any("or_alternative" in e for e in errors))
+        # open-choice slot: a sum that matches NEITHER attempted nor provided fails
+        qs[2]["or_alternative"] = "alt"
+        qs[1]["sub_questions"] = [{"text": "b", "marks": 2}] * 4
+        errors = sg.validate_section_output({"questions": qs}, l)
+        self.assertTrue(any("sub_question marks sum" in e for e in errors))
+
+
+class SlotRenderTest(TestCase):
+    def test_regroup_skips_slot_sections(self):
+        sec_info = {"question_slots": [{"qnum": 1}], "subsections": [
+            {"name": "SA", "question_types": ["SA"], "marks": 10, "questions_count": 5,
+             "marks_per_question": 2},
+        ]}
+        qs = [{"type": "CBQ", "marks": 5}, {"type": "SA", "marks": 10}, {"type": "LA", "marks": 4}]
+        groups = sg_gen._regroup_section(list(qs), sec_info)
+        self.assertEqual(groups, [(None, qs)])           # authored order, marks untouched
+
+    def test_blueprint_dict_passes_slots(self):
+        secs = psx.normalize_slots(_slot_sections())
+        bp = sg_gen.pattern_sections_to_blueprint_dict(ExamPattern(name="p", sections=secs))
+        self.assertEqual(len(bp["Grammar"]["question_slots"]), 9)
+
+
+class SlotRepairGuardTest(TestCase):
+    """The repair round must never be accepted when it deletes question slots or
+    lowers slot marks to force the teacher's declared totals to match (observed in
+    production: Q19/Q20 dropped and a 4m LA cut to 3m). repair_preserves_slots is
+    the deterministic guard in generate_pattern_task."""
+
+    def _orig(self):
+        return psx.normalize_slots(_slot_sections())
+
+    def test_rejects_deleted_slots(self):
+        import copy
+        orig = self._orig()
+        mutilated = copy.deepcopy(orig)
+        mutilated[0]["question_slots"] = mutilated[0]["question_slots"][:7]  # drop Q8, Q9
+        self.assertFalse(psx.repair_preserves_slots(orig, mutilated))
+
+    def test_rejects_lowered_slot_marks(self):
+        import copy
+        orig = self._orig()
+        devalued = copy.deepcopy(orig)
+        devalued[1]["question_slots"][2]["marks"] = 3     # LA 4m -> 3m
+        self.assertFalse(psx.repair_preserves_slots(orig, devalued))
+
+    def test_accepts_section_marks_correction(self):
+        import copy
+        orig = self._orig()
+        good = copy.deepcopy(orig)
+        good[0]["marks"] = 9                              # totals fixed, slots untouched
+        self.assertTrue(psx.repair_preserves_slots(orig, good))
+
+    def test_accepts_added_slots_and_filled_marks(self):
+        import copy
+        orig = self._orig()
+        orig[0]["question_slots"][0]["marks"] = 0         # pass 1 left it blank
+        richer = copy.deepcopy(orig)
+        richer[0]["question_slots"][0]["marks"] = 1       # repair filled it in
+        richer[1]["question_slots"].append({"qnum": 13, "type": "sa", "marks": 2})
+        self.assertTrue(psx.repair_preserves_slots(orig, richer))
+
+
+class SlotEditRederiveTest(TestCase):
+    """PUT /api/patterns/{id}/ with edited slots must re-derive the aggregates and
+    refresh structure warnings server-side (ExamPatternViewSet.perform_update) —
+    the frontend slot editor sends slots only, never recomputed totals."""
+
+    def test_put_rederives_aggregates_and_warnings(self):
+        import copy
+        from rest_framework.test import APIClient
+        user = User.objects.create_user("slotedit", "s@x.com", "pw")
+        secs = psx.normalize_slots(_slot_sections())
+        secs[0]["marks"] = 9
+        psx.derive_aggregates_from_slots(secs)
+        p = ExamPattern.objects.create(name="se", sections=secs, created_by=user)
+
+        api = APIClient()
+        api.force_authenticate(user)
+        edited = copy.deepcopy(p.sections)
+        edited[0]["question_slots"][0]["marks"] = 2      # Grammar Q1: 1m -> 2m
+        r = api.put(f"/api/patterns/{p.id}/", {
+            "name": "se", "class_name": "6", "subject": "English",
+            "description": "", "ai_prompt": "", "sections": edited,
+        }, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+        p.refresh_from_db()
+        g = p.sections[0]
+        self.assertEqual(g["marks"], 10)                  # re-derived from edited slots
+        self.assertEqual(g["questions_count"], 9)
+        self.assertNotIn("marks_per_question", g)         # now mixed (2m + 1m×8)
+        self.assertEqual(p.total_marks, 29)               # 10 + 19, recomputed
+        # slot sum (10) no longer matches the stale section 'marks' we sent (9)?
+        # No — derive overwrote it; but the section-marks warning must NOT appear:
+        self.assertFalse(any("_structure_warnings" in s and
+                             any("declares" in w for w in s["_structure_warnings"])
+                             for s in p.sections))
+

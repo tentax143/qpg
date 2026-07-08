@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace as dc_replace
 from typing import Optional
 
-from . import embeddings, mantle_client
+from . import embeddings, mantle_client, pattern_structure
 from .data.cbse_patterns import UNIT_MARKS_WEIGHTS
 from .data.science_split import classify_chapter   # Science chapter → Physics/Chemistry/Biology
 
@@ -115,6 +115,7 @@ class SectionWorkOrder:
     subsections: list = field(default_factory=list)
     context_by_type: dict = field(default_factory=dict)  # 3.2: {type_key: context_str}
     chapter_plan: list = field(default_factory=list)     # one chapter name per question slot (weighted allocation)
+    slots: list = field(default_factory=list)            # question_slots (per-question structure) — see PER_QUESTION_STRUCTURE.md
 
 
 # ─────────────────────────────────────────────
@@ -722,9 +723,19 @@ MATHEMATICAL NOTATION (strictly follow):
             "- Do NOT attempt to describe the map itself; only list what to locate.\n"
         )
 
-    # M-02: OR alternative rule for LA sections
+    # M-02: OR alternative rule. Slot-authored sections decide internal choice PER
+    # QUESTION (slot.choice == "internal", flagged in the per-question spec below) —
+    # the LA-blanket rule only applies to slot-less legacy sections.
     or_rule = ""
-    if any(_type_str(t) in ("la", "long_answer", "long answer") for t in wo.question_types):
+    if wo.slots:
+        if any(s.get("choice") == "internal" for s in wo.slots):
+            or_rule = (
+                "\n9. INTERNAL CHOICE (OR):\n"
+                "   Only the questions marked INTERNAL CHOICE in the per-question specification "
+                "MUST include an \"or_alternative\" field (an alternate full question, same marks, "
+                "different focus). Do NOT add \"or_alternative\" to any other question.\n"
+            )
+    elif any(_type_str(t) in ("la", "long_answer", "long answer") for t in wo.question_types):
         or_rule = (
             "\n9. INTERNAL CHOICE (OR) — MANDATORY FOR LA:\n"
             "   Every Long Answer question MUST include an \"or_alternative\" field with an alternate "
@@ -778,7 +789,7 @@ MATHEMATICAL NOTATION (strictly follow):
     }
 
     qpos_block = ""
-    if wo.mixed_marks and wo.question_types:
+    if wo.mixed_marks and wo.question_types and not wo.slots:
         pos_lines = []
         has_ar_pos = False
         local_start = 1
@@ -817,6 +828,70 @@ MATHEMATICAL NOTATION (strictly follow):
                 + ar_note
             )
 
+    # ── Per-question slot specification (question_slots patterns) ──────────────────
+    # Slot-authored sections state every printed question explicitly — type, topic,
+    # format, marks, source and choice conditions. This supersedes the position
+    # blueprint above (qpos_block is skipped for slot sections) and finally routes
+    # per-question topics ("Homophones", "Past perfect tense") into the prompt.
+    slot_block = ""
+    if wo.slots:
+        s_lines = []
+        for pos, s in enumerate(wo.slots, start=1):
+            styp = str(s.get("type") or "")
+            parts = [p for p in (s.get("parts") or []) if isinstance(p, dict)]
+            if styp == "ar":
+                json_type = '"type": "MCQ", "subtype": "assertion_reason"'
+            elif pattern_structure.slot_category(styp) == "cbq":
+                json_type = '"type": "CBQ", "subtype": "source_based"'
+            elif parts:
+                json_type = '"type": "CBQ"'
+            else:
+                json_type = _cat_to_json.get(_type_category(styp), '"type": "SA"')
+            label = pattern_structure.SLOT_TYPE_LABEL.get(styp, styp or "question")
+            line = f"  Question {pos}: {label} — {json_type}, marks={s.get('marks')}"
+            if s.get("topic"):
+                line += f" | TOPIC: {s['topic']}"
+            if s.get("format"):
+                line += f" | format: {s['format']}"
+            if s.get("source") == "textbook":
+                line += " | material MUST come from the textbook/reference material"
+            elif s.get("source") == "unseen":
+                line += " | write UNSEEN (new, original) material"
+            if s.get("condition"):
+                line += f" | condition: {s['condition']}"
+            if s.get("choice") == "internal":
+                alts = [str(a).strip() for a in (s.get("alternatives") or []) if str(a).strip()]
+                line += ' | INTERNAL CHOICE — include "or_alternative" (same marks)'
+                if alts:
+                    line += f" [option hints: {'; '.join(alts)}]"
+            if parts:
+                part_bits = ", ".join(
+                    f"({p.get('label') or chr(97 + j)}) "
+                    f"{pattern_structure.SLOT_TYPE_LABEL.get(str(p.get('type') or ''), str(p.get('type') or 'part'))} "
+                    f"{p.get('marks')}m"
+                    for j, p in enumerate(parts)
+                )
+                line += f' | {len(parts)} sub-parts in "sub_questions": {part_bits}'
+                if s.get("choice") == "open" and s.get("attempt"):
+                    line += (
+                        f" | OPEN CHOICE: provide all {len(parts)} sub-parts; students attempt any "
+                        f"{s['attempt']} — begin the question text with "
+                        f"\"Attempt any {s['attempt']} of the following {len(parts)}:\""
+                    )
+            if pattern_structure.slot_category(styp) == "cbq":
+                line += ' | include the passage/extract in "source_text" on this question'
+            s_lines.append(line)
+        slot_block = (
+            "\nPER-QUESTION SPECIFICATION — MANDATORY:\n"
+            "Generate EXACTLY the following questions, in this exact order (one JSON question "
+            "object per line item):\n"
+            + "\n".join(s_lines) + "\n"
+            "Each question's type, subtype and marks MUST match its line above. Write the "
+            "question ON the stated TOPIC where one is given. Sub-parts go in that question's "
+            '"sub_questions" array (each entry with "text" and "marks"). Do NOT merge, split, '
+            "reorder or renumber questions.\n"
+        )
+
     # Avoid repeating questions from earlier papers (so two classes don't get identical papers).
     _recent = _recent_question_stems(wo.class_name, wo.subject)
     avoid_block = ""
@@ -842,7 +917,7 @@ SECTION SPECIFICATION:
 - Subject focus: {effective_subject}
 
 {type_directive}
-{qpos_block}
+{qpos_block}{slot_block}
 {chapter_block}
 {avoid_block}{diff_block}
 {math_notation_block}
@@ -1020,6 +1095,9 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
     opts = q.get("options")
     if not isinstance(opts, dict):
         opts = {}
+    # Slot-authored sections generate in slot order, so position n maps to slot n-1.
+    # The slot carries per-question choice conditions that override type conventions.
+    slot = wo.slots[n - 1] if (wo.slots and 0 <= n - 1 < len(wo.slots)) else None
 
     if not type_lower:
         errors.append(f"Q{n}: missing 'type' field (must be MCQ / VSA / SA / LA / CBQ)")
@@ -1085,11 +1163,15 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
                 "provide 4-6 bullet points of model answer content"
             )
         or_alt = q.get("or_alternative")
+        # Per-question structure: the slot decides whether THIS question has internal
+        # choice — the LA-blanket rule only applies to slot-less (legacy) sections.
+        or_required = (slot.get("choice") == "internal") if slot else True
         if not or_alt:
-            errors.append(
-                f"Q{n} [LA/standard]: missing 'or_alternative' — "
-                "CBSE board papers require internal choice (OR) for every LA question"
-            )
+            if or_required:
+                errors.append(
+                    f"Q{n} [LA/standard]: missing 'or_alternative' — "
+                    "this question requires internal choice (OR)"
+                )
         elif isinstance(or_alt, str) and not or_alt.strip():
             errors.append(f"Q{n} [LA/standard]: 'or_alternative' is empty string")
         elif isinstance(or_alt, dict) and not str(or_alt.get("text", "")).strip():
@@ -1121,7 +1203,15 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
                 for sq in sqs
             )
             expected = _as_float(q.get("marks", wo.marks_per_question), wo.marks_per_question)
-            if abs(sq_sum - expected) > 0.1:
+            # Open-choice slots ("A to F, attempt any 5") legitimately provide MORE
+            # sub-question marks than the question is worth — accept the provided total.
+            open_total = 0.0
+            if slot and slot.get("choice") == "open":
+                open_total = sum(
+                    _as_float(p.get("marks"), 0.0)
+                    for p in (slot.get("parts") or []) if isinstance(p, dict)
+                )
+            if abs(sq_sum - expected) > 0.1 and not (open_total and abs(sq_sum - open_total) <= 0.1):
                 errors.append(
                     f"Q{n} [CBQ/{subtype}]: sub_question marks sum={sq_sum} "
                     f"!= question marks={expected} — adjust individual sub-question marks"
@@ -1173,7 +1263,7 @@ def _blueprint_type_at(n: int, wo: SectionWorkOrder) -> tuple[str, float] | None
 def _type_category(type_str: str) -> str:
     """Map any type string to a short category key for mismatch comparison."""
     t = type_str.strip().lower()
-    if "mcq" in t or "objective" in t or "multiple" in t or "assertion" in t:
+    if "mcq" in t or "objective" in t or "multiple" in t or "assertion" in t or t == "ar":
         return "mcq"
     if "vsa" in t or "very short" in t:
         return "vsa"
@@ -1185,6 +1275,27 @@ def _type_category(type_str: str) -> str:
         return "cbq"
     if "map" in t:
         return "map"
+    # Canonical per-question slot types (core/pattern_structure.py) and their
+    # common free-text spellings — previously these all fell to "other", which
+    # disabled type directives, validation and strict top-up (the AI-pattern
+    # free-form-types failure). Objective language formats behave as VSA
+    # (written one-liner, no options); writing tasks behave as LA; extracts as CBQ.
+    if ("fill" in t and "blank" in t) or t == "fill_blank":
+        return "vsa"
+    if ("true" in t and "false" in t) or t == "true_false":
+        return "vsa"
+    if "match" in t or "one word" in t or t == "one_word":
+        return "vsa"
+    if "error correction" in t or t == "error_correction" or "editing" in t or "omission" in t:
+        return "vsa"
+    if "rewrite" in t or "transformation" in t:
+        return "vsa"
+    if "punctuation" in t:
+        return "vsa"
+    if t == "writing" or "essay" in t or "letter" in t or "paragraph" in t or "story" in t:
+        return "la"
+    if "extract" in t:
+        return "cbq"
     return "other"
 
 
@@ -1283,7 +1394,17 @@ def validate_section_output(data: dict, wo: SectionWorkOrder) -> list:
         # by type. The overall per-type counts are validated once after the loop.
         actual_cat = _fine_category(q.get("type", ""), q_subtype)
         actual_counts[actual_cat] = actual_counts.get(actual_cat, 0) + 1
-        if wo.mixed_marks and has_blueprint_counts and actual_cat in type_marks_map:
+        if wo.slots and 0 <= i < len(wo.slots):
+            # Slot-authored sections check marks PER POSITION — the category-keyed
+            # map below can't hold two same-category slots with different marks
+            # (a 5m extract CBQ and a 10m open-choice CBQ would clobber each other).
+            exp_m = _as_float(wo.slots[i].get("marks"), 0.0)
+            if exp_m > 0 and abs(_as_float(q.get("marks", exp_m), exp_m) - exp_m) > 0.1:
+                errors.append(
+                    f"Q{n}: marks mismatch — the pattern requires {exp_m}m for this "
+                    f"question but got '{q.get('marks', '?')}'"
+                )
+        elif wo.mixed_marks and has_blueprint_counts and actual_cat in type_marks_map:
             exp_m = type_marks_map[actual_cat]
             if abs(_as_float(q.get("marks", exp_m), exp_m) - exp_m) > 0.1:
                 errors.append(
@@ -1816,6 +1937,13 @@ def _is_dedicated_cbq_section(wo: SectionWorkOrder) -> bool:
     as dicts inside one section. Those mixed sections must NOT get the image schema because
     it would break MCQ/SA/LA rendering for the other question types.
     """
+    # ── Slot-authored sections are excluded ────────────────────────────────────
+    # question_slots state their material explicitly (extracts/case passages are
+    # requested via "source_text" in the per-question spec) — never route them to
+    # the image-observation CBQ flow.
+    if wo.slots:
+        return False
+
     # ── Subject exclusion ──────────────────────────────────────────────────────
     MATH_LIKE = {
         "mathematics", "maths", "math", "applied mathematics",
@@ -2651,12 +2779,14 @@ def generate_section(wo: SectionWorkOrder):
     _cbq_types = {"cbq", "source_based", "source based", "case_based", "case based"}
     _is_la_only = (
         wo.question_types
+        and not wo.slots  # slot sections carry their per-question spec in the batch prompt
         and all(_type_str(t).lower() in _la_types for t in wo.question_types)
         and wo.marks_per_question >= 4
         and not is_cbq  # dedicated CBQ uses image-first path
     )
     _is_source_cbq = (
         wo.question_types
+        and not wo.slots  # slot sections carry their per-question spec in the batch prompt
         and all(_type_str(t).lower() in _cbq_types for t in wo.question_types)
         and not is_cbq  # dedicated image-based CBQ uses its own path
     )
@@ -3158,7 +3288,22 @@ def _qt_dicts_from_subsections(subsections: list, section_mpq: float) -> list:
     subsections into type dicts lets the rest of the pipeline (token budget, mixed-marks
     detection, the per-position prompt blueprint) treat it like any other mixed section
     instead of crashing on the "varies" string or undersizing the budget.
+
+    AI-authored patterns also attach subsections that are pure TOPIC hints (a name and a
+    question type — no count, no marks). Those carry nothing countable: synthesising a
+    1-question entry per topic overrode the section's real questions_count (a 9-question
+    Grammar section silently shrank to 8). When no subsection states a count or any marks
+    figure, return [] so the section-level fields stay authoritative.
     """
+    if not any(
+        isinstance(ss, dict) and (
+            _as_int(ss.get("questions_count") or ss.get("questions") or ss.get("count"), 0) > 0
+            or _as_float(ss.get("marks"), 0.0) > 0
+            or _as_float(ss.get("marks_per_question"), 0.0) > 0
+        )
+        for ss in (subsections or [])
+    ):
+        return []
     out, pos = [], 1
     for ss in subsections or []:
         if not isinstance(ss, dict):
@@ -3171,6 +3316,41 @@ def _qt_dicts_from_subsections(subsections: list, section_mpq: float) -> list:
         rng = f"Q{pos}" if cnt == 1 else f"Q{pos}-{pos + cnt - 1}"
         out.append({"type": typ, "count": cnt, "marks_each": mke, "range": rng})
         pos += cnt
+    return out
+
+
+def _qt_dicts_from_slots(slots: list) -> list:
+    """Typed {type, count, marks_each, range} dicts from a section's question_slots,
+    grouping contiguous runs of the same (pipeline type, marks) in authored order.
+
+    The dict `type` is the JSON type the GENERATOR will be asked to produce (not the
+    authored slot type): slots with sub-parts generate as one CBQ with lettered
+    sub_questions, extracts generate as source-based CBQ, and objective language
+    formats (fill_blank / true_false / error_correction / ...) generate as VSA —
+    so expected-count validation matches what the prompt demands."""
+    _CAT_TYPE = {"mcq": "MCQ", "vsa": "VSA", "sa": "SA", "la": "LA", "cbq": "CBQ", "map": "Map work"}
+    runs = []
+    for s in slots or []:
+        if not isinstance(s, dict):
+            continue
+        styp = str(s.get("type") or "")
+        if styp == "ar":
+            label = "Assertion-Reason MCQ"
+        elif s.get("parts") or pattern_structure.slot_category(styp) == "cbq":
+            label = "CBQ"
+        else:
+            label = _CAT_TYPE.get(pattern_structure.slot_category(styp), "SA")
+        marks = _as_float(s.get("marks"), 0.0)
+        qn = s.get("qnum")
+        if runs and runs[-1]["type"] == label and abs(runs[-1]["marks_each"] - marks) <= 0.01:
+            runs[-1]["count"] += 1
+            runs[-1]["_end"] = qn
+        else:
+            runs.append({"type": label, "count": 1, "marks_each": marks, "_start": qn, "_end": qn})
+    out = []
+    for r in runs:
+        rng = f"Q{r['_start']}" if r["_start"] == r["_end"] else f"Q{r['_start']}-{r['_end']}"
+        out.append({"type": r["type"], "count": r["count"], "marks_each": r["marks_each"], "range": rng})
     return out
 
 
@@ -3257,6 +3437,26 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
     work_orders = []
     for idx, (sec_name, sec_data) in enumerate(blueprint.items()):
         ps = pattern_section_map.get(sec_name, {})
+
+        # Per-question structure (question_slots) — slots are the source of truth.
+        # Derive the aggregates from them and feed the pipeline typed dicts built from
+        # the slots, so the count/marks inference heuristics below never run against
+        # inconsistent section-level fields. See PER_QUESTION_STRUCTURE.md.
+        slots = sec_data.get("question_slots") or ps.get("question_slots") or []
+        slots = [s for s in slots if isinstance(s, dict)]
+        if slots:
+            holder = {"question_slots": slots}
+            pattern_structure.normalize_slots([holder])
+            pattern_structure.derive_aggregates_from_slots([holder])
+            sec_data = dict(sec_data)
+            sec_data["questions_count"] = holder.get("questions_count", len(slots))
+            if holder.get("marks"):
+                sec_data["marks"] = holder["marks"]
+            sec_data.pop("marks_per_question", None)
+            if holder.get("marks_per_question") is not None:
+                sec_data["marks_per_question"] = holder["marks_per_question"]
+            sec_data["question_types"] = _qt_dicts_from_slots(slots)
+            sec_data.pop("subsections", None)   # slots supersede topic-hint subsections
         # Coerce ALL numeric section fields up front — pattern/blueprint data is authored by
         # the AI generator, the frontend, and CBSE seed scripts, so any of these may arrive as
         # strings ("30") or non-numeric sentinels ("varies"). Normalising here once guarantees
@@ -3265,7 +3465,17 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         # Support both field names: blueprint uses 'questions_count', CBSE seed uses 'questions'
         q_count = _as_int(sec_data.get("questions_count") or sec_data.get("questions"), 0)
         marks = _as_int(sec_data.get("marks"), 0)
-        mpq = _as_float(sec_data.get("marks_per_question"), 0.0)
+        mpq_raw = sec_data.get("marks_per_question")
+        mpq = _as_float(mpq_raw, 0.0)
+        if mpq <= 0 and isinstance(mpq_raw, (list, tuple)):
+            # AI-authored patterns may write marks_per_question as a per-question LIST
+            # ([1]×9). _as_float coerces that to 0 and the marks/count fallback below then
+            # invents a fractional figure that gets printed on the paper (7 marks over 8
+            # questions → "0.9 marks" per question). A uniform list IS the per-question
+            # mark; a varied list is left for the subsection/typed breakdown to resolve.
+            vals = [v for v in (_as_float(x, 0.0) for x in mpq_raw) if v > 0]
+            if vals and all(abs(v - vals[0]) <= 0.01 for v in vals):
+                mpq = vals[0]
 
         # Resolve the section's question type(s) FIRST — the per-type breakdown is what
         # reconciles the count/marks below, so it must exist before that step.
@@ -3383,12 +3593,14 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             mixed_marks=mixed_marks,
             passage_instruction=ps.get("passage_instruction"),
             extract_instruction=ps.get("extract_instruction"),
-            subsections=subsecs,
+            subsections=[] if slots else subsecs,
             context_by_type=context_by_type_all.get(sec_name, {}),  # 3.2
+            slots=slots,
         )
         work_orders.append(wo)
         subj_tag = f" [{section_subject}]" if section_subject else ""
-        print(f"[WorkOrder] '{sec_name}'{subj_tag}: {generate_count}q × {mpq}m = {marks}m, types={types_list}")
+        slot_tag = f", slots={len(slots)}" if slots else ""
+        print(f"[WorkOrder] '{sec_name}'{subj_tag}: {generate_count}q × {mpq}m = {marks}m, types={types_list}{slot_tag}")
 
     # Deterministic, CBSE-weighted, paper-wide chapter allocation (sets wo.chapter_plan).
     plan_chapter_allocation(work_orders)

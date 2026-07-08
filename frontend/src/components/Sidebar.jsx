@@ -20,6 +20,8 @@ import {
   HelpCircle,
   Database,
   ListOrdered,
+  Menu,
+  X,
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -34,6 +36,7 @@ export default function Sidebar() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('authToken');
@@ -99,6 +102,7 @@ export default function Sidebar() {
     return (
       <Link
         href={href}
+        onClick={() => setMobileOpen(false)}
         className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors duration-150 ${
           active
             ? 'bg-blue-50 text-blue-700 font-medium'
@@ -112,24 +116,65 @@ export default function Sidebar() {
   };
 
   return (
-    <div className="w-64 bg-white border-r border-slate-200 min-h-screen fixed left-0 top-0 flex flex-col z-50">
-      {/* Brand */}
-      <div className="h-16 px-5 flex items-center border-b border-slate-200 shrink-0">
-        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
-          <GraduationCap className="w-4 h-4 text-white" />
-        </div>
-        <div className="ml-3 min-w-0">
-          <span className="text-[15px] font-semibold text-slate-900 tracking-tight truncate block">
+    <>
+      {/* Mobile top bar */}
+      <div className="lg:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 z-40">
+        <div className="flex items-center min-w-0">
+          <div className="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
+            <GraduationCap className="w-4 h-4 text-white" />
+          </div>
+          <span className="ml-2.5 text-sm font-semibold text-slate-900 tracking-tight truncate">
             {isSuperAdmin ? 'QPG' : (user?.school_name || 'QPG')}
           </span>
-          {isSuperAdmin && (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
-              <ShieldCheck className="w-2.5 h-2.5" />
-              Admin
-            </span>
-          )}
         </div>
+        <button
+          onClick={() => setMobileOpen(true)}
+          className="p-2 -mr-2 text-slate-600 hover:text-slate-900"
+          aria-label="Open menu"
+        >
+          <Menu className="w-6 h-6" />
+        </button>
       </div>
+
+      {/* Backdrop, mobile only, shown while the drawer is open */}
+      {mobileOpen && (
+        <div
+          className="lg:hidden fixed inset-0 bg-black/40 z-30"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      <div
+        className={`w-64 bg-white border-r border-slate-200 min-h-screen fixed left-0 top-0 flex flex-col z-50 transform transition-transform duration-200 ease-in-out ${
+          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+        } lg:translate-x-0`}
+      >
+        {/* Brand */}
+        <div className="h-16 px-5 flex items-center justify-between border-b border-slate-200 shrink-0">
+          <div className="flex items-center min-w-0">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
+              <GraduationCap className="w-4 h-4 text-white" />
+            </div>
+            <div className="ml-3 min-w-0">
+              <span className="text-[15px] font-semibold text-slate-900 tracking-tight truncate block">
+                {isSuperAdmin ? 'QPG' : (user?.school_name || 'QPG')}
+              </span>
+              {isSuperAdmin && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                  <ShieldCheck className="w-2.5 h-2.5" />
+                  Admin
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={() => setMobileOpen(false)}
+            className="lg:hidden p-1 text-slate-400 hover:text-slate-600 shrink-0"
+            aria-label="Close menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
 
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 overflow-y-auto custom-scrollbar space-y-5">
@@ -214,6 +259,7 @@ export default function Sidebar() {
           </>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

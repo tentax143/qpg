@@ -31,6 +31,11 @@ def _fill_section_counts(sections):
     for s in sections or []:
         if not isinstance(s, dict) or s.get("subsections"):
             continue
+        # Slot-authored sections get their aggregates (incl. deliberately
+        # absent marks_per_question on mixed-marks sections) from
+        # pattern_structure.derive_aggregates_from_slots — don't reinvent them.
+        if s.get("question_slots"):
+            continue
         marks = _num(s.get("marks"), 0)
         qc = _num(s.get("questions_count") or s.get("questions"), 0)
         mpq = _num(s.get("marks_per_question"), 0.0)
@@ -62,13 +67,61 @@ def generate_pattern_task(self, pattern_id):
     print(f"[generate_pattern_task] Starting — pattern_id={pattern_id} subject={pattern.subject} class={pattern.class_name}")
 
     try:
+        from . import pattern_structure
+
         pattern_data = generate_pattern_via_api(
             teacher_input=pattern.ai_prompt,
             class_name=pattern.class_name,
             subject=pattern.subject,
             exam_name=pattern.name,
         )
-        pattern.sections       = _fill_section_counts(pattern_data.get('sections', []))
+        sections = pattern_structure.normalize_slots(pattern_data.get('sections', []))
+        errors = pattern_structure.validate_pattern_structure(
+            sections, declared_total=pattern_data.get('total_marks'))
+
+        if errors:
+            # One repair round: resend the teacher's text + failed JSON + the
+            # numbered errors. Keep the repair only if it didn't get worse.
+            from api.ai_service import repair_pattern_via_api
+            print(f"[generate_pattern_task] {len(errors)} structure error(s) — attempting repair round")
+            try:
+                repaired = repair_pattern_via_api(
+                    teacher_input=pattern.ai_prompt,
+                    class_name=pattern.class_name,
+                    subject=pattern.subject,
+                    exam_name=pattern.name,
+                    previous_json=pattern_data,
+                    errors_text=pattern_structure.format_structure_errors(errors),
+                )
+                r_sections = pattern_structure.normalize_slots(repaired.get('sections', []))
+                r_errors = pattern_structure.validate_pattern_structure(
+                    r_sections, declared_total=repaired.get('total_marks'))
+                # Accept the repair only if it did not delete or de-value any
+                # question slot — a repair that reconciles marks by dropping
+                # questions (Q19/Q20) or lowering slot marks destroys teacher
+                # content; keeping the faithful original WITH warnings is better.
+                if r_sections and len(r_errors) <= len(errors) and \
+                        pattern_structure.repair_preserves_slots(sections, r_sections):
+                    pattern_data, sections, errors = repaired, r_sections, r_errors
+                else:
+                    print("[generate_pattern_task] Repair rejected "
+                          f"(errors {len(errors)} -> {len(r_errors)}, "
+                          f"slots preserved: {pattern_structure.repair_preserves_slots(sections, r_sections)})")
+            except Exception as repair_exc:
+                print(f"[generate_pattern_task] Repair round failed — keeping original: {repair_exc}")
+
+        # Residual errors become teacher-visible warnings on the sections they
+        # concern (paper-level ones land on the first section).
+        for e in errors:
+            idx = e.get('section')
+            target = sections[idx] if idx is not None and 0 <= idx < len(sections) else (sections[0] if sections else None)
+            if isinstance(target, dict):
+                target.setdefault('_structure_warnings', []).append(e['msg'])
+        if errors:
+            print(f"[generate_pattern_task] {len(errors)} unresolved structure warning(s) saved on pattern {pattern_id}")
+
+        pattern_structure.derive_aggregates_from_slots(sections)
+        pattern.sections       = _fill_section_counts(sections)
         pattern.total_marks    = pattern_data.get('total_marks', 0)
         pattern.total_questions = pattern_data.get('total_questions', 0)
         pattern.status = 'done'

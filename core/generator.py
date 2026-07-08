@@ -801,23 +801,39 @@ def _question_category(q):
 
 
 def _section_type_marks(sec_info):
-    """{category: marks_each} from a blueprint section's subsections (compound papers)."""
+    """{category: marks_each} from a blueprint section's subsections (compound papers).
+
+    Only a subsection that states a real per-question figure contributes: an explicit
+    marks_per_question, or a marks total alongside an explicit question count (AI-authored
+    patterns spell these 'count' and a singular 'question_type'). A count-less marks total
+    is NOT divided by an assumed 1 — that stamped the subsection TOTAL on every question
+    of the type (5 × 2m short answers rendered as 5 × 10m). And when two subsections land
+    on the same category with different values (1m extract questions and 2m short answers
+    both bucket to 'sa'), the category is ambiguous — it is dropped so the generated
+    per-question marks stand."""
     out = {}
     if not isinstance(sec_info, dict):
         return out
+    ambiguous = set()
     for ss in (sec_info.get("subsections") or []):
         if not isinstance(ss, dict):
             continue
-        qts = ss.get("question_types") or [ss.get("name", "")]
+        qts = ss.get("question_types") or ss.get("question_type") or [ss.get("name", "")]
+        if isinstance(qts, str):
+            qts = [qts]
         cat = _question_category({"type": qts[0] if qts else ss.get("name", ""),
                                   "subtype": ss.get("name", "")})
-        cnt = _coerce_float(ss.get("questions_count") or ss.get("questions"), 1) or 1
         me = ss.get("marks_per_question")
         if me in (None, "", "varies"):
-            me = _coerce_float(ss.get("marks"), 0) / cnt
+            cnt = _coerce_float(ss.get("questions_count") or ss.get("questions") or ss.get("count"), 0)
+            me = _coerce_float(ss.get("marks"), 0) / cnt if cnt > 0 else 0
         me = _coerce_float(me, 0)
         if me > 0:
+            if cat in out and abs(out[cat] - me) > 0.01:
+                ambiguous.add(cat)
             out[cat] = me
+    for cat in ambiguous:
+        out.pop(cat, None)
     return out
 
 
@@ -834,15 +850,19 @@ def _exact_distribution_spec(blueprint_dict):
         marks = sec.get("marks", 0)
         subs = sec.get("subsections") or []
         if subs:
-            total_q = sum(int(_coerce_float(s.get("questions_count") or s.get("questions"), 0))
+            # AI-authored patterns store the subsection count as 'count' (and the type as a
+            # singular 'question_type') — read those too or the spec asks for 0 questions.
+            total_q = sum(int(_coerce_float(s.get("questions_count") or s.get("questions") or s.get("count"), 0))
                           for s in subs if isinstance(s, dict))
             lines.append(f"SECTION {sec_name} ({marks} marks) — generate EXACTLY {total_q} questions:")
             for s in subs:
                 if not isinstance(s, dict):
                     continue
-                qts = s.get("question_types") or [s.get("name", "")]
+                qts = s.get("question_types") or s.get("question_type") or [s.get("name", "")]
+                if isinstance(qts, str):
+                    qts = [qts]
                 typ = qts[0] if qts else s.get("name", "")
-                cnt = int(_coerce_float(s.get("questions_count") or s.get("questions"), 1) or 1)
+                cnt = int(_coerce_float(s.get("questions_count") or s.get("questions") or s.get("count"), 1) or 1)
                 me = s.get("marks_per_question")
                 if me in (None, "", "varies"):
                     me = _coerce_float(s.get("marks"), 0) / (cnt or 1)
@@ -866,6 +886,14 @@ def _regroup_section(questions_list, sec_info):
     """
     if not isinstance(questions_list, list):
         return [(None, questions_list or [])]
+
+    # Slot-authored sections (question_slots) are generated and validated in the
+    # authored per-question order with per-question marks — regrouping by type
+    # would destroy that order, and category-level marks stamping would clobber
+    # legitimately varied marks (two same-category slots with different marks).
+    # Render them exactly as stored.
+    if isinstance(sec_info, dict) and sec_info.get("question_slots"):
+        return [(None, questions_list)]
 
     type_marks = _section_type_marks(sec_info)
     buckets, order_seen = {}, []
@@ -939,13 +967,21 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
         marks = sec_info.get('marks', 0)
         # M-03: include sub-subject name for compound papers
         sub_subject = sec_info.get('section_subject', '') or ''
+        # The blueprint key 'sec' is normally a bare letter ("A"), but AI-generated /
+        # teacher-authored patterns often name the section itself "Section A — Objective
+        # Type" — prefixing "SECTION – " onto that doubles the word ("SECTION – Section
+        # A — Objective Type"). Only add the prefix when 'sec' doesn't already read as one.
+        already_labelled = bool(re.match(r'(?i)^\s*section\b', str(sec)))
         if sub_subject:
             # e.g. "SECTION A — BIOLOGY (26 MARKS)"
-            header_text = f"SECTION {sec} — {sub_subject.upper()} ({marks} MARKS)"
+            prefix = str(sec) if already_labelled else f"SECTION {sec}"
+            header_text = f"{prefix} — {sub_subject.upper()} ({marks} MARKS)"
         elif title and title.lower() not in ('section', sec.lower()):
-            header_text = f"SECTION – {sec}: {title.upper()} ({marks} MARKS)"
+            prefix = str(sec) if already_labelled else f"SECTION – {sec}"
+            header_text = f"{prefix}: {title.upper()} ({marks} MARKS)"
         else:
-            header_text = f"SECTION – {sec} ({marks} MARKS)"
+            prefix = str(sec) if already_labelled else f"SECTION – {sec}"
+            header_text = f"{prefix} ({marks} MARKS)"
         all_questions.append(("header", header_text))
         
         # Get section data - handle both old and new structures
@@ -1015,7 +1051,6 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
             # Strategy 4: Match by section letter ONLY if content also matches
             # This prevents wrong matches like "Section D - Case Based" with "Section D - Long Answer"
             if section_key == sec:
-                import re
                 match = re.search(r'section\s+([a-z])', sec.lower())
                 if match:
                     sec_letter = match.group(1).upper()
@@ -2883,7 +2918,7 @@ def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters
     }
     if additional_context:
         try:
-            ctx_obj = _json.loads(additional_context)
+            ctx_obj = json.loads(additional_context)
             if isinstance(ctx_obj, dict):
                 for _k in ("class_name", "duration", "marks", "test_type", "school_name"):
                     if ctx_obj.get(_k):
@@ -2957,6 +2992,9 @@ def pattern_sections_to_blueprint_dict(pattern):
             'provided_count': q_count,   # questions_count = the full provided set
             # Store raw question_types detail for mixed-marks detection
             'question_type_details': section.get('question_types', []),
+            # Per-question structure (PER_QUESTION_STRUCTURE.md): slots drive the
+            # work order and disable render-time regrouping/marks re-stamping.
+            'question_slots': section.get('question_slots', []),
         }
 
     return blueprint_dict if blueprint_dict else None

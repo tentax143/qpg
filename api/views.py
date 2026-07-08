@@ -248,6 +248,33 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
+    def perform_update(self, serializer):
+        """Slot-authored sections (question_slots): whenever sections are updated
+        (e.g. by the per-question editor), re-normalize the slots, refresh the
+        structure warnings, and re-derive the legacy aggregates so counts/marks/
+        question_types can never drift from the edited slots."""
+        sections = serializer.validated_data.get('sections')
+        if isinstance(sections, list) and any(
+                isinstance(s, dict) and s.get('question_slots') for s in sections):
+            from core import pattern_structure
+            pattern_structure.normalize_slots(sections)
+            for s in sections:
+                if isinstance(s, dict):
+                    s.pop('_structure_warnings', None)
+            # Derive BEFORE validating: on the editor path the edited slots are the
+            # source of truth and the incoming section marks are merely the stale
+            # pre-edit aggregates — flagging that mismatch would be a false warning.
+            # (The generation task validates first, because there the section marks
+            # come from the teacher's text and a mismatch IS a real conflict.)
+            pattern_structure.derive_aggregates_from_slots(sections)
+            for e in pattern_structure.validate_pattern_structure(sections):
+                idx = e.get('section')
+                target = (sections[idx] if idx is not None and 0 <= idx < len(sections)
+                          else (sections[0] if sections else None))
+                if isinstance(target, dict):
+                    target.setdefault('_structure_warnings', []).append(e['msg'])
+        serializer.save()
+
     @staticmethod
     def _template_queryset():
         """Premade patterns owned by the superadmin / seeded — the clone source."""

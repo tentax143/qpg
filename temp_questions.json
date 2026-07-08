@@ -1,172 +1,26 @@
 {
   "meta": {
-    "class": "9",
+    "class": "6",
     "subject": "Social Science",
-    "difficulty": "Easy",
+    "difficulty": "Medium",
     "chapters": [
-      "Understanding Social Science",
-      "Shaping of the Earth’s Surface",
-      "Atmosphere and Climate"
+      "Economic Activities Around Us",
+      "Family and Community",
+      "India's Cultural Roots"
     ],
-    "total_questions": 21,
-    "input_tokens": 19088,
-    "output_tokens": 4756
+    "total_questions": 18,
+    "input_tokens": 39926,
+    "output_tokens": 6552
   },
   "sections": {
-    "Section B — Very Short Answer (VSA)": {
+    "Section B — Very Short Answer": {
       "title": "",
       "section_subject": "",
-      "marks": 4,
-      "partial": false,
-      "errors": [],
-      "grounding_issues": [
-        {
-          "qnum": 2,
-          "text_snippet": "Name the external process which involves the wearing away of the Earth's surface",
-          "issue": "The reference text does not mention external processes like erosion caused by water and wind."
-        }
+      "marks": 2,
+      "partial": true,
+      "errors": [
+        "Q1 [CBQ/source_based]: sub_question marks sum=3.0 != question marks=2.0 — adjust individual sub-question marks"
       ],
-      "quality_flags": [],
-      "mcq_answer_warnings": [],
-      "mcq_answer_corrections": [],
-      "uniqueness_warnings": [],
-      "questions": [
-        {
-          "qnum": 11,
-          "type": "SA",
-          "subtype": "standard",
-          "text": "State the discipline of Social Science that studies systems of governance, power, and citizens' rights and responsibilities.",
-          "marks": 2.0,
-          "answer_explanation": "Political Science is the discipline that analyses systems of governance, power distribution, and the rights and responsibilities of citizens.",
-          "chapter_tag": "Understanding Social Science",
-          "competency_type": "application",
-          "options": {}
-        },
-        {
-          "qnum": 12,
-          "type": "SA",
-          "subtype": "standard",
-          "text": "Name the external process which involves the wearing away of the Earth's surface by agents like water and wind.",
-          "marks": 2.0,
-          "answer_explanation": "The external process is called erosion. It involves the wearing down and transportation of Earth's surface materials by agents like water, wind, and ice.",
-          "chapter_tag": "Shaping of the Earth’s Surface",
-          "competency_type": "recall",
-          "options": {}
-        }
-      ]
-    },
-    "Section C — Short Answer (SA)": {
-      "title": "",
-      "section_subject": "",
-      "marks": 9,
-      "partial": false,
-      "errors": [],
-      "grounding_issues": [
-        {
-          "qnum": 2,
-          "text_snippet": "Describe how wind erosion shapes the land surface. Name two landforms created by",
-          "issue": "The topic of wind erosion and landforms is not covered in the provided reference text."
-        },
-        {
-          "qnum": 3,
-          "text_snippet": "Explain how the greenhouse effect helps in keeping the Earth warm. Name any two ",
-          "issue": "The greenhouse effect and greenhouse gases are not discussed in the provided reference text."
-        }
-      ],
-      "quality_flags": [],
-      "mcq_answer_warnings": [],
-      "mcq_answer_corrections": [],
-      "uniqueness_warnings": [],
-      "questions": [
-        {
-          "qnum": 13,
-          "type": "SA",
-          "subtype": "standard",
-          "text": "Why is Social Science described as a group of related disciplines rather than a single subject? Explain with the help of an example.",
-          "marks": 3.0,
-          "answer_explanation": "Human society is complex and no single field can fully explain it. For example, a drought affects crops (environment/Geography), farmers' incomes (Economics), government relief (Politics), and migration (Society). Different disciplines like Geography, History, Political Science, and Economics together provide a comprehensive understanding.",
-          "chapter_tag": "Understanding Social Science",
-          "competency_type": "constructed",
-          "options": {}
-        },
-        {
-          "qnum": 14,
-          "type": "SA",
-          "subtype": "standard",
-          "text": "Describe how wind erosion shapes the land surface. Name two landforms created by wind erosion.",
-          "marks": 3.0,
-          "answer_explanation": "Wind erosion occurs when strong winds pick up and transport loose sand and soil particles. These particles act as abrasives, wearing away rocks over time. Two landforms created by wind erosion are: (i) Mushroom rocks (or pedestal rocks) and (ii) Deflation hollows (or blowouts).",
-          "chapter_tag": "Shaping of the Earth’s Surface",
-          "competency_type": "constructed",
-          "options": {}
-        },
-        {
-          "qnum": 15,
-          "type": "SA",
-          "subtype": "standard",
-          "text": "Explain how the greenhouse effect helps in keeping the Earth warm. Name any two greenhouse gases.",
-          "marks": 3.0,
-          "answer_explanation": "The greenhouse effect is a natural process where certain gases in the Earth's atmosphere trap some of the Sun's heat. They allow sunlight to pass through but absorb and re-radiate the heat energy, preventing it from escaping back into space, thus keeping the planet warm. Two greenhouse gases are Carbon dioxide (CO²) and Methane (CH⁴).",
-          "chapter_tag": "Atmosphere and Climate",
-          "competency_type": "constructed",
-          "options": {}
-        }
-      ]
-    },
-    "Section D — Long Answer / Map Work": {
-      "title": "",
-      "section_subject": "",
-      "marks": 10,
-      "partial": false,
-      "errors": [],
-      "grounding_issues": [
-        {
-          "qnum": 1,
-          "text_snippet": "Describe the role of wind in the process of erosion and deposition, giving at le",
-          "issue": "The question about wind erosion and landforms is related to Geography but is not addressed or mentioned in the provided NCERT reference text."
-        },
-        {
-          "qnum": 2,
-          "text_snippet": "On the given outline map of India, locate and label the following: (a) A region ",
-          "issue": "The question about rainfall patterns and map labeling is related to Geography but is not addressed or mentioned in the provided NCERT reference text."
-        }
-      ],
-      "quality_flags": [],
-      "mcq_answer_warnings": [],
-      "mcq_answer_corrections": [],
-      "uniqueness_warnings": [],
-      "questions": [
-        {
-          "qnum": 16,
-          "type": "LA",
-          "subtype": "standard",
-          "text": "Describe the role of wind in the process of erosion and deposition, giving at least three examples of landforms created by each. (5 marks)",
-          "marks": 5.0,
-          "or_alternative": "OR\nExplain the various stages in the formation of a river valley from its source to its mouth, describing at least three major landforms created by a river in its course. (5 marks)",
-          "chapter_tag": "Shaping of the Earth’s Surface",
-          "competency_type": "constructed",
-          "answer_explanation": "Model Answer for Wind Erosion & Deposition:\n- Wind erosion occurs through deflation (removal of loose particles) and abrasion (sandblasting of rocks).\n- Erosional landforms include: (i) Mushroom rocks/pedestal rocks (narrow base formed by abrasion), (ii) Yardangs (streamlined ridges in soft rock), (iii) Desert pavement/lag deposits (deflation leaves behind coarse pebbles).\n- Wind deposition occurs when wind speed drops, depositing sand and silt.\n- Depositional landforms include: (i) Sand dunes (ridges/hills of sand - barchan, longitudinal), (ii) Loess plains (thick deposits of fine, fertile silt), (iii) Sand sheets (extensive flat areas of sand).\n- The size of particles transported depends on wind velocity.\n- Vegetation and obstacles influence dune shape and location.",
-          "options": {}
-        },
-        {
-          "qnum": 17,
-          "type": "SA",
-          "subtype": "map_based",
-          "text": "On the given outline map of India, locate and label the following: (a) A region receiving rainfall less than 20 cm annually (b) A region receiving rainfall over 400 cm annually (c) The place where the monsoon first arrives in India (d) A region experiencing a retreating monsoon (e) A hill station with a moderate climate throughout the year",
-          "marks": 5.0,
-          "map_note": "[Attach outline map of India — examiner to supply]",
-          "chapter_tag": "Atmosphere and Climate",
-          "competency_type": "application",
-          "options": {}
-        }
-      ]
-    },
-    "Section E — Case-based Questions": {
-      "title": "",
-      "section_subject": "",
-      "marks": 4,
-      "partial": false,
-      "errors": [],
       "grounding_issues": [],
       "quality_flags": [],
       "mcq_answer_warnings": [],
@@ -174,89 +28,31 @@
       "uniqueness_warnings": [],
       "questions": [
         {
-          "qnum": 18,
+          "qnum": 11,
           "type": "CBQ",
           "subtype": "source_based",
-          "source_text": "In a rural district of India, a severe drought has affected the lives of people in multiple ways. Due to lack of rainfall, crops have failed, leading to a sharp decline in farmers' incomes. The local government has stepped in to provide relief measures, such as subsidised food grains and work under the Mahatma Gandhi National Rural Employment Guarantee Act (MGNREGA). This has prompted political discussions on the efficiency and reach of these schemes. As a result, many farming families have migrated to nearby cities in search of livelihood, altering the social structure of both the villages they left and the urban areas they joined. The community's traditional methods of conserving water and sharing resources, a part of their cultural heritage, are being revisited and discussed. Environmentalists are studying the changing patterns of the local climate and soil, while economists are analysing the impact on the regional economy. Historians are looking at how similar droughts were handled in the past and what lessons can be applied today. This single event of a drought, therefore, touches upon the environment, economy, politics, society, and culture, showing how different aspects of human life are deeply interconnected.",
-          "text": "Read the source above and answer the following:",
-          "marks": 4.0,
-          "chapter_tag": "Understanding Social Science",
+          "source_text": "The Sharma family lives in a village near Varanasi. Grandparents, parents, and two children live together in a joint family. Their daily life involves shared responsibilities. The grandparents oversee the household's morning prayers and share traditional stories with the children. The father works as a carpenter, while the mother teaches at the local primary school. They both contribute their earnings to a common family fund managed by the grandfather. This fund is used for household expenses, children's education, and medical needs. Cooking and cleaning are shared among the women. The family also jointly celebrates all festivals, inviting relatives and neighbours.",
+          "text": "Attempt any 2 of the following 3:",
+          "marks": 2.0,
+          "chapter_tag": "Family and Community",
           "competency_type": "application",
           "sub_questions": [
             {
-              "text": "The case study of the drought demonstrates that Social Science is not a single subject but a group of disciplines. Which of the following disciplines would primarily study the 'changing patterns of the local climate and soil' mentioned in the passage?",
+              "text": "Based on the case, identify two resources that are shared within the Sharma joint family.",
               "marks": 1,
-              "answer_explanation": "Geography is the discipline that studies the Earth, its environments, and the relationships between people and their surroundings, including climate and soil patterns."
+              "answer_explanation": "Financial resources (common family fund/earnings) and time/labour (shared cooking, cleaning, childcare)."
             },
             {
-              "text": "The passage states that historians are looking at how similar droughts were handled in the past. What is the primary focus of the discipline of History?",
+              "text": "How does the joint family structure, as seen in the Sharma family, support the care of the elderly and the young?",
               "marks": 1,
-              "answer_explanation": "History examines the human past and helps us understand how societies change over time, which includes studying past events and responses."
+              "answer_explanation": "It provides emotional/physical care for the elderly (e.g., being part of daily life) and allows shared supervision and cultural transmission for the young children."
             },
             {
-              "text": "The discussion on government relief schemes and their efficiency falls under the domain of which Social Science discipline?",
+              "text": "State one way in which the Sharma family's economic activities contribute to the well-being of the wider community.",
               "marks": 1,
-              "answer_explanation": "Political Science analyses systems of governance, power, and public policies, which includes the implementation and efficiency of government schemes."
-            },
-            {
-              "text": "The migration of farming families to cities and its impact on social structure is a key concern for which of the following disciplines?",
-              "marks": 1,
-              "answer_explanation": "Sociology, which is part of the broader Social Science family, explores social relationships, structures, and changes within society, such as migration patterns."
+              "answer_explanation": "The father's carpentry provides goods/services to the community, and the mother's teaching educates community children."
             }
           ],
-          "options": {}
-        }
-      ]
-    },
-    "Section F — Map or Diagram": {
-      "title": "",
-      "section_subject": "",
-      "marks": 3,
-      "partial": false,
-      "errors": [],
-      "grounding_issues": [
-        {
-          "qnum": 1,
-          "text_snippet": "On the given outline map of India, locate and label the following: (a) A state w",
-          "issue": "The question refers to Panchayati Raj institutions and social movements for effective governance, which are related to Political Science and Sociology. While the reference text mentions Political Science and the broader Social Science disciplines, it does not specifically discuss Panchayati Raj institutions or social movements in governance."
-        }
-      ],
-      "quality_flags": [],
-      "mcq_answer_warnings": [],
-      "mcq_answer_corrections": [],
-      "uniqueness_warnings": [],
-      "questions": [
-        {
-          "qnum": 19,
-          "type": "SA",
-          "subtype": "map_based",
-          "text": "On the given outline map of India, locate and label the following: (a) A state with extensive Panchayati Raj institutions (b) A state where a major social movement for effective governance has historically occurred",
-          "marks": 1.0,
-          "map_note": "[Attach outline map of India — examiner to supply]",
-          "chapter_tag": "Understanding Social Science",
-          "competency_type": "application",
-          "options": {}
-        },
-        {
-          "qnum": 20,
-          "type": "SA",
-          "subtype": "map_based",
-          "text": "On the given outline map of India, locate and label the following: (a) An area in Northern India known for major erosional landforms (b) An area in Southern India known for its distinct plateau landform shaped by geological processes",
-          "marks": 1.0,
-          "map_note": "[Attach outline map of India — examiner to supply]",
-          "chapter_tag": "Shaping of the Earth’s Surface",
-          "competency_type": "application",
-          "options": {}
-        },
-        {
-          "qnum": 21,
-          "type": "SA",
-          "subtype": "map_based",
-          "text": "On the given outline map of India, locate and label the following: (a) A region that receives very low annual rainfall (b) A region that experiences a very cold desert type of climate",
-          "marks": 1.0,
-          "map_note": "[Attach outline map of India — examiner to supply]",
-          "chapter_tag": "Atmosphere and Climate",
-          "competency_type": "application",
           "options": {}
         }
       ]
@@ -276,145 +72,109 @@
         {
           "qnum": 1,
           "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): To understand the impact of a drought, one must examine it from the perspectives of Geography, Economics, and Political Science.\nReason (R): Social Science is a group of related disciplines, each focusing on a different aspect of human life, to provide a comprehensive understanding.",
+          "subtype": "standard",
+          "text": "According to the classification of economic sectors, which of the following activities is an example of a tertiary sector activity?",
           "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
+            "a": "Cultivating vegetables on a farm",
+            "b": "Assembling mobile phones in a factory",
+            "c": "Providing banking services to customers",
+            "d": "Cutting trees in a forest for timber"
           },
-          "answer": "a",
-          "answer_explanation": "Both statements are true. The reason correctly explains why a multi-disciplinary approach is needed.",
+          "answer": "c",
+          "answer_explanation": "Banking is a service that supports other economic activities, making it a tertiary sector activity.",
           "marks": 1.0,
-          "chapter_tag": "Understanding Social Science",
+          "chapter_tag": "Economic Activities Around Us",
           "competency_type": "application"
         },
         {
           "qnum": 2,
           "type": "MCQ",
           "subtype": "standard",
-          "text": "Which of the following disciplines primarily studies systems of governance and citizens' rights?",
+          "text": "Study the diagram above and answer: Which economic sector includes activities that convert raw materials into finished goods?",
           "options": {
-            "a": "History",
-            "b": "Geography",
-            "c": "Political Science",
-            "d": "Economics"
+            "a": "Primary Sector",
+            "b": "Secondary Sector",
+            "c": "Tertiary Sector",
+            "d": "Quaternary Sector"
           },
-          "answer": "c",
-          "answer_explanation": "Political Science analyses systems of governance, power, and the rights and responsibilities of citizens.",
+          "answer": "b",
+          "answer_explanation": "The secondary sector involves manufacturing and construction, which convert raw materials into finished products.",
           "marks": 1.0,
-          "chapter_tag": "Understanding Social Science",
-          "competency_type": "application"
+          "chapter_tag": "Economic Activities Around Us",
+          "competency_type": "application",
+          "image_prompt": "A simple diagram showing a flowchart: 'NATURE' (with icons of trees and minerals) points to 'PRIMARY SECTOR', which points to 'SECONDARY SECTOR' (with a factory icon), which points to 'TERTIARY SECTOR' (with a truck and shopping cart icon)."
         },
         {
           "qnum": 3,
-          "type": "MCQ",
+          "type": "VSA",
           "subtype": "standard",
-          "text": "Which of the following is a primary agent of erosion that shapes the Earth's surface?",
-          "image_prompt": "A simple line drawing showing a river flowing through a valley with arrows indicating the movement of water eroding the riverbanks.",
-          "options": {
-            "a": "Volcanic eruption",
-            "b": "Running water",
-            "c": "Earthquake",
-            "d": "Glaciers"
-          },
-          "answer": "b",
-          "answer_explanation": "Running water (rivers, streams) is a major agent of erosion, constantly wearing away and transporting Earth's materials.",
+          "text": "State whether the following statement is True or False: In a nuclear family, resources and responsibilities are typically shared only among the parents and their children.",
+          "answer_explanation": "True. A nuclear family, consisting of parents and their children, typically shares resources and responsibilities within this smaller unit.",
           "marks": 1.0,
-          "chapter_tag": "Shaping of the Earth’s Surface",
-          "competency_type": "recall"
+          "chapter_tag": "Family and Community",
+          "competency_type": "recall",
+          "options": {}
         },
         {
           "qnum": 4,
-          "type": "MCQ",
+          "type": "VSA",
           "subtype": "standard",
-          "text": "The layer of gases surrounding the Earth is called the:",
-          "options": {
-            "a": "Hydrosphere",
-            "b": "Lithosphere",
-            "c": "Atmosphere",
-            "d": "Biosphere"
-          },
-          "answer": "c",
-          "answer_explanation": "The atmosphere is the blanket of air (gases) surrounding the Earth.",
+          "text": "State whether the following statement is True or False: Folk songs and traditional art forms are not considered part of India's ancient cultural heritage.",
+          "answer_explanation": "False. Folk songs and traditional art forms are integral parts of India's rich and diverse ancient cultural heritage.",
           "marks": 1.0,
-          "chapter_tag": "Atmosphere and Climate",
-          "competency_type": "recall"
+          "chapter_tag": "India's Cultural Roots",
+          "competency_type": "recall",
+          "options": {}
         },
         {
           "qnum": 5,
-          "type": "MCQ",
-          "subtype": "assertion_reason",
-          "text": "Assertion (A): Social Science helps us understand how past decisions shape the present.\nReason (R): Subjects like Physics and Chemistry focus on the natural world, while Social Science focuses on society and human interactions.",
-          "options": {
-            "a": "Both A and R are true and R is the correct explanation of A",
-            "b": "Both A and R are true but R is NOT the correct explanation of A",
-            "c": "A is true but R is false",
-            "d": "A is false but R is true"
-          },
-          "answer": "b",
-          "answer_explanation": "Both statements are individually true, but the reason (R) does not explain the assertion (A). A is explained by the fact that History, a part of Social Science, examines the human past.",
+          "type": "VSA",
+          "subtype": "standard",
+          "text": "Match the following economic activities with their correct sector:\n(i) Mining  (ii) Teaching  (iii) Manufacturing\n(A) Primary Sector  (B) Secondary Sector  (C) Tertiary Sector",
+          "answer_explanation": "(i) - (A), (iii) - (B), (ii) - (C). Mining is primary, manufacturing is secondary, and teaching is a tertiary/service activity.",
           "marks": 1.0,
-          "chapter_tag": "Understanding Social Science",
-          "competency_type": "application"
+          "chapter_tag": "Economic Activities Around Us",
+          "competency_type": "application",
+          "options": {}
         },
         {
           "qnum": 6,
-          "type": "MCQ",
+          "type": "VSA",
           "subtype": "standard",
-          "text": "Which process involves the breaking down of rocks into smaller particles by physical, chemical, or biological means?",
-          "options": {
-            "a": "Erosion",
-            "b": "Deposition",
-            "c": "Weathering",
-            "d": "Transportation"
-          },
-          "answer": "c",
-          "answer_explanation": "Weathering is the process of breaking down rocks in their place, while erosion involves the movement of the weathered material.",
+          "text": "Match the following features with the correct type of family system:\n(i) Shared caregiving among many adult members.\n(ii) Decision-making primarily by parents.\n(A) Joint Family  (B) Nuclear Family",
+          "answer_explanation": "(i) - (A), (ii) - (B). Joint families involve shared responsibilities, while nuclear families typically have parents as the primary decision-makers.",
           "marks": 1.0,
-          "chapter_tag": "Shaping of the Earth’s Surface",
-          "competency_type": "recall"
+          "chapter_tag": "Family and Community",
+          "competency_type": "application",
+          "options": {}
         },
         {
           "qnum": 7,
-          "type": "MCQ",
+          "type": "VSA",
           "subtype": "standard",
-          "text": "The study of how societies produce, distribute, and utilise resources is the focus of:",
-          "options": {
-            "a": "Geography",
-            "b": "History",
-            "c": "Political Science",
-            "d": "Economics"
-          },
-          "answer": "d",
-          "answer_explanation": "Economics explores how societies produce, distribute, and utilise resources to meet their needs.",
+          "text": "Fill in the blank: In the example of the dairy cooperative from Gujarat, the farmer selling milk represents the _______ sector, while the truck driver transporting it represents the _______ sector.",
+          "answer_explanation": "primary, tertiary. The farmer's activity is primary, and transportation is a service, which is tertiary.",
           "marks": 1.0,
-          "chapter_tag": "Understanding Social Science",
-          "competency_type": "recall"
+          "chapter_tag": "Economic Activities Around Us",
+          "competency_type": "application",
+          "options": {}
         },
         {
           "qnum": 8,
-          "type": "MCQ",
+          "type": "VSA",
           "subtype": "standard",
-          "text": "The average weather conditions of a place over a long period (30 years or more) is called its:",
-          "options": {
-            "a": "Weather",
-            "b": "Humidity",
-            "c": "Climate",
-            "d": "Temperature"
-          },
-          "answer": "c",
-          "answer_explanation": "Climate refers to the long-term pattern of weather in a particular area, while weather describes short-term atmospheric conditions.",
+          "text": "Fill in the blank: The concept of 'Mutual Enrichment' in India's cultural history refers to the interaction and exchange between _______ traditions and mainstream Hindu traditions.",
+          "answer_explanation": "tribal. The textbook highlights the mutual enrichment between tribal and mainstream Hindu traditions.",
           "marks": 1.0,
-          "chapter_tag": "Atmosphere and Climate",
-          "competency_type": "recall"
+          "chapter_tag": "India's Cultural Roots",
+          "competency_type": "recall",
+          "options": {}
         },
         {
           "qnum": 9,
           "type": "MCQ",
           "subtype": "assertion_reason",
-          "text": "Assertion (A): Wind is an agent of erosion that can shape landscapes like deserts.\nReason (R): Wind picks up and carries sand and dust, which abrades rock surfaces.",
+          "text": "Assertion (A): A teacher's work is considered an economic activity.\nReason (R): Teaching creates monetary value by providing a service for which the teacher is paid.",
           "options": {
             "a": "Both A and R are true and R is the correct explanation of A",
             "b": "Both A and R are true but R is NOT the correct explanation of A",
@@ -422,27 +182,230 @@
             "d": "A is false but R is true"
           },
           "answer": "a",
-          "answer_explanation": "Both statements are true. The reason correctly explains how wind acts as an agent of erosion.",
+          "answer_explanation": "Both are true. Teaching is a tertiary sector economic activity as it provides a service (education) and creates monetary value through salary, which is the defining characteristic of an economic activity.",
           "marks": 1.0,
-          "chapter_tag": "Shaping of the Earth’s Surface",
+          "chapter_tag": "Economic Activities Around Us",
           "competency_type": "application"
         },
         {
           "qnum": 10,
           "type": "MCQ",
-          "subtype": "standard",
-          "text": "Which gas is most abundant in the Earth's atmosphere?",
+          "subtype": "assertion_reason",
+          "text": "Assertion (A): India's cultural heritage is said to be 'continuous and living'.\nReason (R): Ancient Indian practices, art forms, and festivals are no longer observed in modern times.",
           "options": {
-            "a": "Oxygen",
-            "b": "Carbon Dioxide",
-            "c": "Nitrogen",
-            "d": "Argon"
+            "a": "Both A and R are true and R is the correct explanation of A",
+            "b": "Both A and R are true but R is NOT the correct explanation of A",
+            "c": "A is true but R is false",
+            "d": "A is false but R is true"
           },
           "answer": "c",
-          "answer_explanation": "Nitrogen makes up about 78% of the Earth's atmosphere, making it the most abundant gas.",
+          "answer_explanation": "A is true as India's ancient culture continues to evolve and thrive. R is false because many ancient practices and festivals are actively observed today, which is why the culture is considered living.",
           "marks": 1.0,
-          "chapter_tag": "Atmosphere and Climate",
-          "competency_type": "recall"
+          "chapter_tag": "India's Cultural Roots",
+          "competency_type": "application"
+        }
+      ]
+    },
+    "Section C — Short Answer": {
+      "title": "",
+      "section_subject": "",
+      "marks": 3,
+      "partial": true,
+      "errors": [
+        "Q1 [CBQ/source_based]: sub_question marks sum=4.0 != question marks=3.0 — adjust individual sub-question marks"
+      ],
+      "grounding_issues": [],
+      "quality_flags": [],
+      "mcq_answer_warnings": [],
+      "mcq_answer_corrections": [],
+      "uniqueness_warnings": [],
+      "questions": [
+        {
+          "qnum": 12,
+          "type": "CBQ",
+          "subtype": "source_based",
+          "source_text": "Riya is visiting the ancient Bhoramdeo Temple in Chhattisgarh, a site associated with both Hindu and tribal cultural traditions. She notices intricate carvings depicting stories from Hindu epics alongside sculptures of local tribal deities and forest animals. The temple guide explains that the temple's architectural style also blends features from Nagara (North Indian) temple architecture with elements from local tribal building techniques. This fusion is a testament to the long-standing cultural exchange and mutual enrichment that has shaped the region's heritage.",
+          "text": "Attempt any 3 of the following 4:",
+          "marks": 3.0,
+          "chapter_tag": "India's Cultural Roots",
+          "competency_type": "application",
+          "sub_questions": [
+            {
+              "text": "Based on the source, explain one way in which the Bhoramdeo Temple illustrates the concept of 'mutual enrichment' between different traditions.",
+              "marks": 1,
+              "answer_explanation": "The temple shows mutual enrichment by blending architectural styles (Nagara features with tribal techniques) and artistic themes (Hindu epics with tribal deities). This shows how traditions influenced and enriched each other."
+            },
+            {
+              "text": "Apart from architecture, mention two other forms in which such cultural fusion is preserved in India's heritage, as per your textbook learning.",
+              "marks": 1,
+              "answer_explanation": "Two other forms could be folk music and dance (which blend various traditions) and festivals (where rituals and celebrations from different communities merge)."
+            },
+            {
+              "text": "Why is it important to study and preserve sites like the Bhoramdeo Temple? Give one reason.",
+              "marks": 1,
+              "answer_explanation": "It is important because such sites are living records of India's composite culture, showing how diverse communities have coexisted and contributed to a shared heritage over centuries."
+            },
+            {
+              "text": "How does the presence of both tribal deities and Hindu deities in one temple complex help in promoting social harmony?",
+              "marks": 1,
+              "answer_explanation": "It promotes social harmony by creating a shared sacred space that is respected by different communities, fostering a sense of inclusivity, mutual respect, and collective identity."
+            }
+          ],
+          "options": {}
+        }
+      ]
+    },
+    "Section D — Long Answer / Map Work": {
+      "title": "",
+      "section_subject": "",
+      "marks": 10,
+      "partial": false,
+      "errors": [],
+      "grounding_issues": [
+        {
+          "qnum": 2,
+          "text_snippet": "Describe the roles and responsibilities of different members (e.g., grandparents",
+          "issue": "The topic of joint family roles and their emotional and economic contributions is not covered in the provided reference text."
+        }
+      ],
+      "quality_flags": [],
+      "mcq_answer_warnings": [],
+      "mcq_answer_corrections": [],
+      "uniqueness_warnings": [],
+      "questions": [
+        {
+          "qnum": 13,
+          "type": "LA",
+          "subtype": "standard",
+          "text": "Explain the process of converting natural raw materials into a finished product available for consumption, using the example of milk from Anand district, Gujarat. Describe the roles of primary, secondary, and tertiary sectors in this process.",
+          "marks": 5.0,
+          "answer_explanation": "• Primary Sector: Farmers rear livestock (cows/buffaloes), which is a direct dependence on nature to produce the raw material - milk.\n• Interdependence: This milk is collected and sold to a dairy cooperative, which acts as a link.\n• Secondary Sector: At the dairy processing plant, the raw milk undergoes various processes like pasteurization, separation, and conversion into products like butter, cheese, yogurt, or packaged milk.\n• Tertiary Sector: The processed dairy products are transported by trucks (transportation service) to markets and retail stores (trade).\n• Final Consumption: The products are sold to consumers through shops, completing the cycle from farm to plate, demonstrating how all three sectors are interconnected.",
+          "chapter_tag": "Economic Activities Around Us",
+          "competency_type": "constructed",
+          "or_alternative": "‘Economic activities create monetary value, while non-economic activities are also crucial for society.’  In the light of this statement, compare and contrast the characteristics of economic and non-economic activities with suitable examples.",
+          "options": {}
+        },
+        {
+          "qnum": 14,
+          "type": "LA",
+          "subtype": "standard",
+          "text": "Describe the roles and responsibilities of different members (e.g., grandparents, parents, children) within a joint family. How does this structure contribute to the emotional and economic well-being of its members?",
+          "marks": 5.0,
+          "answer_explanation": "• Role of Grandparents: They often provide childcare, pass on cultural values, traditions, and life skills to younger generations, and may offer guidance based on experience.\n• Role of Parents: Typically, they are the primary earners and decision-makers, responsible for the financial needs and education of the children. They also share caregiving duties.\n• Role of Children: They assist in household chores according to their age, focus on studies, and learn social skills and cooperation by interacting with multiple family members.\n• Emotional Well-being: Provides a strong support system during crises, reduces feelings of isolation, and offers constant companionship and shared joys/sorrows.\n• Economic Well-being: Pooling of resources (income, property) leads to financial stability, sharing of household expenses reduces individual burden, and shared caregiving allows more adults to pursue economic activities.",
+          "chapter_tag": "Family and Community",
+          "competency_type": "constructed",
+          "or_alternative": "A community is not just a group of people living in the same area; it is built on shared values and cooperation. Explain any three ways in which active community participation can help in the overall development and problem-solving of a locality.",
+          "options": {}
+        }
+      ]
+    },
+    "Section F — Map or Diagram": {
+      "title": "",
+      "section_subject": "",
+      "marks": 3,
+      "partial": false,
+      "errors": [],
+      "grounding_issues": [
+        {
+          "qnum": 1,
+          "text_snippet": "On the given outline map of India, locate and label the following: (a) A major r",
+          "issue": "The question is about locating specific economic activities (dairy farming and iron ore mining) on a map of India, which is not discussed or referenced in the provided text."
+        },
+        {
+          "qnum": 2,
+          "text_snippet": "On the given outline map of India, locate and label the following: (a) A state w",
+          "issue": "The question is about locating a state with community-based festivals and a historical site, which is unrelated to the content of the reference text."
+        },
+        {
+          "qnum": 3,
+          "text_snippet": "On the given outline map of India, locate and label the following: (a) The site ",
+          "issue": "The question is about locating an ancient university and a classical dance region on a map, which is not covered in the provided reference text."
+        }
+      ],
+      "quality_flags": [],
+      "mcq_answer_warnings": [],
+      "mcq_answer_corrections": [],
+      "uniqueness_warnings": [],
+      "questions": [
+        {
+          "qnum": 16,
+          "type": "SA",
+          "subtype": "map_based",
+          "text": "On the given outline map of India, locate and label the following: (a) A major region for dairy farming and cooperative dairy activity (b) A major iron ore mining region",
+          "marks": 1.0,
+          "map_note": "[Attach outline map of India — examiner to supply]",
+          "chapter_tag": "Economic Activities Around Us",
+          "competency_type": "application",
+          "options": {}
+        },
+        {
+          "qnum": 17,
+          "type": "SA",
+          "subtype": "map_based",
+          "text": "On the given outline map of India, locate and label the following: (a) A state where community-based festivals like Bihu or Pongal are prominently celebrated (b) A historical site associated with ancient community water management systems",
+          "marks": 1.0,
+          "map_note": "[Attach outline map of India — examiner to supply]",
+          "chapter_tag": "Family and Community",
+          "competency_type": "application",
+          "options": {}
+        },
+        {
+          "qnum": 18,
+          "type": "SA",
+          "subtype": "map_based",
+          "text": "On the given outline map of India, locate and label the following: (a) The site of a major ancient university that was a centre of learning (b) A region known for its classical dance form like Bharatanatyam or Odissi",
+          "marks": 1.0,
+          "map_note": "[Attach outline map of India — examiner to supply]",
+          "chapter_tag": "India's Cultural Roots",
+          "competency_type": "application",
+          "options": {}
+        }
+      ]
+    },
+    "Section E — Case Based Questions": {
+      "title": "",
+      "section_subject": "",
+      "marks": 4,
+      "partial": false,
+      "errors": [],
+      "grounding_issues": [],
+      "quality_flags": [],
+      "mcq_answer_warnings": [],
+      "mcq_answer_corrections": [],
+      "uniqueness_warnings": [],
+      "questions": [
+        {
+          "qnum": 15,
+          "type": "CBQ",
+          "subtype": "source_based",
+          "source_text": "The Vedas, composed over 3000 years ago, are a cornerstone of India's cultural heritage. They are not just religious texts but also vast repositories of knowledge, containing hymns, philosophical ideas, and insights into the social life of ancient India. Over the millennia, India's culture has been shaped by the continuous interaction, exchange, and mutual enrichment of diverse traditions. This includes the philosophical depth of the Upanishads, the devotional fervour of the Bhakti and Sufi movements, the artistic expressions found in classical dance forms like Bharatanatyam and Odissi, and the vibrant local festivals and folk arts that vary from region to region. India's culture is also deeply rooted in its respect for nature, as seen in the reverence for rivers, mountains, and trees. This long, unbroken history of cultural evolution, where old ideas are reinterpreted and new influences are absorbed, gives India its unique and rich cultural identity.",
+          "text": "Read the source above and answer the following:",
+          "marks": 4.0,
+          "chapter_tag": "India's Cultural Roots",
+          "competency_type": "application",
+          "sub_questions": [
+            {
+              "text": "Which of the following is NOT a characteristic feature of India's cultural evolution as described in the passage?  (A) It is a static culture that has remained unchanged for centuries.  (B) It involves continuous interaction between diverse traditions.  (C) New influences are absorbed and old ideas are reinterpreted.  (D) It shows a deep-rooted respect for the natural world.",
+              "marks": 1,
+              "answer_explanation": "The passage explicitly states that India's culture evolved through 'continuous interaction, exchange, and mutual enrichment' and that 'old ideas are reinterpreted and new influences are absorbed'. Option (A) contradicts this dynamic view."
+            },
+            {
+              "text": "The Vedas are significant to India's cultural heritage because:  (A) They are the only source of ancient Indian history.  (B) They are purely religious texts with no other value.  (C) They are repositories of knowledge beyond just religion.  (D) They were composed just a few hundred years ago.",
+              "marks": 1,
+              "answer_explanation": "The passage states the Vedas are 'not just religious texts but also vast repositories of knowledge', making option (C) correct."
+            },
+            {
+              "text": "Name any one movement mentioned in the passage that contributed to India's devotional traditions.",
+              "marks": 1,
+              "answer_explanation": "The Bhakti movement OR the Sufi movement is the correct answer as per the passage."
+            },
+            {
+              "text": "Which ancient Indian texts followed the Vedas and explored philosophical ideas?",
+              "marks": 1,
+              "answer_explanation": "The Upanishads, as mentioned in the passage, are the ancient texts known for their philosophical depth."
+            }
+          ],
+          "options": {}
         }
       ]
     }
@@ -451,22 +414,22 @@
     "coherent": true,
     "issues": [],
     "chapter_balance": {
-      "Understanding Social Science": "25%",
-      "Shaping of the Earth’s Surface": "35%",
-      "Atmosphere and Climate": "40%"
+      "Family and Community": "35%",
+      "India's Cultural Roots": "30%",
+      "Economic Activities Around Us": "35%"
     },
     "missing_chapters": [],
-    "recommendation": "The distribution of chapters is balanced with no single chapter over-represented. All requested chapters are covered. The question types align with CBSE expectations, progressing from MCQs to SA and LA types. No structural issues identified."
+    "recommendation": ""
   },
   "final_audit": {
-    "quality_score": 5,
-    "ready_to_issue": "no",
+    "quality_score": 6,
+    "ready_to_issue": "needs-minor-fix",
     "top_issues": [
-      "Multiple questions are not grounded in the provided NCERT syllabus (e.g., wind erosion, greenhouse effect, Panchayati Raj).",
-      "Significant concept duplication across sections (e.g., Q11 & Q2, Q14 & Q16, Q17 & Q21).",
-      "Section B VSA Q2 references external processes not mentioned in the text."
+      "High concept overlap between Q3, Q11, and Q14 on the same topic (repetitive testing).",
+      "Section D Q2 and all of Section F (Map Work) are ungrounded/not based on the provided syllabus or text.",
+      "Significant overlap between Q8, Q12, and Q15 on another topic, reducing question variety."
     ],
-    "verdict": "Paper requires major revisions to align with syllabus and reduce redundancy.",
-    "total_warnings": 24
+    "verdict": "Paper requires revision to reduce repetition and align map/long answer questions with the prescribed content.",
+    "total_warnings": 28
   }
 }

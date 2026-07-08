@@ -91,8 +91,28 @@ export default function EditPaperPage() {
 
       if (editable) applyEditable(iDoc);
 
+      // Shrink the page to fit the iframe's width when it's narrower than the document's
+      // true page width (always the case on phones — docx-preview renders at real page
+      // size regardless of viewport). `zoom` (not `transform`) is layout-affecting, so
+      // scrollHeight/resizeIframe and contentEditable hit-testing still work afterward.
+      // wrapper.scrollWidth is a "local" (pre-zoom) measurement — unaffected by a zoom
+      // already applied to the wrapper itself — so this is safe to recompute repeatedly
+      // as the true content width shifts (it's 0 right after renderAsync resolves, then
+      // grows again around docx-preview's own ~500ms tab-stop pass below), re-snapping
+      // the fit each time rather than needing to land on one "correct" moment.
+      let fitScale = 1;
+      const fitToWidth = () => {
+        const wrapper = iDoc.querySelector('.docx-wrapper');
+        if (!wrapper) return;
+        const available = iDoc.documentElement.clientWidth;
+        const natural = wrapper.scrollWidth;
+        fitScale = (available > 0 && natural > available) ? Math.max(0.25, (available - 6) / natural) : 1;
+        wrapper.style.zoom = fitScale;
+      };
+
       resizeIframe(iDoc);
-      setTimeout(() => resizeIframe(iDoc), 600);
+      setTimeout(() => { fitToWidth(); resizeIframe(iDoc); }, 100);
+      setTimeout(() => { fitToWidth(); resizeIframe(iDoc); }, 600);
 
       // PREVIEW-ONLY FIX. docx-preview's experimental tab engine double-counts a paragraph's
       // left margin when sizing LEFT tab stops (updateTabStop: pOffset = pbb.left + marginLeft,
@@ -113,9 +133,12 @@ export default function EditPaperPage() {
             const gap = targetX - tab.getBoundingClientRect().left;
             tab.style.display = 'inline-block';
             tab.style.wordSpacing = 'normal';
-            tab.style.width = `${gap > 0 ? gap : 0}px`;
+            // getBoundingClientRect() is post-zoom; .style.width is a pre-zoom local value
+            // that the wrapper's zoom re-multiplies, so undo that factor here.
+            tab.style.width = `${gap > 0 ? gap / fitScale : 0}px`;
             tab.textContent = '';
           });
+          fitToWidth();   // the tab resize above can change the page's true content width
           resizeIframe(iDoc);
         } catch (_e) { /* preview-only cosmetic; ignore */ }
       }, 750);
@@ -462,22 +485,24 @@ export default function EditPaperPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           {/* View / Edit toggle */}
           <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
             <button
               onClick={() => switchMode('view')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors
+              aria-label="Preview"
+              className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-medium rounded-md transition-colors
                 ${mode === 'view' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
             >
-              <Eye className="w-3.5 h-3.5" /> Preview
+              <Eye className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Preview</span>
             </button>
             <button
               onClick={() => switchMode('edit')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors
+              aria-label="Edit"
+              className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-medium rounded-md transition-colors
                 ${mode === 'edit' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
             >
-              <Pencil className="w-3.5 h-3.5" /> Edit
+              <Pencil className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Edit</span>
             </button>
           </div>
 
@@ -487,31 +512,33 @@ export default function EditPaperPage() {
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={imgUploading}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50"
+                aria-label="Add Image"
+                className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50"
               >
                 {imgUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImagePlus className="w-3.5 h-3.5" />}
-                Add Image
+                <span className="hidden sm:inline">Add Image</span>
               </button>
             </>
           )}
 
           <button onClick={handleRegenerate} disabled={regenerating || saving || exporting}
             title="Regenerate fresh questions using this paper's pattern, class, subject and chapters"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-lg transition-colors disabled:opacity-50">
+            aria-label="Regenerate"
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-lg transition-colors disabled:opacity-50">
             {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-            {regenerating ? 'Regenerating…' : 'Regenerate'}
+            <span className="hidden sm:inline">{regenerating ? 'Regenerating…' : 'Regenerate'}</span>
           </button>
 
-          <button onClick={handleSave} disabled={saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors disabled:opacity-50">
+          <button onClick={handleSave} disabled={saving} aria-label="Save"
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors disabled:opacity-50">
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-            Save
+            <span className="hidden sm:inline">Save</span>
           </button>
 
-          <button onClick={handleExport} disabled={exporting}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50 shadow-sm">
+          <button onClick={handleExport} disabled={exporting} aria-label="Export DOCX"
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50 shadow-sm">
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
-            Export DOCX
+            <span className="hidden sm:inline">Export DOCX</span>
           </button>
 
           {/* Change-log panel toggle */}
@@ -569,7 +596,7 @@ export default function EditPaperPage() {
             onChange={e => setAiInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAiCorrect(); } }}
             placeholder="Tell me what to change… e.g. move Q5 to Section B · add a 2-mark question on fractions to Section A · delete Q3 · swap Q2 and Q4 · make Q7 harder · change Q3 marks to 5"
-            className="flex-1 text-sm text-slate-200 placeholder-slate-500 focus:outline-none bg-transparent"
+            className="flex-1 min-w-0 text-sm text-slate-200 placeholder-slate-500 focus:outline-none bg-transparent"
             disabled={aiLoading}
           />
           <button

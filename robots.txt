@@ -5,7 +5,6 @@
 # If you're a curious human who typed /robots.txt manually: hi. You have good instincts.
 #
 # If you're GPTBot, ClaudeBot, or any AI training crawler:
-# We used AI to build this. We respect the irony. Please respect the disallow.
 #
 # If you're Googlebot: we're flattered, but this is an internal tool. Move along.
 #

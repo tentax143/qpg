@@ -8,12 +8,24 @@ import {
   User, Hash, Zap, BookOpen, Layers, 
   ChevronRight, ChevronDown, ChevronUp, Code,
   Settings, Info, ShieldCheck, Download, Plus,
-  Clock, GraduationCap, CheckCircle, FileText
+  Clock, GraduationCap, CheckCircle, FileText,
+  AlertTriangle, ListOrdered
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
+
+// Canonical slot types (core/pattern_structure.py SLOT_TYPE_LABEL)
+const SLOT_TYPE_LABELS = {
+  mcq: 'MCQ', ar: 'Assertion-Reason', fill_blank: 'Fill in the blank',
+  true_false: 'True/False', matching: 'Matching', one_word: 'One-word answer',
+  error_correction: 'Error correction', rewrite: 'Rewrite the sentence',
+  punctuation: 'Punctuation', vsa: 'Very Short Answer', sa: 'Short Answer',
+  la: 'Long Answer', writing: 'Writing', cbq: 'Case-Based',
+  extract: 'Extract-Based', map: 'Map-Based',
+};
+const slotTypeLabel = (t) => SLOT_TYPE_LABELS[t] || t || '—';
 
 export default function PatternDetailPage() {
   const { id } = useParams();
@@ -180,6 +192,16 @@ export default function PatternDetailPage() {
                               Choice{section.choices ? ` (${section.choices})` : ''}
                             </span>
                           )}
+                          {section.question_slots?.length > 0 && (
+                            <span className="px-2 py-0.5 bg-teal-50 text-teal-700 text-[9px] font-black uppercase rounded-full border border-teal-100">
+                              Per-Question
+                            </span>
+                          )}
+                          {section._structure_warnings?.length > 0 && (
+                            <span className="px-2 py-0.5 bg-amber-50 text-amber-700 text-[9px] font-black uppercase rounded-full border border-amber-100">
+                              {section._structure_warnings.length} Warning{section._structure_warnings.length > 1 ? 's' : ''}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -189,6 +211,84 @@ export default function PatternDetailPage() {
                   {expandedSections[idx] && (
                     <div className="px-8 pb-8 pt-2 bg-slate-50/30">
                       <div className="space-y-6">
+
+                        {/* Structure warnings (validator found teacher-source conflicts) */}
+                        {section._structure_warnings?.length > 0 && (
+                          <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
+                            <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-1">Structure Warnings</p>
+                              <ul className="space-y-1">
+                                {section._structure_warnings.map((w, wi) => (
+                                  <li key={wi} className="text-xs font-bold text-amber-800/80 leading-relaxed">{w}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Per-question structure (question_slots) */}
+                        {section.question_slots?.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <ListOrdered size={14} className="text-teal-600" />
+                              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Per-Question Structure</p>
+                            </div>
+                            <div className="rounded-2xl overflow-hidden border border-gray-100">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="bg-gray-50 border-b border-gray-100">
+                                    <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Q#</th>
+                                    <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Type</th>
+                                    <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Topic / Format</th>
+                                    <th className="text-center px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Marks</th>
+                                    <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Details</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {section.question_slots.map((slot, si) => (
+                                    <tr key={si} className="border-t border-gray-50 hover:bg-teal-50/30 transition-colors bg-white">
+                                      <td className="px-3 py-2 font-mono text-[10px] font-bold text-gray-700">Q{slot.qnum}</td>
+                                      <td className="px-3 py-2 text-gray-700 font-bold">{slotTypeLabel(slot.type)}</td>
+                                      <td className="px-3 py-2 text-gray-600">
+                                        {slot.topic || slot.format || <span className="text-gray-300">—</span>}
+                                        {slot.topic && slot.format && slot.format !== slot.topic && (
+                                          <span className="text-gray-400"> · {slot.format}</span>
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2 text-center font-black text-blue-700">{slot.marks}M</td>
+                                      <td className="px-3 py-2">
+                                        <div className="flex flex-wrap gap-1">
+                                          {slot.choice === 'internal' && (
+                                            <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[9px] font-black uppercase rounded border border-emerald-100">OR Choice</span>
+                                          )}
+                                          {slot.choice === 'open' && (
+                                            <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[9px] font-black uppercase rounded border border-emerald-100">
+                                              Any {slot.attempt} of {slot.parts?.length}
+                                            </span>
+                                          )}
+                                          {slot.parts?.length > 0 && slot.choice !== 'open' && (
+                                            <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 text-[9px] font-black uppercase rounded border border-indigo-100">
+                                              {slot.parts.length} Parts
+                                            </span>
+                                          )}
+                                          {slot.source && (
+                                            <span className="px-1.5 py-0.5 bg-slate-50 text-slate-600 text-[9px] font-black uppercase rounded border border-slate-200">{slot.source}</span>
+                                          )}
+                                          {slot.condition && (
+                                            <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[9px] font-bold rounded border border-amber-100 normal-case" title={slot.condition}>
+                                              {slot.condition.length > 40 ? slot.condition.slice(0, 40) + '…' : slot.condition}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
 
                         {/* Compound subject: question-type breakdown table */}
                         {isCompound ? (

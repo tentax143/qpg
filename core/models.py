@@ -105,18 +105,28 @@ class ExamPattern(models.Model):
         """
         total = 0
         for section in self.sections:
+            slots = section.get('question_slots') or []
+            if slots:
+                # Slot-authored sections: slots are the source of truth.
+                total += sum((s.get('marks') or 0) for s in slots if isinstance(s, dict))
+                continue
             sec_marks = section.get('marks') or 0
             if sec_marks:
                 total += sec_marks
             else:
                 total += sum(subsec.get('marks', 0) for subsec in section.get('subsections', []))
-        return total
+        # Slot marks may be fractional; total_marks is an IntegerField.
+        return int(round(total))
 
     def get_total_questions(self):
         """Calculate total questions from sections (see get_total_marks for the
         section-vs-subsection double-count rationale)."""
         total = 0
         for section in self.sections:
+            slots = section.get('question_slots') or []
+            if slots:
+                total += len(slots)
+                continue
             # Support both 'questions_count' (new) and 'questions' (legacy CBSE seed data)
             sec_q = section.get('questions_count') or section.get('questions') or 0
             if sec_q:

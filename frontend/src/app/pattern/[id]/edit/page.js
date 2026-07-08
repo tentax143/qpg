@@ -3,10 +3,11 @@
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
-import { 
+import {
   ArrowLeft, Save, RefreshCw, Layers,
   Settings, Info, Calculator, FileText, BookOpen,
-  GraduationCap, Hash, MessageCircle, Edit
+  GraduationCap, Hash, MessageCircle, Edit,
+  ListOrdered, AlertTriangle
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import { subjectOptions } from '@/lib/subjects';
@@ -14,6 +15,16 @@ import CustomSelect from '@/components/CustomSelect';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
+
+// Canonical slot types (core/pattern_structure.py SLOT_TYPE_LABEL)
+const SLOT_TYPE_LABELS = {
+  mcq: 'MCQ', ar: 'Assertion-Reason', fill_blank: 'Fill in the blank',
+  true_false: 'True/False', matching: 'Matching', one_word: 'One-word answer',
+  error_correction: 'Error correction', rewrite: 'Rewrite the sentence',
+  punctuation: 'Punctuation', vsa: 'Very Short Answer', sa: 'Short Answer',
+  la: 'Long Answer', writing: 'Writing', cbq: 'Case-Based',
+  extract: 'Extract-Based', map: 'Map-Based',
+};
 
 export default function EditPatternPage() {
   const { id } = useParams();
@@ -32,6 +43,9 @@ export default function EditPatternPage() {
     description: '',
     ai_prompt: ''
   });
+  // Editable copy of sections for slot-authored patterns (question_slots).
+  const [sections, setSections] = useState([]);
+  const hasSlots = sections.some(s => s?.question_slots?.length > 0);
 
   useEffect(() => {
     fetchPattern();
@@ -49,6 +63,7 @@ export default function EditPatternPage() {
         description: res.data.description || '',
         ai_prompt: res.data.ai_prompt || ''
       });
+      setSections(JSON.parse(JSON.stringify(res.data.sections || [])));
     } catch (err) {
       setError('Failed to load pattern data');
     } finally {
@@ -61,13 +76,28 @@ export default function EditPatternPage() {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
+  const updateSlot = (sIdx, slotIdx, field, value) => {
+    setSections(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      const slot = next[sIdx]?.question_slots?.[slotIdx];
+      if (slot) {
+        if (value === '' || value === null) delete slot[field];
+        else slot[field] = value;
+      }
+      return next;
+    });
+  };
+
   const handleUpdate = async (e) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
     setSuccess(null);
     try {
-        await apiClient.put(`/patterns/${id}/`, formData);
+        // Slot-authored patterns send the edited sections too; the server
+        // re-validates the slots and re-derives counts/marks/question_types.
+        const payload = hasSlots ? { ...formData, sections } : formData;
+        await apiClient.put(`/patterns/${id}/`, payload);
         setSuccess('Pattern updated successfully!');
         fetchPattern(); // Refresh
         setTimeout(() => router.push(`/patterns`), 1500);
@@ -202,7 +232,8 @@ export default function EditPatternPage() {
               <h2 className="text-xs font-black uppercase tracking-widest">Sections (Read-Only - View Only)</h2>
             </div>
             <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest italic hidden md:block">
-               {pattern.pattern_source === 'ai_generated' ? 'AI-generated patterns are immutable' : 'Modify this by creating a new pattern'}
+               {hasSlots ? 'Totals auto-derived from the per-question structure below'
+                 : pattern.pattern_source === 'ai_generated' ? 'AI-generated patterns are immutable' : 'Modify this by creating a new pattern'}
             </p>
           </div>
           
@@ -214,8 +245,9 @@ export default function EditPatternPage() {
                <div>
                   <p className="font-black text-blue-900 uppercase text-[10px] tracking-widest mb-1">Important Note</p>
                   <p className="text-xs font-bold text-blue-600/80 leading-relaxed uppercase">
-                    Sections are read-only. The pattern structure cannot be edited after creation to maintain data integrity.
-                    To modify the structure, please create a new pattern instead.
+                    {hasSlots
+                      ? 'Section totals are derived automatically from the per-question structure. Edit individual questions in the editor below — counts and marks update on save.'
+                      : 'Sections are read-only. The pattern structure cannot be edited after creation to maintain data integrity. To modify the structure, please create a new pattern instead.'}
                   </p>
                </div>
             </div>
@@ -243,6 +275,122 @@ export default function EditPatternPage() {
             </div>
           </div>
         </section>
+
+        {/* Per-Question Structure Editor (slot-authored patterns) */}
+        {hasSlots && (
+          <section className="bg-white rounded-[40px] shadow-sm border border-gray-100 overflow-hidden text-gray-900">
+            <div className="p-8 border-b border-gray-50 bg-gray-50/30 flex items-center justify-between">
+              <div className="flex items-center gap-3 text-teal-600">
+                <ListOrdered size={18} />
+                <h2 className="text-xs font-black uppercase tracking-widest">Per-Question Structure (Editable)</h2>
+              </div>
+              <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest italic hidden md:block">
+                Type, topic, format, marks and choice per question
+              </p>
+            </div>
+
+            <div className="p-8 space-y-8">
+              {sections.map((section, sIdx) => (
+                section?.question_slots?.length > 0 && (
+                  <div key={sIdx} className="space-y-3">
+                    <p className="font-black text-gray-900 uppercase text-xs tracking-tight">
+                      {section.name || `Section ${sIdx + 1}`}
+                    </p>
+
+                    {section._structure_warnings?.length > 0 && (
+                      <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
+                        <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                        <ul className="space-y-1">
+                          {section._structure_warnings.map((w, wi) => (
+                            <li key={wi} className="text-xs font-bold text-amber-800/80 leading-relaxed">{w}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div className="rounded-2xl overflow-hidden border border-gray-100 overflow-x-auto">
+                      <table className="w-full text-xs min-w-[640px]">
+                        <thead>
+                          <tr className="bg-gray-50 border-b border-gray-100">
+                            <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px] w-12">Q#</th>
+                            <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Type</th>
+                            <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Topic</th>
+                            <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Format</th>
+                            <th className="text-center px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px] w-20">Marks</th>
+                            <th className="text-left px-3 py-2 font-black text-gray-400 uppercase tracking-wider text-[9px]">Choice</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {section.question_slots.map((slot, slotIdx) => (
+                            <tr key={slotIdx} className="border-t border-gray-50 bg-white">
+                              <td className="px-3 py-2 font-mono text-[10px] font-bold text-gray-700">Q{slot.qnum}</td>
+                              <td className="px-3 py-2">
+                                <select
+                                  value={slot.type || ''}
+                                  onChange={(e) => updateSlot(sIdx, slotIdx, 'type', e.target.value)}
+                                  className="w-full bg-gray-50/50 border border-gray-100 rounded-lg px-2 py-1.5 font-bold text-gray-900 outline-none focus:border-[#1e293b]"
+                                >
+                                  {Object.entries(SLOT_TYPE_LABELS).map(([val, label]) => (
+                                    <option key={val} value={val}>{label}</option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="px-3 py-2">
+                                <input
+                                  value={slot.topic || ''} placeholder="—"
+                                  onChange={(e) => updateSlot(sIdx, slotIdx, 'topic', e.target.value)}
+                                  className="w-full bg-gray-50/50 border border-gray-100 rounded-lg px-2 py-1.5 font-bold text-gray-900 outline-none focus:border-[#1e293b]"
+                                />
+                              </td>
+                              <td className="px-3 py-2">
+                                <input
+                                  value={slot.format || ''} placeholder="—"
+                                  onChange={(e) => updateSlot(sIdx, slotIdx, 'format', e.target.value)}
+                                  className="w-full bg-gray-50/50 border border-gray-100 rounded-lg px-2 py-1.5 font-bold text-gray-900 outline-none focus:border-[#1e293b]"
+                                />
+                              </td>
+                              <td className="px-3 py-2">
+                                <input
+                                  type="number" min="0.5" step="0.5" value={slot.marks ?? ''}
+                                  onChange={(e) => updateSlot(sIdx, slotIdx, 'marks', e.target.value === '' ? '' : Number(e.target.value))}
+                                  className="w-full bg-gray-50/50 border border-gray-100 rounded-lg px-2 py-1.5 font-black text-blue-700 text-center outline-none focus:border-[#1e293b]"
+                                />
+                              </td>
+                              <td className="px-3 py-2">
+                                <div className="flex items-center gap-2">
+                                  <select
+                                    value={slot.choice || 'none'}
+                                    onChange={(e) => updateSlot(sIdx, slotIdx, 'choice', e.target.value === 'none' ? '' : e.target.value)}
+                                    disabled={slot.parts?.length > 0}
+                                    className="bg-gray-50/50 border border-gray-100 rounded-lg px-2 py-1.5 font-bold text-gray-900 outline-none focus:border-[#1e293b] disabled:opacity-60"
+                                  >
+                                    <option value="none">None</option>
+                                    <option value="internal">Internal (OR)</option>
+                                    {slot.parts?.length > 0 && <option value="open">Open (any N)</option>}
+                                  </select>
+                                  {slot.parts?.length > 0 && (
+                                    <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 text-[9px] font-black uppercase rounded border border-indigo-100 whitespace-nowrap">
+                                      {slot.choice === 'open' && slot.attempt
+                                        ? `Any ${slot.attempt} of ${slot.parts.length}`
+                                        : `${slot.parts.length} Parts`}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )
+              ))}
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                Question numbers and sub-parts are fixed at pattern creation — regenerate from the prompt to restructure.
+              </p>
+            </div>
+          </section>
+        )}
 
         {/* Statistics Grid */}
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-6">

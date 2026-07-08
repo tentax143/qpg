@@ -5,7 +5,7 @@ Replaces the old blueprint system with a unified pattern approach.
 """
 import json
 import re
-from . import mantle_client
+from . import mantle_client, pattern_structure
 
 MODEL_ID = mantle_client.GEN_MODEL
 
@@ -54,9 +54,7 @@ KEY RULES:
 2. For each section, extract:
    - name (section name)
    - marks (total marks for section)
-   - questions_count (number of questions)
-   - marks_per_question (marks per question)
-   - question_types (types of questions like MCQ, Short Answer, Essay, etc.)
+   - question_slots (one entry per printed question — see QUESTION SLOT RULES below)
    - instructions (any special instructions mentioned for this section)
    - constraints (any limitations like word limits, specific requirements)
    - passage (IMPORTANT: If section mentions passage/reading material, include this key with explicit instruction "Generate passage of X-Y words and create Y questions from it")
@@ -87,6 +85,8 @@ Examples:
 - Teacher input: "Extract (SR/PM) - 5"
   → Add: "extract_instruction": "Generate extract text (SR/PM format) and create 5 questions based on the extract"
 
+{pattern_structure.SLOT_SCHEMA_PROMPT_RULES}
+
 OUTPUT FORMAT (MUST be valid JSON):
 {{
     "sections": [
@@ -94,9 +94,10 @@ OUTPUT FORMAT (MUST be valid JSON):
             "id": "unique_id",
             "name": "Section Name",
             "marks": total_marks,
-            "questions_count": number_of_questions,
-            "marks_per_question": marks_per_question,
-            "question_types": ["type1", "type2"],
+            "question_slots": [
+                {{"qnum": 1, "type": "mcq", "topic": "topic if named", "marks": 1}},
+                {{"qnum": 2, "type": "sa", "marks": 2}}
+            ],
             "instructions": ["instruction1", "instruction2"],
             "constraints": {{
                 "word_limit": {{"min": 300, "max": 400}},
@@ -192,6 +193,19 @@ def validate_and_enhance_pattern(pattern, class_name, subject, exam_name):
         "class": class_name
     })
 
+    # Per-question structure: normalize + validate the slots and derive the
+    # legacy aggregates from them (slots are the source of truth). Residual
+    # validation errors become teacher-visible section warnings — this path
+    # (management command) has no async repair round.
+    sections = pattern.get("sections", [])
+    pattern_structure.normalize_slots(sections)
+    for e in pattern_structure.validate_pattern_structure(sections, declared_total=pattern.get("total_marks")):
+        idx = e.get("section")
+        target = sections[idx] if idx is not None and 0 <= idx < len(sections) else (sections[0] if sections else None)
+        if isinstance(target, dict):
+            target.setdefault("_structure_warnings", []).append(e["msg"])
+    pattern_structure.derive_aggregates_from_slots(sections)
+
     # Validate and enhance each section
     total_marks = 0
     total_questions = 0
@@ -201,12 +215,16 @@ def validate_and_enhance_pattern(pattern, class_name, subject, exam_name):
         if "id" not in section:
             section["id"] = section.get("name", "Section").upper()[:3]
 
-        # Set defaults
+        # Set defaults. Slot-authored sections already got questions_count /
+        # marks / question_types from derive_aggregates_from_slots above, and a
+        # mixed-marks slot section must NOT receive a scalar marks_per_question
+        # default (that's the fractional-marks-stamping bug).
         section.setdefault("name", "Section")
         section.setdefault("marks", 0)
         section.setdefault("questions_count", 0)
-        section.setdefault("marks_per_question", 1)
-        section.setdefault("question_types", ["Short Answer"])
+        if not section.get("question_slots"):
+            section.setdefault("marks_per_question", 1)
+            section.setdefault("question_types", ["Short Answer"])
         section.setdefault("instructions", [])
         section.setdefault("constraints", {})
         section.setdefault("subsections", [])
@@ -235,7 +253,10 @@ def validate_and_enhance_pattern(pattern, class_name, subject, exam_name):
         section["questions_count"] = sec_qs
         # The model leaves marks_per_question null on mixed-marks sections (different marks per
         # sub-part). Coerce to the section average so nothing downstream trips on None.
-        if not section.get("marks_per_question"):
+        # Slot-authored sections are exempt: derive_aggregates_from_slots deliberately OMITS
+        # marks_per_question on mixed-marks sections (a scalar average there is the old
+        # fractional-marks-stamping bug), and their defaults come from the slots.
+        if not section.get("marks_per_question") and not section.get("question_slots"):
             section["marks_per_question"] = round(sec_marks / sec_qs, 2) if sec_qs else 1
 
         total_marks += sec_marks

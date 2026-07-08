@@ -61,24 +61,31 @@ def _iter_assembled_sections(paper_data):
 
 
 def _pattern_sections(pattern):
-    """Normalise a pattern's sections to [{name, marks, q_count, mpq}], folding in
-    subsection breakdowns when a section carries no marks/count of its own."""
+    """Normalise a pattern's sections to [{name, marks, q_count, mpq, slots}], folding
+    in subsection breakdowns when a section carries no marks/count of its own.
+    Slot-authored sections (question_slots) use the slots as the source of truth."""
     out = []
     for s in (getattr(pattern, "sections", None) or []):
         if not isinstance(s, dict):
             continue
+        slots = [sl for sl in (s.get("question_slots") or []) if isinstance(sl, dict)]
         marks = s.get("marks") or 0
         q_count = s.get("questions_count") or s.get("questions") or 0
         subs = s.get("subsections") or []
-        if not marks and subs:
-            marks = sum((ss.get("marks", 0) or 0) for ss in subs)
-        if not q_count and subs:
-            q_count = sum((ss.get("questions_count") or ss.get("questions", 0) or 0) for ss in subs)
+        if slots:
+            marks = sum(_q_marks(sl) for sl in slots) or marks
+            q_count = len(slots)
+        else:
+            if not marks and subs:
+                marks = sum((ss.get("marks", 0) or 0) for ss in subs)
+            if not q_count and subs:
+                q_count = sum((ss.get("questions_count") or ss.get("questions", 0) or 0) for ss in subs)
         out.append({
             "name": s.get("name") or s.get("id") or "",
             "marks": marks,
             "q_count": q_count,
             "mpq": s.get("marks_per_question"),
+            "slots": slots,
         })
     return out
 
@@ -114,6 +121,7 @@ def audit_paper_marks(paper_data, pattern, tolerance=0.5):
             "count": len(primary),
             "marks": sec_marks,
             "or_entries": len(qs) - len(primary),
+            "qs": primary,
         }
 
     issues = []
@@ -148,6 +156,25 @@ def audit_paper_marks(paper_data, pattern, tolerance=0.5):
         section_rows.append({"name": s["name"], "expected_marks": s["marks"],
                              "actual_marks": a["marks"], "expected_q": s["q_count"],
                              "actual_q": a["count"], "ok": ok})
+
+        # Per-question audit for slot-authored sections: questions are generated and
+        # rendered in slot order, so position i must carry slot i's marks and printed
+        # number. High-signal only — types are enforced at generation time.
+        for i, sl in enumerate(s.get("slots") or []):
+            if i >= len(a["qs"]):
+                break
+            q = a["qs"][i]
+            exp_m = _q_marks(sl)
+            got_m = _q_marks(q)
+            if exp_m and abs(got_m - exp_m) > 0.01:
+                issues.append(f"{s['name']} Q{sl.get('qnum')}: carries {got_m:g}m but the "
+                              f"pattern requires {exp_m:g}m.")
+            try:
+                q_num, sl_num = int(q.get("qnum") or 0), int(sl.get("qnum") or 0)
+            except (TypeError, ValueError):
+                q_num = sl_num = 0
+            if q_num and sl_num and q_num != sl_num:
+                issues.append(f"{s['name']}: printed Q{q_num} should be Q{sl_num} per the pattern.")
 
     # Sections in the paper that the pattern doesn't define.
     for key, a in asm_by_name.items():
