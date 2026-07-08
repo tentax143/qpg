@@ -7,7 +7,7 @@ import {
   Settings2, Plus, Info, Eye, Edit2, Trash2,
   Settings, CheckCircle, HelpCircle, FileText,
   Lightbulb, PenTool, MessageSquare, Files, Calculator,
-  CheckSquare, Square
+  CheckSquare, Square, RefreshCw, AlertCircle
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -25,6 +25,14 @@ export default function PatternsPage() {
   useEffect(() => {
     fetchPatterns();
   }, []);
+
+  // Auto-refresh while any pattern is regenerating in the background (Celery task).
+  useEffect(() => {
+    const hasActive = patterns.some(p => p.status === 'generating' || p.status === 'queued');
+    if (!hasActive) return;
+    const interval = setInterval(() => fetchPatterns(false), 5000);
+    return () => clearInterval(interval);
+  }, [patterns]);
 
   const toggleSelect = (id) => {
     setSelected(prev => {
@@ -63,15 +71,15 @@ export default function PatternsPage() {
     }
   };
 
-  const fetchPatterns = async () => {
+  const fetchPatterns = async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       const res = await apiClient.get('/patterns/?page_size=1000');
       setPatterns(res.data.results || []);
     } catch (err) {
       setError(err.message || 'Failed to load patterns');
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
@@ -161,8 +169,11 @@ export default function PatternsPage() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {patterns.map((pattern, index) => (
-                    <div key={pattern.id} className={`p-6 bg-white border rounded-[30px] hover:shadow-xl hover:shadow-blue-500/5 transition-all group relative ${selected.has(pattern.id) ? 'border-blue-400 ring-2 ring-blue-100' : 'border-gray-100 hover:border-blue-200'}`}>
+                  {patterns.map((pattern, index) => {
+                    const isRegenerating = pattern.status === 'generating' || pattern.status === 'queued';
+                    const isFailed = pattern.status === 'failed';
+                    return (
+                    <div key={pattern.id} className={`p-6 bg-white border rounded-[30px] hover:shadow-xl hover:shadow-blue-500/5 transition-all group relative ${selected.has(pattern.id) ? 'border-blue-400 ring-2 ring-blue-100' : isRegenerating ? 'border-blue-200' : 'border-gray-100 hover:border-blue-200'}`}>
                       <div className="absolute top-6 right-6 w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center text-[10px] font-black italic">
                         {index + 1}
                       </div>
@@ -177,7 +188,7 @@ export default function PatternsPage() {
                           : <Square size={20} />}
                       </button>
 
-                      <div className="flex items-start gap-3 mb-6 pl-9">
+                      <div className="flex items-start gap-3 mb-4 pl-9">
                         <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0">
                           <FileText size={20} />
                         </div>
@@ -187,42 +198,73 @@ export default function PatternsPage() {
                         </div>
                       </div>
 
+                      {(isRegenerating || isFailed) && (
+                        <div className="mb-4 pl-9">
+                          {isRegenerating ? (
+                            <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[9px] font-black uppercase rounded-lg border border-blue-100 flex items-center gap-1.5 w-fit">
+                              <RefreshCw size={10} className="animate-spin" />
+                              {pattern.status === 'queued' ? 'Queued for regeneration' : 'Regenerating'}
+                            </span>
+                          ) : (
+                            <span className="px-3 py-1 bg-red-50 text-red-600 text-[9px] font-black uppercase rounded-lg border border-red-100 flex items-center gap-1.5 w-fit">
+                              <AlertCircle size={10} /> Regeneration failed
+                            </span>
+                          )}
+                        </div>
+                      )}
+
                       <div className="mb-6">
                         <div className="flex items-center gap-2 mb-3">
                           <Layers size={14} className="text-blue-500" />
                           <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Pattern Structure:</span>
                         </div>
-                        <div className="bg-[#0f172a] rounded-2xl p-4 overflow-hidden relative">
-                          <pre className="text-blue-400 font-mono text-[10px] leading-relaxed max-h-[100px] overflow-y-auto custom-scrollbar">
-                            <code>{JSON.stringify(pattern.sections, null, 2)}</code>
-                          </pre>
-                          <div className="absolute bottom-0 left-0 right-0 h-4 bg-gradient-to-t from-[#0f172a] to-transparent pointer-events-none"></div>
+                        <div className="bg-[#0f172a] rounded-2xl p-4 overflow-hidden relative min-h-[52px] flex items-center">
+                          {isRegenerating ? (
+                            <p className="text-blue-400 font-mono text-[10px] leading-relaxed">Rebuilding structure from the updated prompt…</p>
+                          ) : (
+                            <>
+                              <pre className="text-blue-400 font-mono text-[10px] leading-relaxed max-h-[100px] overflow-y-auto custom-scrollbar">
+                                <code>{JSON.stringify(pattern.sections, null, 2)}</code>
+                              </pre>
+                              <div className="absolute bottom-0 left-0 right-0 h-4 bg-gradient-to-t from-[#0f172a] to-transparent pointer-events-none"></div>
+                            </>
+                          )}
                         </div>
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
-                        <Link 
-                          href={`/pattern/${pattern.id}`} 
+                        <Link
+                          href={`/pattern/${pattern.id}`}
                           className="flex-1 min-w-[80px] px-3 py-3 bg-[#1e293b] text-white rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-slate-800 transition-all duration-300 flex items-center justify-center gap-2 hover:-translate-y-0.5"
                         >
                           <Eye size={12} />
                           View
                         </Link>
-                        <Link 
-                          href={`/pattern/${pattern.id}/edit`} 
+                        <Link
+                          href={`/pattern/${pattern.id}/edit`}
                           className="flex-1 min-w-[80px] px-3 py-3 bg-blue-50 text-blue-600 rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-blue-600 hover:text-white transition-all duration-300 flex items-center justify-center gap-2 border border-blue-100 hover:-translate-y-0.5"
                         >
                           <Edit2 size={12} />
                           Edit
                         </Link>
-                        <Link 
-                          href={`/generator?pattern=${pattern.id}`} 
-                          className="flex-1 min-w-[120px] px-3 py-3 bg-emerald-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-emerald-700 transition-all duration-300 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10 hover:-translate-y-0.5"
-                        >
-                          <PenTool size={12} />
-                          Generate
-                        </Link>
-                        <button 
+                        {isRegenerating ? (
+                          <span
+                            title="Pattern is regenerating — try again once it's done"
+                            className="flex-1 min-w-[120px] px-3 py-3 bg-gray-50 text-gray-400 rounded-xl font-black text-[10px] uppercase tracking-widest text-center flex items-center justify-center gap-2 border border-gray-100 cursor-not-allowed"
+                          >
+                            <PenTool size={12} />
+                            Generate
+                          </span>
+                        ) : (
+                          <Link
+                            href={`/generator?pattern=${pattern.id}`}
+                            className="flex-1 min-w-[120px] px-3 py-3 bg-emerald-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-emerald-700 transition-all duration-300 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10 hover:-translate-y-0.5"
+                          >
+                            <PenTool size={12} />
+                            Generate
+                          </Link>
+                        )}
+                        <button
                           onClick={() => handleDelete(pattern.id)}
                           className="px-3 py-3 bg-red-50 text-red-600 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all duration-300 flex items-center justify-center hover:-translate-y-0.5"
                         >
@@ -230,7 +272,7 @@ export default function PatternsPage() {
                         </button>
                       </div>
                     </div>
-                  ))}
+                  );})}
                 </div>
               )}
             </div>

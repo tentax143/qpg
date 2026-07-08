@@ -117,14 +117,15 @@ export default function EditPatternPage() {
     setError(null);
     setSuccess(null);
     try {
+        // Regeneration runs async on a Celery worker (mirrors initial pattern generation).
+        // Bounce straight back to the patterns list, which shows this pattern as "Regenerating"
+        // until the task completes — staying here would just show a stale/blanked-out pattern.
         await apiClient.post(`/patterns/${id}/regenerate/`, {
             ai_prompt: formData.ai_prompt
         });
-        setSuccess('Pattern regenerated successfully!');
-        fetchPattern(); // Refresh with new sections
+        router.push('/patterns');
     } catch (err) {
         setError(err.response?.data?.error || 'Failed to regenerate pattern');
-    } finally {
         setRegenerating(false);
     }
   };
