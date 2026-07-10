@@ -21,6 +21,7 @@ export default function PatternsPage() {
   const [success, setSuccess] = useState(null);
   const [selected, setSelected] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [regenBusy, setRegenBusy] = useState(false);
 
   useEffect(() => {
     fetchPatterns();
@@ -68,6 +69,38 @@ export default function PatternsPage() {
       setError(err.response?.data?.error || 'Failed to delete selected patterns');
     } finally {
       setBulkBusy(false);
+    }
+  };
+
+  // Re-queue AI generation for every AI-generated pattern (or just the selected ones),
+  // each using its own saved prompt. The status poller picks up the queued/generating badges.
+  const handleRegenerateAll = async () => {
+    const ids = selected.size > 0 ? Array.from(selected) : null;
+    const scope = ids
+      ? patterns.filter(p => ids.includes(p.id))
+      : patterns;
+    const aiCount = scope.filter(p => p.pattern_source === 'ai_generated').length;
+    if (aiCount === 0) {
+      setError(ids ? 'None of the selected patterns are AI-generated — nothing to regenerate.'
+                   : 'No AI-generated patterns to regenerate.');
+      return;
+    }
+    if (!confirm(`Regenerate ${aiCount} AI pattern(s) from their saved prompts? Their current structure will be rebuilt.`)) return;
+    setRegenBusy(true);
+    try {
+      const res = await apiClient.post('/patterns/regenerate-all/', ids ? { ids } : {});
+      const data = res.data || {};
+      let msg = `Queued ${data.queued ?? 0} pattern(s) for regeneration.`;
+      if ((data.skipped_active || []).length) msg += ` ${data.skipped_active.length} already running.`;
+      if ((data.skipped_not_ai || []).length) msg += ` ${data.skipped_not_ai.length} manual/official skipped.`;
+      if ((data.skipped_no_prompt || []).length) msg += ` ${data.skipped_no_prompt.length} had no saved prompt.`;
+      setSuccess(msg);
+      setSelected(new Set());
+      fetchPatterns(false);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to queue regeneration');
+    } finally {
+      setRegenBusy(false);
     }
   };
 
@@ -145,6 +178,19 @@ export default function PatternsPage() {
                   >
                     <Trash2 size={14} />
                     {bulkBusy ? 'Deleting…' : `Delete (${selected.size})`}
+                  </button>
+                )}
+                {patterns.some(p => p.pattern_source === 'ai_generated') && (
+                  <button
+                    onClick={handleRegenerateAll}
+                    disabled={regenBusy}
+                    title={selected.size > 0
+                      ? 'Regenerate the selected AI patterns from their saved prompts'
+                      : 'Regenerate every AI pattern from its saved prompt'}
+                    className="px-4 py-2.5 bg-violet-600 text-white rounded-xl text-[10px] font-black uppercase tracking-[0.15em] hover:bg-violet-700 transition-all flex items-center gap-2 shadow-lg shadow-violet-200 disabled:opacity-60"
+                  >
+                    <RefreshCw size={14} className={regenBusy ? 'animate-spin' : ''} />
+                    {regenBusy ? 'Queuing…' : selected.size > 0 ? `Regenerate (${selected.size})` : 'Regenerate All'}
                   </button>
                 )}
                 <Link href="/create-pattern" className="bg-[#1e293b] text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-slate-800 transition-all duration-300 hover:-translate-y-0.5 active:scale-95 flex items-center gap-2 shadow-xl shadow-slate-200">

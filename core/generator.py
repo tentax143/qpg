@@ -765,7 +765,6 @@ def draw_wrapped(can, text, x, y, max_width, font="Helvetica", size=11, line_hei
 # MCQ never shows "1.9 marks".
 _TYPE_GROUP_ORDER = [
     ("mcq", "Multiple Choice Questions"),
-    ("ar",  "Assertion–Reason Questions"),
     ("vsa", "Very Short Answer Questions"),
     ("sa",  "Short Answer Questions"),
     ("cbq", "Case-Based / Source-Based Questions"),
@@ -907,6 +906,17 @@ def _regroup_section(questions_list, sec_info):
             order_seen.append(cat)
         buckets[cat].append(q)
 
+    # Assertion-Reason questions are MCQ variants — they render inside the MCQ group
+    # (after the plain MCQs), never under their own subheader. Merged AFTER stamping
+    # so AR questions keep their own marks when the pattern gives them a different
+    # marks_each than plain MCQs.
+    if "ar" in buckets:
+        buckets.setdefault("mcq", []).extend(buckets.pop("ar"))
+        if "mcq" in order_seen:
+            order_seen.remove("ar")
+        else:
+            order_seen[order_seen.index("ar")] = "mcq"
+
     multi = len([c for c in buckets if c != "_str"]) > 1
     groups, roman_i, used = [], 0, set()
     for cat, lbl in _TYPE_GROUP_ORDER:
@@ -914,7 +924,7 @@ def _regroup_section(questions_list, sec_info):
             used.add(cat)
             label = None
             if multi:
-                note = " (answer all questions)" if cat in ("mcq", "ar", "vsa") else ""
+                note = " (answer all questions)" if cat in ("mcq", "vsa") else ""
                 label = f"{_ROMAN[roman_i]}. {lbl}{note}"
                 roman_i += 1
             groups.append((label, buckets[cat]))
@@ -1155,6 +1165,15 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
 
                     if 'passage' in section_data:
                         passage_text = section_data.get('passage', '')
+                        # Slot sections carry extract passages per-question (source_text); a
+                        # section-level 'passage' there is generator planning junk ("This
+                        # section tests your understanding…") — except unseen-reading
+                        # sections, whose slots (source='unseen') genuinely share one passage.
+                        _slots_here = sec_info.get("question_slots") if isinstance(sec_info, dict) else None
+                        if _slots_here and not any(
+                                str(s.get("source") or "").lower() == "unseen"
+                                for s in _slots_here if isinstance(s, dict)):
+                            passage_text = ''
                         if passage_text:
                             all_questions.append(("instruction", "Read the passage:"))
                             all_questions.append(("passage", passage_text))
@@ -1259,6 +1278,25 @@ def _extract_inline_image(text):
     if len(desc) < 12:
         return clean or text, None
     return clean, desc
+
+
+def _emit_sub_questions(all_questions, sub_qs):
+    """Render a question's sub_questions as lettered (a)/(b)/(c) sub-lines.
+
+    Accepts dict entries keyed 'text' (canonical) or 'q'/'question' (legacy model
+    output) — entries with none of these are skipped rather than lost silently.
+    """
+    if not isinstance(sub_qs, list):
+        return
+    _letters = "abcdefghij"
+    for _si, _sq in enumerate(sub_qs):
+        _lbl = f"({_letters[_si]})" if _si < len(_letters) else f"({_si + 1})"
+        if isinstance(_sq, dict):
+            _sq_text = str(_sq.get("text") or _sq.get("q") or _sq.get("question") or "").strip()
+            if _sq_text:
+                all_questions.append(("subq", f"{_lbl} {_sq_text}{_marks_suffix(_sq.get('marks'))}"))
+        elif isinstance(_sq, str) and _sq.strip():
+            all_questions.append(("subq", f"{_lbl} {_sq.strip()}"))
 
 
 def process_question(all_questions, q, q_counter, class_name=None, subject=None, chapters=None, paper_id=None):
@@ -1442,19 +1480,7 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
             all_questions.append(("q", f"{qnum}. {text_content}{marks_suffix}"))
 
             # Render sub_questions for image_based / source_based CBQ
-            sub_qs = q.get("sub_questions") or []
-            if isinstance(sub_qs, list) and sub_qs:
-                _letters = "abcdefghij"
-                for _si, _sq in enumerate(sub_qs):
-                    _lbl = f"({_letters[_si]})" if _si < len(_letters) else f"({_si + 1})"
-                    if isinstance(_sq, dict):
-                        _sq_text   = str(_sq.get("text", "")).strip()
-                        _sq_marks  = _sq.get("marks")
-                        _sq_suffix = _marks_suffix(_sq_marks)
-                        if _sq_text:
-                            all_questions.append(("subq", f"{_lbl} {_sq_text}{_sq_suffix}"))
-                    elif isinstance(_sq, str) and _sq.strip():
-                        all_questions.append(("subq", f"{_lbl} {_sq.strip()}"))
+            _emit_sub_questions(all_questions, q.get("sub_questions") or [])
 
             # Save question for tracking and deduplication
             if class_name and subject:
@@ -1478,17 +1504,39 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         if map_note or q_type == "map_work" or q_subtype == "map_based":
             all_questions.append(("instruction", map_note or "[Attach outline map — examiner to supply]"))
 
-        # M-02: OR alternative for LA questions (or_alternative may be a string or dict)
+        # M-02: OR alternatives (internal choice). A string is a bare alternate question;
+        # a dict is a FULL alternative carrying its own source_text/passage, sub_questions
+        # and options (internal-choice extract/CBQ); a LIST is an N-way choice ("paragraph
+        # OR letter OR notice") — every entry prints after its own OR separator. Rendering
+        # only the stem left the second alternative as an empty header.
         _or_raw = q.get('or_alternative')
-        if isinstance(_or_raw, dict):
-            or_alt = str(_or_raw.get('text', '') or '').strip()
-        elif isinstance(_or_raw, str):
-            or_alt = _or_raw.strip()
-        else:
-            or_alt = ''
-        if or_alt:
+        _or_list = _or_raw if isinstance(_or_raw, list) else ([_or_raw] if _or_raw else [])
+        for _alt in _or_list:
+            if isinstance(_alt, dict):
+                or_alt = str(_alt.get('text', '') or '').strip()
+                _or_src = str(_alt.get('source_text', '') or _alt.get('passage', '') or '').strip()
+                _or_subs = _alt.get('sub_questions')
+                _or_opts = _alt.get('options')
+                _or_marks = _alt.get('marks', q.get('marks'))
+            elif isinstance(_alt, str):
+                or_alt, _or_src, _or_subs, _or_opts, _or_marks = _alt.strip(), '', None, None, q.get('marks')
+            else:
+                continue
+            if not (or_alt or _or_src or (isinstance(_or_subs, list) and _or_subs)):
+                continue
             all_questions.append(("or", "OR"))
-            all_questions.append(("q", f"{qnum}. {or_alt}{_marks_suffix(q.get('marks'))}"))
+            if _or_src:
+                all_questions.append(("instruction", "Read the source/case and answer the questions that follow:"))
+                all_questions.append(("passage", _or_src))
+            if or_alt:
+                all_questions.append(("q", f"{qnum}. {or_alt}{_marks_suffix(_or_marks)}"))
+            _emit_sub_questions(all_questions, _or_subs if isinstance(_or_subs, list) else [])
+            if isinstance(_or_opts, dict):
+                _or_opts = [_STRIP_OPT_PREFIX.sub('', str(v)).strip() for _, v in sorted(_or_opts.items())]
+            if isinstance(_or_opts, list) and _or_opts:
+                all_questions.append(("opts_block",
+                                      [f"({chr(96 + i)}) {str(opt).strip()}"
+                                       for i, opt in enumerate(_or_opts, start=1)]))
 
     elif "question" in q and "or" in q:
         question_text = q.get("question", "")
@@ -1512,6 +1560,12 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         # AR questions are skipped — their "(A):"/"(R):" markers are part of the statements.
         question_text = _strip_inline_options(question_text, options, q)
 
+        # A CBQ stored under 'question' (instead of 'text') still carries its own passage.
+        _src_text = str(q.get("source_text", "") or "").strip()
+        if _src_text:
+            all_questions.append(("instruction", "Read the source/case and answer the questions that follow:"))
+            all_questions.append(("passage", _src_text))
+
         # Image-based questions: render a diagram ABOVE the question (see main branch above).
         _img_p = str(q.get('image_prompt', '') or '').strip().strip('.')
         _is_image_q = (str(q.get('subtype', '')).lower() == 'image_based'
@@ -1531,6 +1585,10 @@ def process_question(all_questions, q, q_counter, class_name=None, subject=None,
         if question_text:
             marks_suffix = _marks_suffix(q.get("marks"))
             all_questions.append(("q", f"{qnum}. {question_text}{marks_suffix}"))
+
+        # Multi-part questions ("Attempt any 5 of the following 6") keep their parts
+        # under 'sub_questions' regardless of which key holds the stem.
+        _emit_sub_questions(all_questions, q.get("sub_questions") or [])
 
         # Handle options for MCQ style
         if isinstance(options, list) and options:
@@ -2274,22 +2332,44 @@ def _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, 
 
 
 def _add_passage_box(doc, text, script_font=None):
-    """Render a passage in a bordered, shaded single-cell table."""
+    """Render a passage in a bordered, shaded single-cell table. Markdown pipe tables
+    inside the passage become real nested tables instead of raw "| … |" lines."""
     tbl = doc.add_table(rows=1, cols=1)
     tbl.style = 'Table Grid'
     cell = tbl.rows[0].cells[0]
     cell.text = ""
-    para = cell.paragraphs[0]
-    run = para.add_run(text)
-    run.font.size = Pt(14)
-    if script_font:
-        set_tamil_font(run, script_font)
-    else:
-        run.font.name = 'Times New Roman'
-    para.paragraph_format.space_after = Pt(6)
-    para.paragraph_format.space_before = Pt(6)
-    para.paragraph_format.left_indent = Inches(0.1)
-    para.paragraph_format.right_indent = Inches(0.1)
+
+    def _fill_para(para, chunk):
+        run = para.add_run(chunk)
+        run.font.size = Pt(14)
+        if script_font:
+            set_tamil_font(run, script_font)
+        else:
+            run.font.name = 'Times New Roman'
+        para.paragraph_format.space_after = Pt(6)
+        para.paragraph_format.space_before = Pt(6)
+        para.paragraph_format.left_indent = Inches(0.1)
+        para.paragraph_format.right_indent = Inches(0.1)
+
+    segs = _md_table_segments(text) or [("text", text)]
+    first = True
+    for kind, payload in segs:
+        if kind == "text":
+            chunk = payload.strip()
+            if not chunk:
+                continue
+            _fill_para(cell.paragraphs[0] if first else cell.add_paragraph(), chunk)
+            first = False
+        else:
+            inner = cell.add_table(rows=len(payload["rows"]),
+                                   cols=max(len(r) for r in payload["rows"]))
+            try:
+                inner.style = 'Table Grid'
+            except Exception:
+                pass
+            _fill_md_table(inner, payload, script_font)
+            cell.add_paragraph()   # Word requires a paragraph after a nested table
+            first = False
 
     # Light grey shading on cell
     tcPr = cell._element.get_or_add_tcPr()
@@ -2320,6 +2400,145 @@ def _add_or_separator(doc):
         bdr.set(qn('w:color'), 'AAAAAA')
         pBdr.append(bdr)
     pPr.append(pBdr)
+
+
+# ── Markdown pipe-table rendering ────────────────────────────────────────────
+# LLMs legitimately emit data tables (observation tables, match-the-columns) as
+# markdown "| a | b |" blocks inside question/passage text. Rendered as raw text
+# they read as broken pipes — these helpers turn them into real Word tables.
+
+_MD_TABLE_ROW_RE = re.compile(r'^\s*\|.+\|\s*$')
+
+
+def _md_row_cells(line):
+    s = line.strip()
+    if s.startswith('|'):
+        s = s[1:]
+    if s.endswith('|'):
+        s = s[:-1]
+    return [c.strip() for c in s.split('|')]
+
+
+def _is_md_separator_row(cells):
+    """A markdown header separator row: every cell is dashes (with optional colons)."""
+    return bool(cells) and all(re.fullmatch(r':?-{2,}:?', c.replace(' ', '')) for c in cells)
+
+
+def _md_table_segments(text):
+    """Split text into ('text', str) and ('table', {'rows': [...], 'header': bool}) segments.
+    A table = 2+ consecutive lines that each start AND end with '|'. Separator rows
+    (|---|---|) are dropped; one right after the first row marks it as a header row.
+    Returns None when the text contains no table (the common fast path)."""
+    if not isinstance(text, str) or text.count('|') < 4 or '\n' not in text:
+        return None
+    segs, text_buf, row_buf = [], [], []
+
+    def _flush_text():
+        if text_buf:
+            chunk = '\n'.join(text_buf).strip('\n')
+            if chunk.strip():
+                segs.append(("text", chunk))
+            text_buf.clear()
+
+    def _flush_rows():
+        if len(row_buf) >= 2:
+            rows = [_md_row_cells(l) for l in row_buf]
+            header = len(rows) > 1 and _is_md_separator_row(rows[1])
+            rows = [r for r in rows if not _is_md_separator_row(r)]
+            if rows:
+                segs.append(("table", {"rows": rows, "header": header}))
+                row_buf.clear()
+                return
+        text_buf.extend(row_buf)   # 0–1 pipe lines — ordinary text, not a table
+        row_buf.clear()
+
+    for line in text.split('\n'):
+        if _MD_TABLE_ROW_RE.match(line):
+            if not row_buf:
+                _flush_text()
+            row_buf.append(line)
+        else:
+            _flush_rows()
+            text_buf.append(line)
+    _flush_rows()
+    _flush_text()
+
+    if not any(k == "table" for k, _ in segs):
+        return None
+    return segs
+
+
+def _fill_md_table(tbl, table, script_font=None):
+    rows, header = table["rows"], table["header"]
+    ncols = max(len(r) for r in rows)
+    for i, row in enumerate(rows):
+        cells = tbl.rows[i].cells
+        for j in range(ncols):
+            cell = cells[j]
+            p = cell.paragraphs[0]   # fresh cells hold one empty paragraph, no runs
+            run = p.add_run(row[j] if j < len(row) else "")
+            run.font.size = Pt(12)
+            run.bold = bool(header and i == 0)
+            if script_font:
+                set_tamil_font(run, script_font)
+            else:
+                run.font.name = 'Times New Roman'
+            p.paragraph_format.space_before = Pt(2)
+            p.paragraph_format.space_after = Pt(2)
+
+
+def _add_md_table(doc, table, script_font=None, indent_inches=0.35):
+    """Add a real Word table for a parsed markdown table, indented to the question-body column."""
+    rows = table["rows"]
+    tbl = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+    try:
+        tbl.style = 'Table Grid'
+    except Exception:
+        pass
+    tbl.autofit = True
+    _fill_md_table(tbl, table, script_font)
+    try:
+        tblInd = OxmlElement('w:tblInd')
+        tblInd.set(qn('w:w'), str(int(indent_inches * 1440)))
+        tblInd.set(qn('w:type'), 'dxa')
+        tbl._tbl.tblPr.append(tblInd)
+    except Exception:
+        pass
+    sp = doc.add_paragraph()
+    sp.paragraph_format.space_after = Pt(2)
+
+
+def _render_question_segments(doc, segs, full_text, marks_pattern, left_indent=None,
+                              script_font=None, right_tab_twips=8280):
+    """Render a question whose text embeds markdown pipe tables: the stem keeps the
+    number + right-aligned marks treatment, each pipe block becomes a real Word table,
+    and text after a table continues as body-indented paragraphs."""
+    base_in = left_indent.inches if left_indent else 0.0
+    m = marks_pattern.search(full_text)
+    marks_tag = f" [{m.group(1)} marks]" if m else ""
+    stem_done = False
+    for kind, payload in segs:
+        if kind == "text":
+            chunk = payload.strip()
+            if not chunk:
+                continue
+            if not stem_done:
+                _add_question_with_marks(doc, chunk + marks_tag, marks_pattern, left_indent,
+                                         script_font, right_tab_twips=right_tab_twips)
+                stem_done = True
+            else:
+                p = doc.add_paragraph()
+                p.paragraph_format.left_indent = Inches(base_in + 0.35)
+                p.paragraph_format.space_after = Pt(4)
+                run = p.add_run(chunk)
+                run.font.size = Pt(14)
+                if script_font:
+                    set_tamil_font(run, script_font)
+                else:
+                    run.font.name = 'Times New Roman'
+        else:
+            _add_md_table(doc, payload, script_font, indent_inches=base_in + 0.35)
+            stem_done = True
 
 
 def _add_question_with_marks(doc, text, marks_pattern, left_indent=None, script_font=None,
@@ -2577,8 +2796,15 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
             p.paragraph_format.space_after = Pt(4)
         elif typ in ("q", "subq"):
             indent = Inches(0.25) if typ == "subq" else None
-            _add_question_with_marks(doc, text_str, marks_pattern, indent, script_font,
-                                     right_tab_twips=marks_tab_twips)
+            # Strip the marks tag BEFORE table detection — "[3 marks]" appended to the
+            # last "| … |" row would otherwise stop that line matching as a table row.
+            segs = _md_table_segments(marks_pattern.sub("", text_str).rstrip())
+            if segs:
+                _render_question_segments(doc, segs, text_str, marks_pattern, indent,
+                                          script_font, right_tab_twips=marks_tab_twips)
+            else:
+                _add_question_with_marks(doc, text_str, marks_pattern, indent, script_font,
+                                         right_tab_twips=marks_tab_twips)
         elif typ == "opts":
             p = doc.add_paragraph()
             r = p.add_run(text_str)
@@ -2971,7 +3197,7 @@ def pattern_sections_to_blueprint_dict(pattern):
 
         marks = section.get('marks', 0)
         marks_per_q = section.get('marks_per_question') or section.get('marks_each') or (
-            round(marks / q_count, 1) if q_count else 1
+            round(marks / q_count, 2) if q_count else 1
         )
 
         blueprint_dict[section_name] = {

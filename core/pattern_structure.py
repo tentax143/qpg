@@ -70,17 +70,30 @@ SLOT_SCHEMA_PROMPT_RULES = """QUESTION SLOT RULES — inside every section, list
   (e.g. "Homophones MCQ", "Rewrite with correct punctuation").
 - topic: the topic / skill / grammar point being tested, when the teacher named one
   (e.g. "Homophones", "Past perfect tense", "Conjunctions and their types").
-- marks: the marks a student can earn on this question number (positive number).
+- marks: the marks a student can earn on this question number. Whole or half numbers
+  ONLY (1, 1.5, 2, 3 ...) — never 2.25, 3.33 or other decimals. If a section total does
+  not divide evenly among its questions, give the questions UNEQUAL whole/half marks
+  that sum to the total (10 marks over 3 long answers -> 4+3+3) or change the question
+  count — NEVER split a total into repeating decimals (3 x 3.33 = 9.99 is wrong).
 - choice: "internal" when the question offers OR alternatives (attempt one of two full
   questions) — also give "alternatives": ["hint for option 1", "hint for option 2"].
+  For an extract/passage question, "internal" means TWO separate passages, each printed
+  with its own full set of sub-questions, joined by OR.
   "open" when ONE question number has several parts and students attempt only some
   ("A to F, attempt any 5") — also give "parts" and "attempt". Omit "choice" otherwise.
 - parts: sub-parts printed under one question number, e.g. an extract with questions A-E:
   "parts": [{"label": "A", "type": "mcq", "marks": 1}, {"label": "B", "type": "sa", "marks": 1}].
   Part marks must sum to the slot's marks (for open choice: attempt x part-marks = slot marks).
+  Whenever the teacher writes a letter range ("Q21 A TO E", "A to F") or a per-part
+  breakdown ("5 questions each one mark, MCQ 2 and 3 short"), you MUST emit one part
+  per letter with its type and marks — never collapse them into a bare marks total.
+  With choice "internal", the SAME parts describe EACH of the two OR alternatives.
 - attempt: with choice "open" only — how many parts the student answers.
 - source: "textbook" when the material must come from the textbook, "unseen" for unseen
-  passages. Omit otherwise.
+  passages, "general" when the teacher says the questions must NOT come from the
+  textbook / given content and should be set from general knowledge (trigger phrases:
+  "not from the textbook", "give in general", "on your own", "general knowledge").
+  Omit otherwise.
 - condition: any special instruction for this specific question, in the teacher's words
   (e.g. "critical/HOTS question", "questions must be based on the paragraph").
 
@@ -121,7 +134,8 @@ SLOT_OUTPUT_EXAMPLE = """{
             "constraints": {"word_limit": "100-120 words"},
             "question_slots": [
                 {"qnum": 4, "type": "mcq", "format": "Homophones MCQ", "topic": "Homophones", "marks": 1},
-                {"qnum": 5, "type": "error_correction", "topic": "Past tense", "marks": 1},
+                {"qnum": 5, "type": "error_correction", "topic": "Past tense", "marks": 1,
+                 "source": "general", "condition": "not from the textbook — set from general knowledge"},
                 {"qnum": 6, "type": "writing", "marks": 5, "choice": "internal",
                  "alternatives": ["descriptive paragraph", "story writing"]},
                 {"qnum": 7, "type": "extract", "marks": 2, "source": "textbook",
@@ -134,6 +148,19 @@ SLOT_OUTPUT_EXAMPLE = """{
     "total_questions": 7,
     "metadata": {"exam_name": "...", "subject": "...", "class": "..."}
 }"""
+
+# Free-text spellings of the slot 'source' field -> canonical value.
+_SOURCE_SYNONYMS = {
+    "text book": "textbook",
+    "text-book": "textbook",
+    "book": "textbook",
+    "general knowledge": "general",
+    "gk": "general",
+    "own": "general",
+    "original": "general",
+    "not from textbook": "general",
+    "not from the textbook": "general",
+}
 
 # Free-text spellings the pattern LLM (or a teacher) may emit -> canonical type.
 _TYPE_SYNONYMS = {
@@ -240,6 +267,14 @@ def normalize_slots(sections):
             slot["marks"] = _int_if_whole(marks) if marks else 0
             # Invalid values are kept for the validator to report.
             slot["choice"] = str(slot.get("choice") or "none").strip().lower()
+            # Canonicalize source ("textbook" / "unseen" / "general"); other spellings
+            # are mapped when obvious, unknown values pass through, empty is dropped.
+            src = str(slot.get("source") or "").strip().lower()
+            src = _SOURCE_SYNONYMS.get(src, src)
+            if src:
+                slot["source"] = src
+            else:
+                slot.pop("source", None)
             if slot.get("attempt") is not None:
                 slot["attempt"] = _as_int(slot.get("attempt"), 0)
             parts = slot.get("parts")
@@ -298,17 +333,28 @@ def validate_pattern_structure(sections, declared_total=None):
             marks = _as_float(slot.get("marks"), 0.0)
             if marks <= 0:
                 err(idx, f"{name} {label}: marks must be a positive number, got {slot.get('marks')!r}")
+            elif abs(marks * 2 - round(marks * 2)) > 0.01:
+                # Real papers award whole/half marks; 2.25 or 3.33 is an even-division
+                # artifact (9/4, 10/3) that downstream rounding then mangles further.
+                err(idx, f"{name} {label}: marks must be a whole or half number, got "
+                         f"{slot.get('marks')!r} — split the section total into unequal "
+                         "whole/half marks instead (e.g. 10 over 3 questions -> 4+3+3)")
             slot_marks_sum += marks
 
             choice = slot.get("choice", "none")
             if choice not in _CHOICES:
                 err(idx, f"{name} {label}: choice must be one of {_CHOICES}, got {choice!r}")
             parts = [p for p in slot.get("parts") or [] if isinstance(p, dict)]
+            for p in parts:
+                pm = _as_float(p.get("marks"), 0.0)
+                if pm > 0 and abs(pm * 2 - round(pm * 2)) > 0.01:
+                    err(idx, f"{name} {label}: part {str(p.get('label') or '?')!r} marks must "
+                             f"be a whole or half number, got {p.get('marks')!r}")
             attempt = slot.get("attempt")
 
             if choice == "internal":
-                if parts:
-                    err(idx, f"{name} {label}: internal choice applies to the whole question — use 'alternatives', not 'parts'")
+                # parts + internal choice is legitimate: the parts describe EACH of the
+                # two OR alternatives (e.g. an extract printed twice, A-E under both).
                 alts = slot.get("alternatives")
                 if alts is not None and (not isinstance(alts, list) or not all(isinstance(a, str) for a in alts)):
                     err(idx, f"{name} {label}: alternatives must be a list of strings")
@@ -384,14 +430,17 @@ def repair_preserves_slots(original_sections, repaired_sections):
     section totals must be resolved by adjusting the TOTALS — a repair that instead
     deletes slots or lowers slot marks (observed: Q19/Q20 dropped and a 4m LA cut
     to 3m to force the sums to match) silently destroys teacher content and must be
-    rejected, whatever its error count. Repairs may still ADD slots and fill in a
-    missing/zero marks value."""
+    rejected, whatever its error count. Repairs may still ADD slots, fill in a
+    missing/zero marks value, and re-split marks that are OFF the half-mark grid
+    (2.25, 3.33 — even-division artifacts the validator flags; fixing them requires
+    changing exactly those marks, and they are never faithful teacher content)."""
     orig = _slot_signature(original_sections)
     rep = _slot_signature(repaired_sections)
     for qnum, marks in orig.items():
         if qnum not in rep:
             return False
-        if marks > 0 and abs(rep[qnum] - marks) > 0.01:
+        off_grid = abs(marks * 2 - round(marks * 2)) > 0.01
+        if marks > 0 and not off_grid and abs(rep[qnum] - marks) > 0.01:
             return False
     return True
 

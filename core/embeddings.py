@@ -418,6 +418,68 @@ def query(class_name, subject, unit, query_text, n_results=5, provider='local', 
             "distances": [dists], "embeddings": [embs]}
 
 
+def fetch_contiguous_span(chunk_id, before=1, after=4, max_chars=3500):
+    """Extend one chunk with its physical neighbours (same material, adjacent chunk_index)
+    into ONE continuous passage as printed in the source, deduping the ~150-char ingestion
+    overlap. A single ~1000-char chunk holds only ~170 words, so any pattern that wants a
+    longer verbatim extract (e.g. "approximately 500 words") is impossible to satisfy from
+    isolated retrieval chunks — this rebuilds the printed page around a retrieved seed."""
+    from .models import MaterialChunk
+    row = MaterialChunk.objects.filter(id=chunk_id).first()
+    if not row:
+        return ""
+    if row.material_id is None:
+        # No material FK to anchor neighbour order — the seed chunk is all we can trust.
+        return (row.content or "").strip()
+    rows = list(
+        MaterialChunk.objects.filter(
+            material_id=row.material_id,
+            chunk_index__gte=row.chunk_index - max(0, int(before)),
+            chunk_index__lte=row.chunk_index + max(0, int(after)),
+        ).order_by("chunk_index").values_list("chunk_index", "content")
+    )
+    # Keep only the run of CONSECUTIVE indices containing the seed — a gap means missing
+    # chunks, and text spliced across it would not be continuous as printed.
+    run, cur = [(row.chunk_index, row.content)], []
+    for idx, content in rows:
+        if cur and idx != cur[-1][0] + 1:
+            if any(i == row.chunk_index for i, _ in cur):
+                run = cur
+                break
+            cur = []
+        cur.append((idx, content))
+    if cur and any(i == row.chunk_index for i, _ in cur):
+        run = cur
+
+    span = ""
+    for _, content in run:
+        c = (content or "").strip()
+        if not c:
+            continue
+        if not span:
+            span = c
+            continue
+        # Adjacent chunks share a word-aligned overlap tail: the next chunk starts with a
+        # suffix of the previous one. Find it and splice without duplicating text.
+        k = 0
+        for size in range(min(len(span), 250), 19, -1):
+            if c.startswith(span[-size:]):
+                k = size
+                break
+        span = span + (c[k:] if k else " " + c)
+        if len(span) >= max_chars:
+            break
+    # End at a sentence boundary: both the max_chars cut and an exhausted chunk run can
+    # stop mid-sentence, and a model quoting to the block's end would then ship a clipped
+    # fragment that the extract validator rejects.
+    span = span[:max_chars].strip()
+    if span and span[-1] not in ".!?\"'”’…।":
+        m = max(span.rfind(". "), span.rfind("? "), span.rfind("! "), span.rfind("।"))
+        if m > len(span) * 0.5:
+            span = span[:m + 1]
+    return span.strip()
+
+
 # ── Delete ────────────────────────────────────────────────────────────────────
 def delete_unit_embeddings(class_name, subject, unit, school_id=None):
     """Delete chunks linked to a chapter label in a given store. For textbooks (1 material ↔ 1

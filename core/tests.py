@@ -2329,8 +2329,10 @@ class SlotWorkOrderTest(TestCase):
         _, l = self._wos()
         qs = [
             {"type": "CBQ", "subtype": "source_based", "marks": 5, "text": "Read the extract " * 10,
-             "source_text": "x" * 100, "competency_type": "application",
-             "sub_questions": [{"text": "a", "marks": 1}] * 5},
+             "source_text": ("The mongoose ran across the sunlit garden and the boy chased it. " * 3).strip(),
+             "competency_type": "application",
+             "sub_questions": ([{"text": "pick one a) w b) x c) y d) z", "marks": 1}] * 2
+                               + [{"text": "a", "marks": 1}] * 3)},
             {"type": "CBQ", "subtype": "standard", "marks": 10, "text": "Attempt any 5 " * 5,
              "competency_type": "constructed",
              "sub_questions": [{"text": "b", "marks": 2}] * 6},   # 12 provided vs 10 attempted
@@ -2443,3 +2445,727 @@ class SlotEditRederiveTest(TestCase):
                              any("declares" in w for w in s["_structure_warnings"])
                              for s in p.sections))
 
+
+class ARRenderMergeTest(TestCase):
+    """Assertion-Reason questions are MCQ variants: they render INSIDE the 'Multiple
+    Choice Questions' display group (after the plain MCQs), never under a separate
+    'II. Assertion–Reason Questions' subheader. Reported on a Social Science paper
+    whose Section A printed its 3 AR questions as a standalone trailing group."""
+
+    SEC_INFO = {
+        "name": "Section A — Objective Type", "marks": 14,
+        "subsections": [
+            {"name": "MCQ", "question_types": ["MCQ"], "marks": 7, "questions_count": 7, "marks_per_question": 1},
+            {"name": "Assertion-Reason", "question_types": ["Assertion-Reason"], "marks": 3, "questions_count": 3, "marks_per_question": 1},
+            {"name": "VSA", "question_types": ["VSA"], "marks": 4, "questions_count": 2, "marks_per_question": 2},
+        ],
+    }
+
+    def _questions(self):
+        # ARs deliberately interleaved among the MCQs — the merge must still put them last.
+        mk = lambda st: {"type": "MCQ", "subtype": st, "marks": 1}
+        return ([mk("assertion_reason"), mk("standard"), mk("standard"), mk("assertion_reason"),
+                 mk("standard"), mk("standard"), mk("standard"), mk("assertion_reason"),
+                 mk("standard"), mk("standard")]
+                + [{"type": "VSA", "subtype": "standard", "marks": 2} for _ in range(2)])
+
+    def test_no_separate_ar_group(self):
+        groups = sg_gen._regroup_section(self._questions(), self.SEC_INFO)
+        labels = [lbl for lbl, _ in groups if lbl]
+        self.assertFalse(any("Assertion" in l for l in labels), labels)
+        # MCQ group holds all 10: the 7 standard first, the 3 AR after them
+        mcq_qs = groups[0][1]
+        self.assertEqual([q["subtype"] for q in mcq_qs],
+                         ["standard"] * 7 + ["assertion_reason"] * 3)
+        # Roman numbering stays contiguous: I. MCQ, II. VSA
+        self.assertTrue(labels[0].startswith("I.") and "Multiple Choice" in labels[0])
+        self.assertTrue(labels[1].startswith("II.") and "Very Short" in labels[1])
+
+    def test_mcq_plus_ar_only_section_has_no_subheaders(self):
+        qs = ([{"type": "MCQ", "subtype": "standard", "marks": 1} for _ in range(7)]
+              + [{"type": "MCQ", "subtype": "assertion_reason", "marks": 1} for _ in range(3)])
+        sec = {"name": "A", "subsections": self.SEC_INFO["subsections"][:2]}
+        groups = sg_gen._regroup_section(qs, sec)
+        self.assertEqual([lbl for lbl, _ in groups if lbl], [])   # one category → no labels
+        self.assertEqual(len(groups[0][1]), 10)
+
+    def test_ar_keeps_distinct_marks_when_pattern_differs(self):
+        sec = {"name": "A", "subsections": [
+            {"name": "MCQ", "question_types": ["MCQ"], "marks": 4, "questions_count": 4, "marks_per_question": 1},
+            {"name": "Assertion-Reason", "question_types": ["Assertion-Reason"], "marks": 4, "questions_count": 2, "marks_per_question": 2},
+        ]}
+        qs = [{"type": "MCQ", "subtype": "standard", "marks": 9.9},
+              {"type": "MCQ", "subtype": "assertion_reason", "marks": 9.9}]
+        merged = sg_gen._regroup_section(qs, sec)[0][1]
+        self.assertEqual([q["marks"] for q in merged], [1, 2])    # stamped per fine category
+
+    def test_ar_bucket_surfaces_under_mcq_heading(self):
+        # AR + LA mix, no plain MCQs: the AR questions take the MCQ group's slot/label.
+        qs = [{"type": "MCQ", "subtype": "assertion_reason", "marks": 1},
+              {"type": "LA", "subtype": "standard", "marks": 5}]
+        groups = sg_gen._regroup_section(qs, {"name": "A", "subsections": []})
+        labels = [lbl for lbl, _ in groups if lbl]
+        self.assertTrue(labels[0].startswith("I.") and "Multiple Choice" in labels[0])
+        self.assertFalse(any("Assertion" in l for l in labels))
+
+
+class OrAlternativeRenderTest(TestCase):
+    """A dict or_alternative is a COMPLETE second question (its own passage and its
+    own sub-questions) — the renderer must print all of it after the OR separator,
+    not just its 'text' line. Production bug: Q21's second extract printed as a bare
+    '21. Read the source above…' header with no passage and no sub-questions, and
+    Q22's parts vanished when the stem was stored under 'question'."""
+
+    def _q21(self):
+        return {
+            "qnum": 21, "text": "Read the source above and answer the following:",
+            "type": "CBQ", "subtype": "source_based", "marks": 5,
+            "source_text": "First extract line one. " * 10,
+            "sub_questions": [{"text": f"first sub {i}", "marks": 1} for i in range(3)],
+            "or_alternative": {
+                "text": "Read the source above and answer the following:",
+                "source_text": "Second extract line one. " * 10,
+                "sub_questions": [{"text": f"second sub {i}", "marks": 1} for i in range(3)],
+            },
+        }
+
+    def test_dict_alternative_renders_passage_and_subquestions(self):
+        out = []
+        sg_gen.process_question(out, self._q21(), 21)
+        self.assertEqual(len([1 for k, _ in out if k == "passage"]), 2)   # one per option
+        or_i = out.index(("or", "OR"))
+        after = out[or_i:]
+        self.assertTrue(any(k == "passage" and "Second extract" in str(t) for k, t in after))
+        self.assertEqual(len([1 for k, _ in after if k == "subq"]), 3)
+        self.assertTrue(any(k == "q" and str(t).startswith("21.") for k, t in after))
+
+    def test_string_alternative_unchanged(self):
+        q = {"qnum": 23, "text": "Discuss the theme.", "type": "LA", "marks": 4,
+             "or_alternative": "Describe the character."}
+        out = []
+        sg_gen.process_question(out, q, 23)
+        or_i = out.index(("or", "OR"))
+        self.assertIn("Describe the character.", out[or_i + 1][1])
+        self.assertIn("[4 marks]", out[or_i + 1][1])
+
+    def test_question_key_branch_renders_sub_questions(self):
+        q = {"qnum": 22, "question": "Attempt any 5 of the following 6:", "marks": 10,
+             "sub_questions": [{"text": f"part {i}", "marks": 2} for i in range(6)]}
+        out = []
+        sg_gen.process_question(out, q, 22)
+        self.assertEqual(len([1 for k, _ in out if k == "subq"]), 6)
+
+    def test_sub_question_alt_keys_not_dropped(self):
+        q = {"qnum": 5, "text": "Attempt all:", "marks": 4,
+             "sub_questions": [{"q": "keyed q", "marks": 2},
+                               {"question": "keyed question", "marks": 2}]}
+        out = []
+        sg_gen.process_question(out, q, 5)
+        subs = [t for k, t in out if k == "subq"]
+        self.assertEqual(len(subs), 2)
+        self.assertIn("keyed q", subs[0])
+        self.assertIn("keyed question", subs[1])
+
+
+class GeneralSourceSlotTest(TestCase):
+    """source='general' slots ("give in general, NOT from the text book") must reach
+    the generation prompt as an explicit original-question instruction, and an
+    all-general section must receive NO RAG context at all."""
+
+    def _general_sections(self):
+        return [{"id": "SEC_B", "name": "Writing", "marks": 5, "question_slots": [
+            {"qnum": 1, "type": "writing", "marks": 5, "source": "general", "choice": "internal",
+             "alternatives": ["descriptive paragraph", "informal letter"]},
+        ]}]
+
+    def test_normalize_canonicalises_source(self):
+        secs = [{"name": "A", "question_slots": [
+            {"qnum": 1, "type": "sa", "marks": 2, "source": "General Knowledge"},
+            {"qnum": 2, "type": "sa", "marks": 2, "source": ""},
+        ]}]
+        psx.normalize_slots(secs)
+        self.assertEqual(secs[0]["question_slots"][0]["source"], "general")
+        self.assertNotIn("source", secs[0]["question_slots"][1])
+
+    def test_slots_all_general(self):
+        self.assertTrue(sg._slots_all_general({"question_slots": [
+            {"qnum": 1, "source": "general"}, {"qnum": 2, "source": "general"}]}))
+        self.assertFalse(sg._slots_all_general({"question_slots": [
+            {"qnum": 1, "source": "general"}, {"qnum": 2, "source": "textbook"}]}))
+        self.assertFalse(sg._slots_all_general({"question_slots": []}))
+        self.assertFalse(sg._slots_all_general({"question_slots": [{"qnum": 1}]}))
+
+    def test_all_general_wo_gets_no_context(self):
+        secs = psx.normalize_slots(self._general_sections())
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        ctx_map = {"Writing": "textbook chunk " * 50,
+                   "__context_by_type__": {"Writing": {"la": "chunk"}}}
+        wo = sg.build_work_orders(bp, pattern, ctx_map, "Medium", "6", "English", ["Ch1"])[0]
+        self.assertEqual(wo.context_text, "")
+        self.assertEqual(wo.context_by_type, {})
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn("GENERAL KNOWLEDGE", prompt)
+        self.assertIn("Compose original questions", prompt)
+        self.assertNotIn("Draw question content from the reference material", prompt)
+
+    def test_mixed_source_prompt_scopes_reference_material(self):
+        secs = psx.normalize_slots([{"id": "SEC_D", "name": "Mixed", "marks": 7, "question_slots": [
+            {"qnum": 1, "type": "extract", "marks": 5, "source": "textbook",
+             "parts": [{"label": c, "type": "sa", "marks": 1} for c in "ABCDE"]},
+            {"qnum": 2, "type": "mcq", "marks": 2, "source": "general"},
+        ]}])
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        wo = sg.build_work_orders(bp, pattern, {"Mixed": "textbook chunk " * 50},
+                                  "Medium", "6", "English", ["Ch1"])[0]
+        self.assertEqual(wo.context_text, "textbook chunk " * 50)   # mixed keeps context
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn("applies ONLY to questions marked textbook/unseen", prompt)
+        self.assertIn("GENERAL KNOWLEDGE — do NOT", prompt)
+        self.assertIn("VERBATIM", prompt)                # textbook extract must be quoted
+        # mixed sections keep the chapter plan but exempt their general questions
+        self.assertIn("EXCEPTION: questions marked GENERAL KNOWLEDGE", prompt)
+
+    def test_all_general_prompt_has_no_chapter_assignment(self):
+        # Production leak: Grammar was all-general, context was blanked, yet the chapter
+        # block still ordered "draw the 9 questions from these chapters" — and Q19 came
+        # back as a 'Wit and Humour' comprehension question.
+        secs = psx.normalize_slots(self._general_sections())
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        wo = sg.build_work_orders(bp, pattern, {}, "Medium", "6", "English",
+                                  ["Learning Together", "Wit and Humour"])[0]
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn("CHAPTER ASSIGNMENT: NONE", prompt)
+        self.assertNotIn("CHAPTER ASSIGNMENT — MANDATORY", prompt)
+        self.assertNotIn("no chapter monopoly", prompt)
+        self.assertIn("Do NOT reference the textbook", prompt)
+
+    def test_general_question_mentioning_chapter_fails_validation(self):
+        secs = psx.normalize_slots([{"id": "SEC_C", "name": "Grammar", "marks": 2,
+            "question_slots": [
+                {"qnum": 1, "type": "rewrite", "marks": 1, "topic": "Present perfect",
+                 "source": "general"},
+                {"qnum": 2, "type": "rewrite", "marks": 1, "topic": "Present perfect",
+                 "source": "general"},
+            ]}])
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        wo = sg.build_work_orders(bp, pattern, {}, "Medium", "6", "English",
+                                  ["Wit and Humour"])[0]
+        leaky = {"type": "VSA", "marks": 1, "answer_explanation": "a",
+                 "text": "In the story 'The Open Window' from the chapter 'Wit and Humour', "
+                         "what does Framton Nuttel suffer from?"}
+        clean = {"type": "VSA", "marks": 1, "answer_explanation": "a",
+                 "text": "Rewrite in the present perfect tense: 'She writes a letter.'"}
+        errors = sg.validate_section_output({"questions": [leaky, clean]}, wo)
+        self.assertTrue(any("GENERAL KNOWLEDGE" in e and "Wit and Humour" in e
+                            for e in errors), errors)
+        errors = sg.validate_section_output({"questions": [clean, clean]}, wo)
+        self.assertFalse(any("GENERAL KNOWLEDGE" in e for e in errors), errors)
+
+    def test_context_map_skips_retrieval_for_all_general(self):
+        bp = {"Writing": {"question_slots": [{"qnum": 1, "source": "general"}],
+                          "questions_count": 1, "marks": 5}}
+        cmap = sg.get_section_context_map("6", "English", ["Ch1"], bp, ["SA"])
+        self.assertEqual(cmap["Writing"], "")
+        self.assertEqual(cmap["__context_by_type__"]["Writing"], {})
+
+
+class InternalChoiceCbqValidationTest(TestCase):
+    """An internal-choice extract/CBQ slot must ship a COMPLETE or_alternative object
+    (own passage + own sub-questions, matching count and marks); sub-question count
+    must match the slot's declared parts; a textbook extract must be a verbatim
+    quotation of the reference material. Production shipped a grammar meta-summary
+    with a bare 'OR' and a 1+1+3 part split against a declared 5×1."""
+
+    SENT = "The wind blows strongly and the tall trees bow to it every evening. "
+    CONTEXT = SENT * 25
+
+    def _wo(self, context=""):
+        secs = psx.normalize_slots([{"id": "SEC_D", "name": "Literature", "marks": 5,
+            "question_slots": [
+                {"qnum": 1, "type": "extract", "marks": 5, "source": "textbook",
+                 "choice": "internal", "alternatives": ["prose or poem", "supplementary reader"],
+                 "parts": [{"label": "A", "type": "mcq", "marks": 1},
+                           {"label": "B", "type": "mcq", "marks": 1},
+                           {"label": "C", "type": "sa", "marks": 1},
+                           {"label": "D", "type": "sa", "marks": 1},
+                           {"label": "E", "type": "sa", "marks": 1}]},
+            ]}])
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        ctx_map = {"Literature": context} if context else {}
+        return sg.build_work_orders(bp, pattern, ctx_map, "Medium", "6", "English", ["Ch1"])[0]
+
+    @staticmethod
+    def _subs(prefix):
+        # Parts A/B are declared MCQ, so their sub-questions carry inline options.
+        out = []
+        for i, pt in enumerate(("mcq", "mcq", "sa", "sa", "sa")):
+            t = f"{prefix}{i}"
+            if pt == "mcq":
+                t += " — a) one b) two c) three d) four"
+            out.append({"text": t, "marks": 1})
+        return out
+
+    def _q(self, **over):
+        q = {"type": "CBQ", "subtype": "source_based", "marks": 5,
+             "text": "Read the extract and answer the following:",
+             "competency_type": "application",
+             "source_text": (self.SENT * 6).strip(),
+             "sub_questions": self._subs("s"),
+             "or_alternative": {
+                 "text": "Read the extract and answer the following:",
+                 "source_text": (self.SENT * 6).strip(),
+                 "sub_questions": self._subs("a"),
+             }}
+        q.update(over)
+        return q
+
+    def test_complete_alternative_passes(self):
+        errors = sg.validate_section_output({"questions": [self._q()]}, self._wo(self.CONTEXT))
+        self.assertEqual(errors, [])
+
+    def test_missing_or_alternative_fails(self):
+        errors = sg.validate_section_output({"questions": [self._q(or_alternative=None)]},
+                                            self._wo())
+        self.assertTrue(any("or_alternative" in e and "OBJECT" in e for e in errors), errors)
+
+    def test_string_alternative_fails_for_cbq(self):
+        errors = sg.validate_section_output({"questions": [self._q(or_alternative="just text")]},
+                                            self._wo())
+        self.assertTrue(any("bare string" in e for e in errors), errors)
+
+    def test_alternative_without_own_passage_or_parts_fails(self):
+        alt = {"text": "Read and answer:"}
+        errors = sg.validate_section_output({"questions": [self._q(or_alternative=alt)]},
+                                            self._wo())
+        self.assertTrue(any("OWN 'source_text'" in e for e in errors), errors)
+        self.assertTrue(any("OWN 'sub_questions'" in e for e in errors), errors)
+
+    def test_parts_count_enforced(self):
+        q = self._q(sub_questions=[{"text": f"s{i}", "marks": 1} for i in range(3)])
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertTrue(any("declares 5 sub-parts" in e and "got 3" in e for e in errors), errors)
+
+    def test_positional_part_marks_enforced(self):
+        subs = [{"text": f"s{i}", "marks": m} for i, m in enumerate([2, 1, 1, 0.5, 0.5])]
+        errors = sg.validate_section_output({"questions": [self._q(sub_questions=subs)]},
+                                            self._wo())
+        self.assertTrue(any("sub-question 1 marks=2" in e for e in errors), errors)
+
+    def test_hallucinated_extract_flagged(self):
+        q = self._q(source_text="This chapter explores the dynamics of a classroom where "
+                                "education is a shared journey and humour makes the lessons "
+                                "memorable for every student in the room during the day.")
+        errors = sg.validate_section_output({"questions": [q]}, self._wo(self.CONTEXT))
+        self.assertTrue(any("verbatim" in e for e in errors), errors)
+
+    def test_mcq_parts_require_inline_options(self):
+        q = self._q()
+        q["sub_questions"][0]["text"] = "What did the man take out?"   # part A is MCQ
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertTrue(any("declared MCQ" in e for e in errors), errors)
+        # alternatives are held to the same parts spec
+        q = self._q()
+        q["or_alternative"]["sub_questions"][1]["text"] = "No options here."
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertTrue(any("declared MCQ" in e for e in errors), errors)
+
+    def test_stitched_extract_flagged(self):
+        # Overall shingle overlap passes (all fragments verbatim) but the splice
+        # sentence does not exist in the material as written.
+        src = ((self.SENT * 3).strip()
+               + " The wind blows strongly and the tall trees bow to it every morning.")
+        errors = sg.validate_section_output({"questions": [self._q(source_text=src)]},
+                                            self._wo(self.CONTEXT))
+        self.assertTrue(any("stitched" in e for e in errors), errors)
+
+    def test_cross_option_quote_flagged(self):
+        # Production bug: option 2 asked "What is the 'currant bun' being used as in
+        # this extract?" — but the currant bun is in option 1's passage.
+        q = self._q()
+        q["source_text"] = ("He took out a currant bun and held it to my nose while "
+                            "everyone laughed at the funny man in the classroom that day.")
+        alt = q["or_alternative"]
+        alt["source_text"] = ("The old man walked slowly to the river bank and watched "
+                              "the boats sail away into the golden evening light.")
+        alt["sub_questions"][2]["text"] = \
+            "What is the 'currant bun' being used as in this extract?"
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertTrue(any("OWN source_text" in e and "currant bun" in e for e in errors),
+                        errors)
+
+    def test_overlap_helper(self):
+        self.assertTrue(sg._text_overlaps_context(self.CONTEXT[:300], self.CONTEXT))
+        self.assertFalse(sg._text_overlaps_context(
+            "An entirely different composed summary about classroom dynamics and learning "
+            "together in a collaborative environment fostered by the teacher every day.",
+            self.CONTEXT))
+
+    def test_prompt_demands_object_alternative(self):
+        prompt = sg.build_section_prompt(self._wo())
+        self.assertIn("MUST be a JSON OBJECT", prompt)
+        self.assertIn('its OWN "source_text"', prompt)
+
+    def test_internal_choice_with_parts_is_valid_pattern(self):
+        # Q21's canonical shape — an extract printed twice (OR), A-E under each option.
+        # The old rule flagged parts+internal as a conflict; it is now the documented way
+        # to express a two-passage extract.
+        secs = psx.normalize_slots([{"name": "Literature", "marks": 5, "question_slots": [
+            {"qnum": 1, "type": "extract", "marks": 5, "choice": "internal",
+             "source": "textbook", "alternatives": ["prose or poem", "SR"],
+             "parts": [{"label": c, "type": "sa", "marks": 1} for c in "ABCDE"]},
+        ]}])
+        self.assertEqual(psx.validate_pattern_structure(secs), [])
+
+
+class MultiAlternativeChoiceTest(TestCase):
+    """Q11-style 3-way internal choice (paragraph OR letter OR notice): 'or_alternative'
+    becomes a JSON ARRAY with one entry per extra option, and the renderer prints every
+    alternative after its own OR separator. Production shipped only 2 of the teacher's
+    3 options because the schema knew a single alternative."""
+
+    def _wo(self):
+        secs = psx.normalize_slots([{"id": "SEC_B", "name": "Writing", "marks": 5,
+            "question_slots": [
+                {"qnum": 1, "type": "writing", "marks": 5, "choice": "internal",
+                 "source": "general",
+                 "alternatives": ["Descriptive Paragraph", "Letter - informal",
+                                  "Notice Writing"]},
+            ]}])
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        return sg.build_work_orders(bp, pattern, {}, "Medium", "6", "English", ["Ch1"])[0]
+
+    def test_prompt_demands_array(self):
+        prompt = sg.build_section_prompt(self._wo())
+        self.assertIn("JSON ARRAY", prompt)
+        self.assertIn("3 options", prompt)
+
+    def test_single_string_alternative_fails(self):
+        q = {"type": "LA", "marks": 5, "text": "Write a descriptive paragraph on rain.",
+             "competency_type": "constructed", "answer_explanation": "pts",
+             "or_alternative": "Write an informal letter."}
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertTrue(any("ARRAY" in e for e in errors), errors)
+
+    def test_array_of_two_passes(self):
+        q = {"type": "LA", "marks": 5, "text": "Write a descriptive paragraph on rain.",
+             "competency_type": "constructed", "answer_explanation": "pts",
+             "or_alternative": ["Write an informal letter to a friend.",
+                                "Write a notice about the lost library book."]}
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertEqual(errors, [])
+
+    def test_short_array_fails(self):
+        q = {"type": "LA", "marks": 5, "text": "Write a descriptive paragraph on rain.",
+             "competency_type": "constructed", "answer_explanation": "pts",
+             "or_alternative": ["Write an informal letter to a friend."]}
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertTrue(any("ARRAY of 2" in e for e in errors), errors)
+
+    def test_renderer_prints_every_alternative(self):
+        q = {"qnum": 11, "text": "Write a descriptive paragraph on rain.", "type": "LA",
+             "marks": 5,
+             "or_alternative": ["Write an informal letter to a friend.",
+                                "Write a notice about the lost library book."]}
+        out = []
+        sg_gen.process_question(out, q, 11)
+        self.assertEqual(len([1 for k, _ in out if k == "or"]), 2)
+        qlines = [t for k, t in out if k == "q"]
+        self.assertEqual(len(qlines), 3)                 # primary + 2 alternatives
+        self.assertTrue(all(t.startswith("11.") for t in qlines))
+        self.assertIn("notice", qlines[2])
+
+    def test_umbrella_stem_and_letter_labels_fail(self):
+        # Production layout bug: "11. Attempt any ONE… OR 11. A. Write… OR 11. B. …" —
+        # the stem must BE the first option and options must not carry A/B/C labels.
+        q = {"type": "LA", "marks": 5, "text": "Attempt any ONE of the following:",
+             "competency_type": "constructed", "answer_explanation": "pts",
+             "or_alternative": ["A. Write a descriptive paragraph on rain.",
+                                "B. Write an informal letter to a friend."]}
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertTrue(any("umbrella" in e for e in errors), errors)
+        self.assertTrue(any("prefix options" in e for e in errors), errors)
+
+
+class StandalonePartsNoPassageTest(TestCase):
+    """An SA parts group ('A to F, attempt any 5') is not an extract — production
+    attached a skill-box source_text to it and the paper printed an unwanted
+    'Read the source/case…' passage above plain short-answer questions."""
+
+    def _wo(self):
+        secs = psx.normalize_slots([{"id": "SEC_D", "name": "Literature", "marks": 10,
+            "question_slots": [
+                {"qnum": 1, "type": "sa", "marks": 10, "choice": "open", "attempt": 5,
+                 "source": "textbook",
+                 "parts": [{"label": l, "type": "sa", "marks": 2} for l in "ABCDEF"]},
+            ]}])
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        return sg.build_work_orders(bp, pattern, {}, "Medium", "6", "English", ["Ch1"])[0]
+
+    def test_source_text_on_sa_parts_group_fails(self):
+        q = {"type": "CBQ", "subtype": "source_based", "marks": 10,
+             "text": "Attempt any 5 of the following 6:", "competency_type": "constructed",
+             "source_text": "The way we use stress and intonation can change meaning. " * 3,
+             "sub_questions": [{"text": f"q{i}", "marks": 2} for i in range(6)]}
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertTrue(any("standalone sub-questions" in e for e in errors), errors)
+
+    def test_clean_sa_parts_group_passes(self):
+        q = {"type": "CBQ", "subtype": "standard", "marks": 10,
+             "text": "Attempt any 5 of the following 6:", "competency_type": "constructed",
+             "sub_questions": [{"text": f"Explain point {i} from the chapter.", "marks": 2}
+                               for i in range(6)]}
+        errors = sg.validate_section_output({"questions": [q]}, self._wo())
+        self.assertEqual(errors, [])
+
+    def test_prompt_forbids_passages(self):
+        prompt = sg.build_section_prompt(self._wo())
+        self.assertIn("NO PASSAGE", prompt)
+        self.assertIn('Do NOT output a section-level "passage" key', prompt)
+
+
+class SlotSectionPassageRenderTest(TestCase):
+    """Renderer: a section-level 'passage' on a slot section is generator planning
+    junk ('This section tests your understanding…') unless the section is an
+    unseen-reading one — those genuinely share one passage across their slots."""
+
+    def _render(self, slots, source):
+        blueprint = {"Sec": {"marks": 5, "question_slots": slots}}
+        data = {"Sec": {"passage": "Some section level text here.",
+                        "questions": [{"qnum": 1, "type": "SA", "subtype": "standard",
+                                       "marks": 5, "text": "Answer this."}]}}
+        out = []
+        sg_gen.render_section_questions(out, data, blueprint)
+        return [t for k, t in out if k == "passage"]
+
+    def test_textbook_slot_section_skips_section_passage(self):
+        slots = [{"qnum": 1, "type": "sa", "marks": 5, "source": "textbook"}]
+        self.assertEqual(self._render(slots, "textbook"), [])
+
+    def test_unseen_slot_section_keeps_section_passage(self):
+        slots = [{"qnum": 1, "type": "sa", "marks": 5, "source": "unseen"}]
+        self.assertEqual(self._render(slots, "unseen"), ["Some section level text here."])
+
+
+class ExtractCoherenceTest(TestCase):
+    """Literature extracts must be coherent literary text quoted whole — production
+    shipped a fill-in-the-blanks worksheet and a bullet-pointed pronunciation skill
+    box clipped mid-thought as 'extracts'."""
+
+    def test_worksheet_markup_flagged(self):
+        self.assertIsNotNone(sg._extract_text_issue(
+            "To communicate (i) ___________ (effective), choose your words and topics "
+            "(ii) ___________ (wise)."))
+        self.assertIsNotNone(sg._extract_text_issue(
+            "→ Content words like book, run are stressed. • Use falling intonation "
+            "towards the end of the sentence."))
+
+    def test_clipped_fragments_flagged(self):
+        self.assertIsNotNone(sg._extract_text_issue(
+            "and then the mongoose ran into the garden. The boy followed it home."))
+        self.assertIsNotNone(sg._extract_text_issue(
+            "The boy followed the mongoose into the"))
+
+    def test_clean_passage_passes(self):
+        self.assertIsNone(sg._extract_text_issue(
+            '"Where are you going?" asked the old man. The boy pointed to the river '
+            "and smiled at him."))
+        self.assertIsNone(sg._extract_text_issue(""))
+
+    def test_exercise_question_page_flagged(self):
+        # The exact production failure: the poem's own exercise page (page header +
+        # numbered question + activity item) quoted as the OR alternative's "passage".
+        src = ("Poorvi62\n"
+               "   2. Why has the poet used phrases like 'funny sounding sight' and "
+               "'funny feeling sound' with reference to the funny man?\n"
+               " VI Can you think of any real-world situations where people do similar "
+               "things for fun, entertainment, or performance? Share with your classmates "
+               "and the teacher.")
+        self.assertIsNotNone(sg._extract_text_issue(src))
+        # each artefact alone is enough
+        self.assertIsNotNone(sg._extract_text_issue("Poorvi62\nHe held it to my nose."))
+        self.assertIsNotNone(sg._extract_text_issue(
+            "2. Why has the poet used these phrases in the poem about the funny man?"))
+        self.assertIsNotNone(sg._extract_text_issue(
+            "Think of similar situations and share with your classmates and the teacher."))
+
+    def test_poem_quote_with_slashes_passes(self):
+        self.assertIsNone(sg._extract_text_issue(
+            'He said, "Allow me to present / Your Highness with a rose." / And taking '
+            "out a currant bun / He held it to my nose."))
+
+
+
+class RegenerateAllPatternsTest(TestCase):
+    """POST /api/patterns/regenerate-all/ re-queues every AI-generated pattern (or just the
+    given ids) from its own saved prompt, and skips manual patterns, promptless ones and
+    ones already queued/generating — without ever touching non-AI patterns."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.school = School.objects.create(name="Regen School")
+        self.user = User.objects.create_user("regen_t", "rt@x.com", "pw")
+        p = self.user.profile
+        p.school = self.school
+        p.role = "teacher"
+        p.save()
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+
+        def mk(name, source, prompt, status="done"):
+            return ExamPattern.objects.create(
+                name=name, subject="English", class_name="6",
+                sections=[{"name": "A"}], total_marks=40, total_questions=10,
+                pattern_source=source, ai_prompt=prompt, status=status,
+                created_by=self.user)
+
+        self.p_ai       = mk("AI ok",        "ai_generated", "PT-1 paper, 40 marks")
+        self.p_running  = mk("AI running",   "ai_generated", "same prompt", status="generating")
+        self.p_manual   = mk("Manual",       "manual",       "")
+        self.p_noprompt = mk("AI no prompt", "ai_generated", "")
+
+    def _post(self, body=None):
+        from unittest import mock
+        with mock.patch("core.tasks.generate_pattern_task") as mtask:
+            mtask.delay.return_value = mock.Mock(id="task-regen-1")
+            r = self.api.post("/api/patterns/regenerate-all/", body or {}, format="json")
+        return r, mtask
+
+    def test_queues_only_eligible_ai_patterns(self):
+        r, mtask = self._post()
+        self.assertEqual(r.status_code, 202)
+        data = r.json()
+        self.assertEqual(data["queued_ids"], [self.p_ai.id])
+        self.assertIn(self.p_manual.id, data["skipped_not_ai"])
+        self.assertIn(self.p_noprompt.id, data["skipped_no_prompt"])
+        self.assertIn(self.p_running.id, data["skipped_active"])
+        mtask.delay.assert_called_once_with(self.p_ai.id)
+        self.p_ai.refresh_from_db()
+        self.assertEqual(self.p_ai.status, "queued")
+        self.assertEqual(self.p_ai.sections, [])           # rebuilt from the prompt
+        self.assertEqual(self.p_ai.task_id, "task-regen-1")
+        self.p_manual.refresh_from_db()
+        self.assertEqual(self.p_manual.status, "done")     # untouched
+
+    def test_ids_restricts_scope(self):
+        r, mtask = self._post({"ids": [self.p_manual.id]})
+        self.assertEqual(r.status_code, 202)
+        data = r.json()
+        self.assertEqual(data["queued"], 0)
+        self.assertEqual(data["skipped_not_ai"], [self.p_manual.id])
+        mtask.delay.assert_not_called()
+        self.p_ai.refresh_from_db()
+        self.assertEqual(self.p_ai.status, "done")         # not in ids → untouched
+
+    def test_bad_ids_rejected(self):
+        r, _ = self._post({"ids": "everything"})
+        self.assertEqual(r.status_code, 400)
+        r, _ = self._post({"ids": []})
+        self.assertEqual(r.status_code, 400)
+        r, _ = self._post({"ids": ["not-a-number"]})
+        self.assertEqual(r.status_code, 400)
+
+    def test_other_schools_patterns_excluded(self):
+        other = User.objects.create_user("other_t", "ot@x.com", "pw")
+        op = other.profile
+        op.school = School.objects.create(name="Other School")
+        op.role = "teacher"
+        op.save()
+        foreign = ExamPattern.objects.create(
+            name="Foreign AI", subject="English", class_name="6", sections=[{"name": "A"}],
+            total_marks=40, total_questions=10, pattern_source="ai_generated",
+            ai_prompt="their prompt", status="done", created_by=other)
+        r, mtask = self._post({"ids": [foreign.id, self.p_ai.id]})
+        self.assertEqual(r.status_code, 202)
+        self.assertEqual(r.json()["queued_ids"], [self.p_ai.id])
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.status, "done")           # out of scope → untouched
+
+
+class MarkdownTableRenderTest(TestCase):
+    """LLM question/passage text may embed data tables as markdown "| a | b |" blocks
+    (e.g. a conduction-tester observation table). The DOCX renderer must turn those into
+    real Word tables — not print the raw pipe rows as text (production defect)."""
+
+    QTEXT = (
+        "17. Study the diagram of the conduction tester shown above. A student uses this "
+        "tester to check various objects and creates the following observation table:\n"
+        "| Object Tested | Bulb Glows? |\n"
+        "|----------------|-------------|\n"
+        "| Iron Nail | Yes |\n"
+        "| Plastic Spoon | No |\n"
+        "| Common Salt Solution in Water | Yes (Dimly) |\n"
+        "Which objects are conductors of electricity? [3 marks]"
+    )
+
+    def test_segments_parse_table_with_header(self):
+        segs = sg_gen._md_table_segments(self.QTEXT)
+        self.assertEqual([k for k, _ in segs], ["text", "table", "text"])
+        table = segs[1][1]
+        self.assertTrue(table["header"])
+        self.assertEqual(len(table["rows"]), 4)            # separator row dropped
+        self.assertEqual(table["rows"][0], ["Object Tested", "Bulb Glows?"])
+        self.assertEqual(table["rows"][3], ["Common Salt Solution in Water", "Yes (Dimly)"])
+
+    def test_plain_text_returns_none(self):
+        self.assertIsNone(sg_gen._md_table_segments("What is 2 + 2? Explain your answer."))
+        # determinant-style pipes are not table rows (lines don't start AND end with |)
+        self.assertIsNone(sg_gen._md_table_segments("Find |A| = 5\nand |B| = 3 for the matrices."))
+
+    def test_single_pipe_line_stays_text(self):
+        self.assertIsNone(sg_gen._md_table_segments(
+            "Read this:\n| just one decorated line |\nand answer."))
+
+    def test_question_renders_real_docx_table(self):
+        import re as _re
+        from docx import Document as Doc
+        mp = _re.compile(r"\s*\[(\d+)\s*marks?\]", _re.IGNORECASE)
+        doc = Doc()
+        segs = sg_gen._md_table_segments(mp.sub("", self.QTEXT).rstrip())
+        self.assertIsNotNone(segs)
+        sg_gen._render_question_segments(doc, segs, self.QTEXT, mp)
+        self.assertEqual(len(doc.tables), 1)
+        tbl = doc.tables[0]
+        self.assertEqual(tbl.cell(0, 0).text, "Object Tested")
+        self.assertEqual(tbl.cell(2, 1).text, "No")
+        self.assertTrue(tbl.cell(0, 0).paragraphs[0].runs[0].bold)   # header row bold
+        body = [p.text for p in doc.paragraphs]
+        self.assertTrue(any(t.endswith("[3]") for t in body))        # marks kept on the stem
+        self.assertTrue(any("Which objects are conductors" in t for t in body))
+        self.assertFalse(any("| Iron Nail" in t for t in body))      # no raw pipe rows
+
+    def test_marks_tag_glued_to_last_row_still_parses(self):
+        # process_question appends " [N marks]" to the END of the text — which lands on the
+        # last table row. render_docx strips it before segmentation; verify that path.
+        import re as _re
+        mp = _re.compile(r"\s*\[(\d+)\s*marks?\]", _re.IGNORECASE)
+        segs = sg_gen._md_table_segments(mp.sub("", self.QTEXT.rstrip()
+                                                .replace("Which objects are conductors of electricity? [3 marks]", ""))
+                                         .rstrip())
+        self.assertIsNotNone(segs)
+        self.assertEqual(segs[-1][0], "table")             # table can end the question
+
+    def test_passage_box_nests_table(self):
+        from docx import Document as Doc
+        doc = Doc()
+        sg_gen._add_passage_box(doc, "A student records:\n| Metal | Conducts |\n| Copper | Yes |\nStudy it.")
+        outer = doc.tables[0]
+        cell = outer.cell(0, 0)
+        self.assertIn("A student records:", cell.paragraphs[0].text)
+        self.assertEqual(len(cell.tables), 1)
+        self.assertEqual(cell.tables[0].cell(0, 0).text, "Metal")
+        self.assertEqual(cell.tables[0].cell(1, 1).text, "Yes")
+        self.assertFalse(any("| Copper" in p.text for p in cell.paragraphs))

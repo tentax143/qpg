@@ -40,7 +40,7 @@ def _fill_section_counts(sections):
         qc = _num(s.get("questions_count") or s.get("questions"), 0)
         mpq = _num(s.get("marks_per_question"), 0.0)
         if mpq <= 0:
-            mpq = round(marks / qc, 1) if qc else typical(s.get("question_types"))
+            mpq = round(marks / qc, 2) if qc else typical(s.get("question_types"))
         if qc <= 0 and marks and mpq:
             qc = max(1, round(marks / mpq))
         if qc:

@@ -10,6 +10,19 @@ import {
   History, Undo2, PanelRightClose, PanelRightOpen, Clock, RefreshCw
 } from 'lucide-react';
 
+// What the AI edit bar can do — shown in the sidebar box; clicking a chip fills the input with its example.
+const AI_CAPABILITIES = [
+  { label: 'Change',       example: 'Make Q7 harder' },
+  { label: 'Replace',      example: 'Replace Q2 with a new question on decimals' },
+  { label: 'Add',          example: 'Add a 2-mark question on fractions to Section A' },
+  { label: 'Move',         example: 'Move Q5 to Section B' },
+  { label: 'Delete',       example: 'Delete Q3' },
+  { label: 'Swap',         example: 'Swap Q2 and Q4' },
+  { label: 'Set marks',    example: 'Change Q3 marks to 5' },
+  { label: 'Instructions', example: "Set Section B instructions to 'Attempt any five questions'" },
+  { label: 'Full section', example: 'Make all the questions in Section A easier' },
+];
+
 export default function EditPaperPage() {
   const { id } = useParams();
 
@@ -623,6 +636,29 @@ export default function EditPaperPage() {
             <button onClick={() => setShowLog(false)} title="Hide" className="p-1 text-slate-400 hover:text-slate-600 rounded">
               <X className="w-3.5 h-3.5" />
             </button>
+          </div>
+
+          {/* What the AI editor can do — click a chip to load its example into the AI bar */}
+          <div className="flex-none px-3 pt-3">
+            <div className="rounded-xl border border-violet-200 bg-violet-50 p-3">
+              <div className="flex items-center gap-1.5 mb-2">
+                <Sparkles className="w-3.5 h-3.5 text-violet-500" />
+                <p className="text-[10px] font-bold uppercase tracking-wide text-violet-800">What AI can do</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {AI_CAPABILITIES.map(c => (
+                  <button key={c.label} onClick={() => setAiInput(c.example)}
+                    title={`Try: “${c.example}”`}
+                    className="px-2 py-1 text-[11px] font-medium text-violet-700 bg-white border border-violet-200 rounded-lg hover:bg-violet-100 hover:border-violet-300 transition-colors">
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-violet-700/70 mt-2 leading-snug">
+                Click one to drop an example into the AI bar below, then edit it. Name questions and sections
+                exactly (Q5, Section B) — every applied edit is logged here with one-click revert.
+              </p>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto p-3 space-y-2">

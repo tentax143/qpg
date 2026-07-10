@@ -1,0 +1,22 @@
+10 Questions From Me (the Developer) to a Professional About Turning QPG Into a Product
+=========================================================================================
+
+1. I've built a working AI question-paper generator for schools — what should be my very first step to turn it from a project into a sellable product?
+
+2. Should I sell directly to schools or to individual teachers first? How do I figure out who my real paying customer is?
+
+3. How do I decide the pricing? My costs are mostly LLM API tokens per paper — how do I turn that into a subscription or per-paper price?
+
+4. Do I need to register a company, and what legal basics (terms of service, data privacy policy) must I have before onboarding my first school?
+
+5. How do I get my first 5-10 paying schools? Cold outreach, demos, free pilots — what actually works for selling to schools?
+
+6. The app currently runs on my own setup — what should proper production hosting look like, and roughly what will it cost me monthly?
+
+7. What should I do about reliability and support? If a school is generating papers the night before an exam and something breaks, I'm one person — how do I handle that?
+
+8. How do I protect myself if the AI generates a wrong or inappropriate question and a school complains?
+
+9. Should I keep building features or freeze the product and focus on selling what I have? How do I know when it's "good enough" to launch?
+
+10. What milestones (revenue, number of schools, usage) should I hit before thinking about funding, hiring, or going full-time on this?

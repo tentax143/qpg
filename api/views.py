@@ -477,6 +477,50 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
             status=status.HTTP_202_ACCEPTED,
         )
 
+    @action(detail=False, methods=['post'], url_path='regenerate-all')
+    def regenerate_all(self, request):
+        """Re-queue AI generation for every AI-generated pattern in the caller's scope
+        (or only the given `ids`), each from its own EXISTING prompt. Skips manual /
+        official patterns (nothing to re-run), promptless ones, and ones already
+        queued/generating. Returns 202 with per-bucket counts."""
+        from django.db.models import Q
+        from core.tasks import generate_pattern_task
+
+        qs = self.get_queryset()
+        ids = request.data.get('ids')
+        if ids is not None:
+            if not isinstance(ids, list) or not ids:
+                return Response({"error": "'ids' must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                qs = qs.filter(id__in=[int(i) for i in ids])
+            except (TypeError, ValueError):
+                return Response({"error": "'ids' must be a list of integers."}, status=status.HTTP_400_BAD_REQUEST)
+
+        skipped_not_ai = list(qs.exclude(pattern_source='ai_generated').values_list('id', flat=True))
+        ai_qs = qs.filter(pattern_source='ai_generated')
+        skipped_no_prompt = list(ai_qs.filter(Q(ai_prompt__isnull=True) | Q(ai_prompt=''))
+                                 .values_list('id', flat=True))
+        skipped_active = list(ai_qs.filter(status__in=['queued', 'generating'])
+                              .values_list('id', flat=True))
+
+        queued_ids = []
+        for pattern in ai_qs.exclude(id__in=skipped_no_prompt + skipped_active):
+            pattern.status = 'queued'
+            pattern.sections = []
+            pattern.save(update_fields=['status', 'sections'])
+            task = generate_pattern_task.delay(pattern.id)
+            pattern.task_id = task.id
+            pattern.save(update_fields=['task_id'])
+            queued_ids.append(pattern.id)
+
+        return Response({
+            'queued': len(queued_ids),
+            'queued_ids': queued_ids,
+            'skipped_not_ai': skipped_not_ai,        # manual/official — no prompt to re-run
+            'skipped_no_prompt': skipped_no_prompt,  # AI-generated but prompt text is missing
+            'skipped_active': skipped_active,        # already queued or generating
+        }, status=status.HTTP_202_ACCEPTED)
+
 
 class QuestionPaperViewSet(viewsets.ModelViewSet):
     """

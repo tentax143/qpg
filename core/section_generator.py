@@ -146,7 +146,30 @@ def estimate_token_budget(wo: SectionWorkOrder) -> int:
     # 5m LA / 4m CBQ questions, so the JSON gets truncated mid-output and fails to parse.
     raw = base
     counted = False
-    for qt in (wo.question_types or []):
+    if wo.slots:
+        # Slot sections state every printed question — including sub-parts, per-question
+        # extracts and internal-choice alternatives that the per-TYPE summary knows nothing
+        # about. A Literature section (5-part extract × 2 options + 6-part SA + LA with OR)
+        # summarised as "3 questions" budgets the 3000-token floor and truncates mid-extract.
+        _m = re.search(r"(\d{2,4})\s*words", str(wo.extract_instruction or ""), re.IGNORECASE)
+        _extract_words = int(_m.group(1)) if _m else 200
+        for s in wo.slots:
+            if not isinstance(s, dict):
+                continue
+            per = _per_q_tokens(s.get("marks"))
+            parts = [p for p in (s.get("parts") or []) if isinstance(p, dict)]
+            if parts:
+                per = max(per, 150 + 130 * len(parts))
+            if pattern_structure.slot_category(str(s.get("type") or "")) == "cbq":
+                # each option carries its OWN source_text passage (~1.4 tokens/word)
+                per += min(1100, max(400, int(_extract_words * 1.4)))
+            n_opts = 1
+            if s.get("choice") == "internal":
+                hints = len([a for a in (s.get("alternatives") or []) if str(a).strip()])
+                n_opts = hints if hints >= 3 else 2
+            raw += per * n_opts
+        counted = True
+    for qt in (wo.question_types or []) if not counted else []:
         if isinstance(qt, dict) and "marks_each" in qt:
             cnt = _as_int(qt.get("count", 1), 1)
             m = _as_float(qt.get("marks_each", 1), 1.0)
@@ -170,8 +193,8 @@ def estimate_token_budget(wo: SectionWorkOrder) -> int:
 
     if wo.passage_instruction:
         raw += 900
-    if wo.extract_instruction:
-        raw += 700
+    if wo.extract_instruction and not wo.slots:
+        raw += 700   # slot cbq/extract questions budget their own per-option passage above
 
     # Floor 3000 (small sections), ceiling 8192 (model output cap).
     return min(8192, max(3000, raw))
@@ -592,7 +615,9 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
         )
     elif wo.passage_instruction:
         passage_block = f"\nPASSAGE: {wo.passage_instruction}\nGenerate the passage in the 'passage' JSON key; all questions must reference it.\n"
-    elif wo.extract_instruction:
+    elif wo.extract_instruction and not wo.slots:
+        # Slot sections carry extracts per-question in "source_text" — a section-level
+        # 'passage' there prints planning junk above the whole section.
         passage_block = f"\nEXTRACT: {wo.extract_instruction}\nInclude the text/extract in the 'passage' JSON key; questions must reference it.\n"
 
     ar_block = ""
@@ -616,12 +641,26 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
     if prior_error and attempt > 1:
         error_block = f"\n⚠️  PREVIOUS ATTEMPT FAILED — FIX THESE ISSUES:\n{prior_error}\n"
 
+    # source='general' slot census — drives the chapter block, rule 5 and rule 7 below.
+    _general_count = sum(
+        1 for s in (wo.slots or [])
+        if str(s.get("source") or "").strip().lower() == "general"
+    )
+    _all_general = bool(wo.slots) and _general_count == len(wo.slots)
+
     if wo.context_text:
         ctx = wo.context_text
         ctx_label = "REFERENCE MATERIAL (base questions strictly on these textbook excerpts)"
+        rule5 = "5. Draw question content from the reference material above"
     else:
         ctx = f"No textbook content indexed. Use your CBSE {wo.subject} Class {wo.class_name} knowledge."
         ctx_label = "REFERENCE MATERIAL"
+        rule5 = (f"5. Compose original questions from your own CBSE {wo.subject} "
+                 f"Class {wo.class_name} knowledge — no reference material is provided")
+    rule7 = ("7. Do NOT reference the textbook, its chapters, stories or characters "
+             "anywhere in this section."
+             if _all_general else
+             "7. Questions MUST come from different chapters — no chapter monopoly.")
     diff_block = _difficulty_block(wo.difficulty)
 
     # C-01: use section-specific sub-subject when set (compound papers)
@@ -634,7 +673,18 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
     # plan_chapter_allocation): it names exactly how many questions come from each chapter so
     # coverage is predictable and weighted instead of left to the model. Falls back to the
     # legacy "spread evenly" instruction when there is no plan (e.g. chapter-less tests).
-    if wo.chapter_plan:
+    # source='general' slots are the exception: a chapter assignment would order the model
+    # straight back into the textbook the teacher just banned (a Grammar section shipped a
+    # 'Wit and Humour' comprehension question this way), so all-general sections replace the
+    # block outright and mixed sections exempt their general questions.
+    if _all_general:
+        chapter_block = (
+            "CHAPTER ASSIGNMENT: NONE — every question in this section is GENERAL KNOWLEDGE.\n"
+            "Do NOT draw questions from, reference, or name any textbook chapter, story or "
+            "character. Write each question on its stated TOPIC at the class level and set "
+            'its "chapter_tag" to "General".'
+        )
+    elif wo.chapter_plan:
         from collections import Counter
         _dist = Counter(wo.chapter_plan)
         _lines = "\n".join(f'  - "{ch}": {n} question(s)' for ch, n in _dist.items())
@@ -650,6 +700,12 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
             f"CHAPTER DISTRIBUTION — MANDATORY:\n"
             f"Spread questions across ALL {chapter_count} chapter(s): {chapters_str}\n"
             f"Target ~{per_chapter} question(s) per chapter. Never draw all questions from one chapter."
+        )
+    if _general_count and not _all_general:
+        chapter_block += (
+            "\nEXCEPTION: questions marked GENERAL KNOWLEDGE in the per-question "
+            "specification are exempt — they must NOT come from any chapter; set their "
+            '"chapter_tag" to "General".'
         )
 
     # QUESTION TYPE — MANDATORY. The STRICT RULES below are MCQ-heavy, and uniform non-MCQ
@@ -735,6 +791,24 @@ MATHEMATICAL NOTATION (strictly follow):
                 "MUST include an \"or_alternative\" field (an alternate full question, same marks, "
                 "different focus). Do NOT add \"or_alternative\" to any other question.\n"
             )
+            if any(s.get("choice") == "internal"
+                   and (pattern_structure.slot_category(str(s.get("type") or "")) == "cbq"
+                        or s.get("parts"))
+                   for s in wo.slots):
+                or_rule += (
+                    "   For passage/extract questions the \"or_alternative\" MUST be a JSON OBJECT — "
+                    "a complete second question with its OWN \"source_text\" (a DIFFERENT passage or "
+                    "extract), its OWN \"text\" and its OWN \"sub_questions\" (same count and marks as "
+                    "the first option). Never return a bare string for these.\n"
+                )
+            if any(s.get("choice") == "internal"
+                   and len([a for a in (s.get("alternatives") or []) if str(a).strip()]) >= 3
+                   for s in wo.slots):
+                or_rule += (
+                    "   When the per-question specification lists MORE than two options, "
+                    "\"or_alternative\" is a JSON ARRAY with one complete alternative per extra "
+                    "option — the paper prints every option separated by OR.\n"
+                )
     elif any(_type_str(t) in ("la", "long_answer", "long answer") for t in wo.question_types):
         or_rule = (
             "\n9. INTERNAL CHOICE (OR) — MANDATORY FOR LA:\n"
@@ -857,11 +931,47 @@ MATHEMATICAL NOTATION (strictly follow):
                 line += " | material MUST come from the textbook/reference material"
             elif s.get("source") == "unseen":
                 line += " | write UNSEEN (new, original) material"
+            elif s.get("source") == "general":
+                line += (
+                    " | GENERAL KNOWLEDGE — do NOT take this question from the textbook or the "
+                    "reference material; write an ORIGINAL question from general knowledge of the "
+                    "subject at this class level (no chapter names, characters, or lines from any "
+                    "textbook content)"
+                )
             if s.get("condition"):
                 line += f" | condition: {s['condition']}"
             if s.get("choice") == "internal":
                 alts = [str(a).strip() for a in (s.get("alternatives") or []) if str(a).strip()]
-                line += ' | INTERNAL CHOICE — include "or_alternative" (same marks)'
+                if pattern_structure.slot_category(styp) == "cbq" or parts:
+                    line += (
+                        ' | INTERNAL CHOICE — "or_alternative" MUST be a JSON OBJECT: a COMPLETE '
+                        'second question with its OWN "source_text" (a DIFFERENT passage/extract), '
+                        'its OWN "text" and its OWN "sub_questions" (same count and marks as the '
+                        "first option); students answer ONE of the two"
+                    )
+                    if len(alts) >= 3:
+                        line += (
+                            f' — this question has {len(alts)} options, so "or_alternative" is a '
+                            f"JSON ARRAY of {len(alts) - 1} such objects; each option's "
+                            'sub_questions must be answerable ONLY from that option\'s OWN '
+                            '"source_text", never from the other option\'s passage'
+                        )
+                    else:
+                        line += (
+                            "; each option's sub_questions must be answerable ONLY from that "
+                            'option\'s OWN "source_text", never from the other option\'s passage'
+                        )
+                elif len(alts) >= 3:
+                    line += (
+                        f' | INTERNAL CHOICE with {len(alts)} options — provide {len(alts) - 1} '
+                        'complete alternative questions in "or_alternative" as a JSON ARRAY '
+                        f"(each worth {s.get('marks')} marks; the paper prints all {len(alts)} "
+                        'options separated by OR). The "text" field must BE the first full '
+                        'option — do NOT write an "Attempt any one" umbrella line and do NOT '
+                        "prefix options with A/B/C (the OR separators express the choice)"
+                    )
+                else:
+                    line += ' | INTERNAL CHOICE — include "or_alternative" (same marks)'
                 if alts:
                     line += f" [option hints: {'; '.join(alts)}]"
             if parts:
@@ -872,15 +982,60 @@ MATHEMATICAL NOTATION (strictly follow):
                     for j, p in enumerate(parts)
                 )
                 line += f' | {len(parts)} sub-parts in "sub_questions": {part_bits}'
+                if any(str(p.get("type") or "") == "mcq" for p in parts):
+                    line += (
+                        ' | MCQ sub-parts MUST carry their four options INLINE in their "text" '
+                        '("… a) …, b) …, c) …, d) …")'
+                    )
                 if s.get("choice") == "open" and s.get("attempt"):
                     line += (
                         f" | OPEN CHOICE: provide all {len(parts)} sub-parts; students attempt any "
                         f"{s['attempt']} — begin the question text with "
                         f"\"Attempt any {s['attempt']} of the following {len(parts)}:\""
                     )
+            if parts and pattern_structure.slot_category(styp) != "cbq":
+                line += (
+                    ' | NO PASSAGE: do NOT include "source_text" on this question — the '
+                    "sub-parts are standalone questions"
+                )
             if pattern_structure.slot_category(styp) == "cbq":
-                line += ' | include the passage/extract in "source_text" on this question'
+                if styp == "extract" or s.get("source") == "textbook":
+                    line += (
+                        ' | put the extract in "source_text" — a VERBATIM word-for-word quotation '
+                        "copied from the reference material (actual prose/poem lines as printed), "
+                        "NOT a summary, a description of the text, or a newly composed passage. "
+                        "Quote a CONTINUOUS narrative/literary passage with a natural beginning "
+                        "and end (complete sentences) — NEVER grammar or pronunciation "
+                        "explanations, skill boxes, activity instructions, fill-in-the-blank "
+                        "exercise text, the chapter's own exercise questions ('Let us discuss', "
+                        "'Share with your classmates'), or page headers/numbers"
+                    )
+                    if wo.extract_instruction:
+                        line += f" | extract length/format: {wo.extract_instruction}"
+                    if "[CONTINUOUS PASSAGE" in (wo.context_text or ""):
+                        line += (
+                            ' | quote each extract from inside ONE "[CONTINUOUS PASSAGE]" block '
+                            "of the reference material — each block is one unbroken excerpt as "
+                            "printed, long enough to satisfy the stated extract length"
+                        )
+                else:
+                    line += ' | include the passage/extract in "source_text" on this question'
+                    if wo.extract_instruction:
+                        line += f" | {wo.extract_instruction}"
             s_lines.append(line)
+        general_note = ""
+        if wo.context_text and any(str(s.get("source") or "").lower() == "general" for s in wo.slots):
+            general_note = (
+                "The REFERENCE MATERIAL below applies ONLY to questions marked textbook/unseen — "
+                "questions marked GENERAL KNOWLEDGE must NOT reuse its content, wording, characters "
+                "or chapter names. "
+            )
+        no_passage_note = ""
+        if not any(str(s.get("source") or "").lower() == "unseen" for s in wo.slots):
+            no_passage_note = (
+                'Do NOT output a section-level "passage" key — passages belong on individual '
+                'questions in "source_text". '
+            )
         slot_block = (
             "\nPER-QUESTION SPECIFICATION — MANDATORY:\n"
             "Generate EXACTLY the following questions, in this exact order (one JSON question "
@@ -888,8 +1043,8 @@ MATHEMATICAL NOTATION (strictly follow):
             + "\n".join(s_lines) + "\n"
             "Each question's type, subtype and marks MUST match its line above. Write the "
             "question ON the stated TOPIC where one is given. Sub-parts go in that question's "
-            '"sub_questions" array (each entry with "text" and "marks"). Do NOT merge, split, '
-            "reorder or renumber questions.\n"
+            '"sub_questions" array (each entry with "text" and "marks"). ' + general_note +
+            no_passage_note + "Do NOT merge, split, reorder or renumber questions.\n"
         )
 
     # Avoid repeating questions from earlier papers (so two classes don't get identical papers).
@@ -937,9 +1092,9 @@ STRICT RULES:
 2. MCQ / Assertion-Reason questions MUST have 4 options: a, b, c, d
 3. Do NOT embed section headers or question numbers in the 'text' field
 {marks_rule4}
-5. Draw question content from the reference material above
+{rule5}
 6. MCQ ANSWER DISTRIBUTION — MANDATORY: Spread correct answers across a, b, c, d roughly equally. Never place the correct answer in the same option letter for more than 2 consecutive questions. A biased answer key (e.g. mostly 'a' or 'b') will be REJECTED.
-7. Questions MUST come from different chapters — no chapter monopoly.
+{rule7}
 8. COMPETENCY TAGGING — MANDATORY: Every question must include a "competency_type" field:
    - "recall"      → direct knowledge MCQ (define, name, state — no reasoning required)
    - "application" → MCQ requiring reasoning, ALL assertion-reason, ALL case-based, numerical multi-step
@@ -1072,6 +1227,135 @@ def _validate_mcq_options(q: dict, n: int, label: str) -> list:
     return errs
 
 
+def _norm_text(t: str) -> str:
+    """Bare lowercase words — whitespace/punctuation-insensitive comparison form."""
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", str(t or "").lower())).strip()
+
+
+def _stitched_extract_issue(src: str, ctx: str):
+    """First sentence of `src` that does not exist verbatim in `ctx`, or None.
+
+    A quoted extract must be ONE continuous span. Passages stitched together from
+    different places read fine to the shingle-overlap check (every fragment is
+    verbatim) but their splice sentences don't exist in the material as written —
+    sentence-level containment catches exactly those.
+    """
+    c = _norm_text(ctx)
+    if not c:
+        return None
+    for sent in re.split(r"(?<=[.!?])\s+", str(src or "").strip()):
+        ns = _norm_text(sent)
+        if len(ns.split()) >= 5 and ns not in c:
+            return sent.strip()[:60]
+    return None
+
+
+def _ctx_has_long_block(ctx: str, words: int) -> bool:
+    """True when the reference material contains a [CONTINUOUS PASSAGE] block of at
+    least `words` words — i.e. an extract that long is provably quotable from it."""
+    for m in re.finditer(r"\[CONTINUOUS PASSAGE[^\]]*\](.*?)\[END OF PASSAGE",
+                         str(ctx or ""), re.S):
+        if len(m.group(1).split()) >= words:
+            return True
+    return False
+
+
+def _extract_length_issue(src: str, instruction: str, ctx: str):
+    """Error text when an extract falls far short of the pattern's stated word target
+    (extract_instruction, e.g. "approximately 500 words per passage"), or None.
+
+    Loose by design: ≥60% of the target passes ("approximately"), and the error only
+    fires when a continuous block that long actually exists in the context — otherwise
+    the retry could never succeed and would burn every attempt."""
+    m = re.search(r"(\d{2,4})\s*words", str(instruction or ""), re.IGNORECASE)
+    if not m:
+        return None
+    target = int(m.group(1))
+    have = len(str(src or "").split())
+    if have >= int(target * 0.6) or not _ctx_has_long_block(ctx, target):
+        return None
+    return (f"is only {have} words but the pattern asks for approximately {target} — "
+            'quote a longer continuous passage from inside ONE "[CONTINUOUS PASSAGE]" block')
+
+
+def _foreign_quote(sq_texts, own_src, other_src):
+    """A phrase quoted in sub-questions that appears ONLY in the sibling option's
+    passage — proof the sub-question was written against the wrong extract."""
+    own, other = _norm_text(own_src), _norm_text(other_src)
+    if not other:
+        return None
+    for t in sq_texts:
+        for m in re.findall(r"[‘'\"“]([^’'\"”]{4,60})[’'\"”]", str(t or "")):
+            nm = _norm_text(m)
+            if nm and nm not in own and nm in other:
+                return m
+    return None
+
+
+def _text_overlaps_context(src: str, ctx: str) -> bool:
+    """True when `src` looks like a verbatim excerpt of `ctx` (extract provenance).
+
+    A word-for-word quotation shares nearly all of its 8-word shingles with the
+    reference material; a composed/summarised passage shares almost none. 30% is
+    generous enough to survive OCR noise and punctuation drift (both sides are
+    normalised to bare lowercase words before comparison).
+    """
+    s, c = _norm_text(src), _norm_text(ctx)
+    if not s or not c:
+        return False
+    words = s.split()
+    if len(words) < 8:
+        return s in c
+    shingles = [" ".join(words[i:i + 8]) for i in range(len(words) - 7)]
+    step = max(1, len(shingles) // 40)   # sample ≤ ~40 shingles, evenly spread
+    sample = shingles[::step]
+    hits = sum(1 for sh in sample if sh in c)
+    return hits / len(sample) >= 0.3
+
+
+def _extract_text_issue(src: str):
+    """Reason a literature-extract passage is unusable, or None.
+
+    Extracts must be coherent literary text quoted whole: worksheet/skill-box
+    content (fill-in blanks, bullets, (i)/(ii) numbering), the chapter's own
+    exercise-question pages (numbered questions, "Share with your classmates…",
+    page headers like "Poorvi62") and fragments clipped mid-sentence all shipped
+    on real papers, so they are rejected mechanically.
+    """
+    s = str(src or "").strip()
+    if not s:
+        return None
+    for m in ("___", "•", "→", "▪", "◦"):
+        if m in s:
+            return f"contains worksheet/skill-box markup ({m})"
+    if "(i)" in s and "(ii)" in s:
+        return "contains worksheet numbering ((i), (ii), …)"
+    for ln in (ln.strip() for ln in s.splitlines() if ln.strip()):
+        if re.match(r"^[A-Za-z]*\s?\d+\s*$", ln):
+            return f"contains a page-header artefact ({ln!r})"
+        if re.match(r"^\d+\s*[.)]\s", ln) or re.match(r"^[IVXivx]{2,4}[.)]?\s+[A-Z]", ln):
+            return f"contains exercise/question numbering ({ln[:40]!r})"
+    low = s.lower()
+    for phrase in ("your classmates", "your teacher", "let us discuss",
+                   "answer the following", "match the following", "fill in the blank",
+                   "choose the correct option", "complete the sentence",
+                   "tick the correct"):
+        if phrase in low:
+            return f"contains classroom-exercise wording ({phrase!r})"
+    first = s.lstrip("\"'“‘( ")[:1]
+    if first and first.islower():
+        return "starts mid-sentence (clipped fragment)"
+    if s[-1] not in ".!?\"'”’…":
+        return "does not end at a sentence boundary (clipped fragment)"
+    return None
+
+
+def _sq_has_inline_mcq_options(txt: str) -> bool:
+    """True when a sub-question's text carries inline MCQ options (a) … d) style)."""
+    letters = {m.lower() for m in re.findall(r"\(?([a-dA-D])[).]", str(txt or ""))}
+    return len(letters) >= 3
+
+
 def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
     """
     Explicit structural validation for every type+subtype combination.
@@ -1101,6 +1385,29 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
 
     if not type_lower:
         errors.append(f"Q{n}: missing 'type' field (must be MCQ / VSA / SA / LA / CBQ)")
+
+    # General-knowledge slots must not reference textbook chapters: the teacher banned
+    # textbook content outright, yet a chapter-assigned model happily writes "In the
+    # story X from the chapter Y…". Deterministic name check across the visible text.
+    if slot and str(slot.get("source") or "").strip().lower() == "general":
+        blobs = [text]
+        _oa = q.get("or_alternative")
+        for _oa_entry in (_oa if isinstance(_oa, list) else [_oa]):
+            if isinstance(_oa_entry, str):
+                blobs.append(_oa_entry)
+            elif isinstance(_oa_entry, dict):
+                blobs.append(str(_oa_entry.get("text", "")))
+        blobs.extend(str(sq.get("text", "")) for sq in (q.get("sub_questions") or [])
+                     if isinstance(sq, dict))
+        blob = " ".join(blobs).lower()
+        for ch in (wo.chapters or []):
+            chl = str(ch).strip().lower()
+            if len(chl) >= 4 and chl in blob:
+                errors.append(
+                    f"Q{n}: this question is GENERAL KNOWLEDGE — it must not reference the "
+                    f"textbook chapter '{ch}'; write an original question on the stated topic"
+                )
+                break
 
     # ── MCQ ──────────────────────────────────────────────────────────────────────
     is_mcq = ("mcq" in type_lower or "objective" in type_lower or "multiple" in type_lower)
@@ -1166,16 +1473,58 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
         # Per-question structure: the slot decides whether THIS question has internal
         # choice — the LA-blanket rule only applies to slot-less (legacy) sections.
         or_required = (slot.get("choice") == "internal") if slot else True
+        # 3+ teacher alternatives ("paragraph OR letter OR notice") need an ARRAY with
+        # one entry per extra option; two options keep the classic single alternative.
+        _hint_count = len([a for a in ((slot or {}).get("alternatives") or [])
+                           if str(a).strip()])
+        _need = _hint_count - 1 if _hint_count >= 3 else 1
         if not or_alt:
             if or_required:
                 errors.append(
                     f"Q{n} [LA/standard]: missing 'or_alternative' — "
                     "this question requires internal choice (OR)"
                 )
+        elif isinstance(or_alt, list):
+            if len(or_alt) < _need:
+                errors.append(
+                    f"Q{n} [LA/standard]: the pattern offers {_hint_count} options — "
+                    f"'or_alternative' must be an ARRAY of {_need} alternative questions"
+                )
+            for ai, a in enumerate(or_alt, start=2):
+                if isinstance(a, str) and not a.strip():
+                    errors.append(f"Q{n} [LA/standard]: 'or_alternative' option {ai} is empty")
+                elif isinstance(a, dict) and not str(a.get("text", "")).strip():
+                    errors.append(f"Q{n} [LA/standard]: 'or_alternative' option {ai} has empty text")
+        elif _need > 1:
+            errors.append(
+                f"Q{n} [LA/standard]: the pattern offers {_hint_count} options — provide "
+                f"{_need} alternative questions in 'or_alternative' as a JSON ARRAY"
+            )
         elif isinstance(or_alt, str) and not or_alt.strip():
             errors.append(f"Q{n} [LA/standard]: 'or_alternative' is empty string")
         elif isinstance(or_alt, dict) and not str(or_alt.get("text", "")).strip():
             errors.append(f"Q{n} [LA/standard]: 'or_alternative.text' is empty")
+        # Umbrella stems and A/B/C labels wreck the printed OR layout ("11. Attempt any
+        # ONE… OR 11. A. …"): each option must itself be a complete question.
+        if slot and slot.get("choice") == "internal":
+            _opt_texts = [text]
+            for _a in (or_alt if isinstance(or_alt, list) else [or_alt]):
+                if isinstance(_a, str):
+                    _opt_texts.append(_a)
+                elif isinstance(_a, dict):
+                    _opt_texts.append(str(_a.get("text", "")))
+            if re.match(r"^\s*attempt any\b", text, re.IGNORECASE):
+                errors.append(
+                    f"Q{n} [LA/standard]: 'text' must BE the first full option — do not write "
+                    "an 'Attempt any one' umbrella line (the OR separators express the choice)"
+                )
+            _labels = [m.group(1).upper() for t in _opt_texts
+                       for m in [re.match(r"^\s*\(?([A-Da-d])[.)]\s", t or "")] if m]
+            if len(_labels) >= 2:
+                errors.append(
+                    f"Q{n} [LA/standard]: do not prefix options with 'A.'/'B.'/'C.' — write "
+                    "each option as a complete standalone question"
+                )
 
     # ── CBQ ───────────────────────────────────────────────────────────────────────
     elif (qtype == "CBQ"
@@ -1216,9 +1565,46 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
                     f"Q{n} [CBQ/{subtype}]: sub_question marks sum={sq_sum} "
                     f"!= question marks={expected} — adjust individual sub-question marks"
                 )
+            # Slot-declared parts pin the exact sub-part count and per-part marks: an
+            # "attempt any 5 of 6" question shipping 5 parts slips past the marks-sum
+            # check via the open-choice exemption, so count is enforced separately.
+            slot_parts = ([p for p in (slot.get("parts") or []) if isinstance(p, dict)]
+                          if slot else [])
+            if slot_parts and len(sqs) != len(slot_parts):
+                errors.append(
+                    f"Q{n} [CBQ/{subtype}]: the pattern declares {len(slot_parts)} sub-parts "
+                    f"but got {len(sqs)} sub_questions — provide ALL {len(slot_parts)}"
+                )
+            elif slot_parts:
+                for si, (sq, p) in enumerate(zip(sqs, slot_parts), start=1):
+                    pm = _as_float(p.get("marks"), 0.0)
+                    if pm > 0 and isinstance(sq, dict) and \
+                            abs(_as_float(sq.get("marks", 0), 0.0) - pm) > 0.01:
+                        errors.append(
+                            f"Q{n} [CBQ/{subtype}]: sub-question {si} marks="
+                            f"{sq.get('marks')} but the pattern says part "
+                            f"({p.get('label') or si}) is worth {p.get('marks')}m"
+                        )
+                    if str(p.get("type") or "") == "mcq" and isinstance(sq, dict) \
+                            and not _sq_has_inline_mcq_options(sq.get("text")):
+                        errors.append(
+                            f"Q{n} [CBQ/{subtype}]: sub-question {si} is declared MCQ in the "
+                            f"pattern (part {p.get('label') or si}) — include its four options "
+                            "inline in its text: '… a) …, b) …, c) …, d) …'"
+                        )
+        _slot_type = str(slot.get("type") or "") if slot else ""
+        _slot_cat = pattern_structure.slot_category(_slot_type) if _slot_type else None
         # Ensure image generation flag is set for image_based questions
         if subtype == "image_based" or type_lower == "image_based":
             q["image_based"] = True
+        # A parts group that is NOT an extract/case study (e.g. SA "attempt any 5 of 6")
+        # must not grow a passage — the sub-parts are standalone questions.
+        elif slot and slot.get("parts") and _slot_cat and _slot_cat != "cbq":
+            if str(q.get("source_text", "") or q.get("passage", "") or "").strip():
+                errors.append(
+                    f"Q{n} [CBQ/{subtype}]: do NOT attach a 'source_text' passage — the pattern "
+                    "asks for standalone sub-questions here (use subtype 'standard', no extract)"
+                )
         # Source-based CBQ must carry its own passage in 'source_text' (mixed-section flow).
         # An image_based CBQ gets its visual from the image pipeline instead, so it's exempt.
         elif subtype == "source_based" or "source" in type_lower or "case" in type_lower:
@@ -1229,6 +1615,163 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
                     f"Q{n} [CBQ/{subtype}]: missing 'source_text' — provide the case/source "
                     "passage (150-250 words) in a 'source_text' field on THIS question"
                 )
+            # Textbook extracts must be QUOTED, not composed: a slot that says
+            # extract/textbook whose passage shares no wording with the reference
+            # material is a hallucinated summary, not an extract.
+            if (src and len(wo.context_text or "") >= 400
+                    and (_slot_type == "extract" or (slot or {}).get("source") == "textbook")
+                    and not _text_overlaps_context(src, wo.context_text)):
+                errors.append(
+                    f"Q{n} [CBQ/{subtype}]: 'source_text' is NOT a verbatim excerpt from the "
+                    "REFERENCE MATERIAL — copy the extract word-for-word from the textbook "
+                    "excerpts above; do not summarise, describe or invent the passage"
+                )
+            elif (src and _slot_type == "extract" and len(wo.context_text or "") >= 400):
+                # Verbatim overall, but is it ONE continuous span? Stitched passages
+                # ("…of all people, for your choice.") splice fragments together.
+                _sp = _stitched_extract_issue(src, wo.context_text)
+                if _sp:
+                    errors.append(
+                        f"Q{n} [CBQ/{subtype}]: 'source_text' is stitched/edited — the sentence "
+                        f"\"{_sp}…\" is not in the reference material as written; quote ONE "
+                        "continuous passage exactly as printed"
+                    )
+            # …and quoted WHOLE: worksheet/skill-box text and mid-sentence fragments
+            # are not literature extracts even when they are verbatim.
+            if src and _slot_type == "extract":
+                _issue = _extract_text_issue(src)
+                if _issue:
+                    errors.append(
+                        f"Q{n} [CBQ/{subtype}]: 'source_text' {_issue} — quote a complete "
+                        "literary passage (story/poem/reader lines) with a natural beginning "
+                        "and end, not grammar/skill-box or exercise text"
+                    )
+                _len = _extract_length_issue(src, wo.extract_instruction, wo.context_text)
+                if _len:
+                    errors.append(f"Q{n} [CBQ/{subtype}]: 'source_text' {_len}")
+
+        # Internal-choice CBQ/extract (slot.choice == "internal"): every OR alternative
+        # must be a COMPLETE question — its own passage and its own sub-parts — or the
+        # printed paper shows a bare "OR" line with nothing under it. 3+ teacher options
+        # arrive as an ARRAY with one entry per extra option.
+        if slot and slot.get("choice") == "internal":
+            _exp = _as_float(q.get("marks", wo.marks_per_question), wo.marks_per_question)
+            _hint_count = len([a for a in (slot.get("alternatives") or []) if str(a).strip()])
+            _need = _hint_count - 1 if _hint_count >= 3 else 1
+            or_alt = q.get("or_alternative")
+            alt_list = or_alt if isinstance(or_alt, list) else ([or_alt] if or_alt is not None else [])
+            if not alt_list:
+                errors.append(
+                    f"Q{n} [CBQ/{subtype}]: 'or_alternative' must be a JSON OBJECT with its own "
+                    "'source_text', 'text' and 'sub_questions' (a complete second question) — "
+                    "it is missing"
+                )
+            elif len(alt_list) < _need:
+                errors.append(
+                    f"Q{n} [CBQ/{subtype}]: the pattern offers {_hint_count} options — "
+                    f"'or_alternative' must be an ARRAY of {_need} complete alternatives"
+                )
+            for ai, _alt in enumerate(alt_list, start=2):
+                _tag = f"option {ai}" if len(alt_list) > 1 else "'or_alternative'"
+                if not isinstance(_alt, dict):
+                    errors.append(
+                        f"Q{n} [CBQ/{subtype}]: {_tag} must be a JSON OBJECT with its own "
+                        "'source_text', 'text' and 'sub_questions' (a complete second question)"
+                        + (" — got a bare string" if isinstance(_alt, str) and _alt.strip() else "")
+                    )
+                    continue
+                if not str(_alt.get("text", "")).strip():
+                    errors.append(f"Q{n} [CBQ/{subtype}]: {_tag} 'text' is empty")
+                alt_src = str(_alt.get("source_text", "") or _alt.get("passage", "") or "").strip()
+                if subtype != "image_based" and len(alt_src) < 80:
+                    errors.append(
+                        f"Q{n} [CBQ/{subtype}]: {_tag} needs its OWN 'source_text' — "
+                        "a DIFFERENT passage/extract, not a reference to the first one"
+                    )
+                elif (alt_src and len(wo.context_text or "") >= 400
+                        and (str(slot.get("type") or "") == "extract"
+                             or slot.get("source") == "textbook")
+                        and not _text_overlaps_context(alt_src, wo.context_text)):
+                    errors.append(
+                        f"Q{n} [CBQ/{subtype}]: {_tag} 'source_text' is NOT a verbatim "
+                        "excerpt from the REFERENCE MATERIAL — copy it word-for-word"
+                    )
+                elif (alt_src and str(slot.get("type") or "") == "extract"
+                        and len(wo.context_text or "") >= 400):
+                    _sp = _stitched_extract_issue(alt_src, wo.context_text)
+                    if _sp:
+                        errors.append(
+                            f"Q{n} [CBQ/{subtype}]: {_tag} 'source_text' is stitched/edited — "
+                            f"the sentence \"{_sp}…\" is not in the reference material as "
+                            "written; quote ONE continuous passage exactly as printed"
+                        )
+                if alt_src and str(slot.get("type") or "") == "extract":
+                    _issue = _extract_text_issue(alt_src)
+                    if _issue:
+                        errors.append(
+                            f"Q{n} [CBQ/{subtype}]: {_tag} 'source_text' {_issue} — quote a "
+                            "complete literary passage (story/poem/reader lines) with a natural "
+                            "beginning and end, not grammar/skill-box or exercise text"
+                        )
+                    _len = _extract_length_issue(alt_src, wo.extract_instruction, wo.context_text)
+                    if _len:
+                        errors.append(f"Q{n} [CBQ/{subtype}]: {_tag} 'source_text' {_len}")
+                alt_sqs = _alt.get("sub_questions")
+                alt_sqs = alt_sqs if isinstance(alt_sqs, list) else []
+                _n_expected = len([p for p in (slot.get("parts") or []) if isinstance(p, dict)]) \
+                    or len(sqs)
+                if not alt_sqs:
+                    errors.append(
+                        f"Q{n} [CBQ/{subtype}]: {_tag} needs its OWN 'sub_questions' "
+                        "(same count and marks as the first option)"
+                    )
+                else:
+                    if _n_expected and len(alt_sqs) != _n_expected:
+                        errors.append(
+                            f"Q{n} [CBQ/{subtype}]: {_tag} has {len(alt_sqs)} "
+                            f"sub_questions but must have {_n_expected} — all options must match"
+                        )
+                    for si, (sq, p) in enumerate(
+                            zip(alt_sqs, [p for p in (slot.get("parts") or [])
+                                          if isinstance(p, dict)]), start=1):
+                        if str(p.get("type") or "") == "mcq" and isinstance(sq, dict) \
+                                and not _sq_has_inline_mcq_options(sq.get("text")):
+                            errors.append(
+                                f"Q{n} [CBQ/{subtype}]: {_tag} sub-question {si} is declared "
+                                f"MCQ in the pattern (part {p.get('label') or si}) — include "
+                                "its four options inline in its text"
+                            )
+                    _fq = _foreign_quote(
+                        [sq.get("text") for sq in alt_sqs if isinstance(sq, dict)],
+                        alt_src,
+                        str(q.get("source_text", "") or q.get("passage", "") or ""))
+                    if _fq:
+                        errors.append(
+                            f"Q{n} [CBQ/{subtype}]: {_tag} sub-questions quote '{_fq}' which "
+                            "appears only in the FIRST option's passage — each option's "
+                            "sub-questions must be answerable from its OWN source_text"
+                        )
+                    alt_sum = sum(
+                        _as_float(sq.get("marks", 0), 0.0) if isinstance(sq, dict) else 0.0
+                        for sq in alt_sqs
+                    )
+                    if _exp and abs(alt_sum - _exp) > 0.1:
+                        errors.append(
+                            f"Q{n} [CBQ/{subtype}]: {_tag} sub_question marks "
+                            f"sum={alt_sum} != question marks={_exp}"
+                        )
+            _first_alt = next((a for a in alt_list if isinstance(a, dict)), None)
+            if _first_alt is not None:
+                _fq = _foreign_quote(
+                    [sq.get("text") for sq in sqs if isinstance(sq, dict)],
+                    str(q.get("source_text", "") or q.get("passage", "") or ""),
+                    str(_first_alt.get("source_text", "") or _first_alt.get("passage", "") or ""))
+                if _fq:
+                    errors.append(
+                        f"Q{n} [CBQ/{subtype}]: the first option's sub-questions quote '{_fq}' "
+                        "which appears only in the OTHER option's passage — each option's "
+                        "sub-questions must be answerable from its OWN source_text"
+                    )
 
     return errors
 
@@ -3098,6 +3641,47 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
     return context[:max_chars]
 
 
+def _extract_span_chars(instruction: str) -> int:
+    """Chars of continuous source text an extract slot needs: the pattern's stated word
+    count (≈6.5 chars/word incl. spaces) plus headroom so the model can choose a natural
+    beginning and end inside the span. Default suits the CBSE-typical 100-150 word extract."""
+    m = re.search(r"(\d{2,4})\s*words", str(instruction or ""), re.IGNORECASE)
+    if not m:
+        return 1800
+    return max(1200, min(5000, int(int(m.group(1)) * 6.5) + 600))
+
+
+def get_extract_spans(class_name: str, subject: str, chapters: list, school_id=None,
+                      span_chars: int = 3500, max_spans: int = 3) -> list:
+    """Continuous narrative passages for literature-extract slots.
+
+    Retrieval returns isolated ~1000-char chunks in similarity order, so the section
+    context never contains an unbroken passage longer than ~170 words — an extract slot
+    whose pattern demands "approximately 500 words" could not be quoted verbatim at all
+    (the stitched-extract validator rightly rejects quotes spliced across fragments).
+    Seed one narrative chunk per chapter and extend it with its physical neighbours
+    (embeddings.fetch_contiguous_span) into one printed-order span each."""
+    spans = []
+    hint = f"{subject} story prose poem narrative dialogue lines"
+    for chapter in (chapters or [None])[:max_spans]:
+        try:
+            res = embeddings.query(class_name=class_name, subject=subject, unit=chapter,
+                                   query_text=hint, n_results=1 if chapter else max_spans,
+                                   school_id=school_id)
+        except Exception as e:
+            print(f"[Extract-Spans] query failed chapter='{chapter}': {e}")
+            continue
+        for cid in (res.get("ids") or [[]])[0]:
+            try:
+                span = embeddings.fetch_contiguous_span(cid, before=1, after=4, max_chars=span_chars)
+            except Exception as e:
+                print(f"[Extract-Spans] span fetch failed id={cid}: {e}")
+                continue
+            if span and not any(span in s or s in span for s in spans):
+                spans.append(span)
+    return spans[:max_spans]
+
+
 # Keyword fallback for classifying a chapter into a sub-subject when its name isn't an exact
 # catalog match (custom/renamed chapters). Mirrors generator.py's single-prompt classifier.
 _SUBJECT_CHAPTER_KEYWORDS = {
@@ -3196,6 +3780,19 @@ def _chapters_for_subject(section_subject: str, parent_subject: str, all_chapter
     return matched or list(all_chapters)
 
 
+def _slots_all_general(sec_data) -> bool:
+    """True when EVERY question slot in a section says source='general' — the teacher
+    demanded the questions NOT come from the textbook ("give in general, not from the
+    text book"), so RAG retrieval and context injection are skipped for the section.
+    Missing/empty source counts as NOT general, so legacy sections keep full RAG."""
+    if not isinstance(sec_data, dict):
+        return False
+    slots = [s for s in (sec_data.get("question_slots") or []) if isinstance(s, dict)]
+    return bool(slots) and all(
+        str(s.get("source") or "").strip().lower() == "general" for s in slots
+    )
+
+
 def get_section_context_map(class_name: str, subject: str, chapters: list, blueprint: dict, question_types_all: list, school_id=None) -> dict:
     """Return {section_name: context_text} for every section in blueprint.
 
@@ -3210,6 +3807,13 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
     context_by_type_map: dict = {}  # {sec_name: {type_key: ctx_str}}
 
     for sec_name, sec_data in blueprint.items():
+        # All-general sections (teacher: "not from the textbook") get NO context at all —
+        # retrieval is skipped and the quality pre-check must not fight the empty result.
+        if _slots_all_general(sec_data):
+            print(f"[Section-Context] '{sec_name}': all slots source=general — skipping retrieval")
+            context_map[sec_name] = ""
+            context_by_type_map[sec_name] = {}
+            continue
         sec_types = sec_data.get("question_types") or question_types_all
         section_subject = _resolve_section_subject(subject, sec_name, sec_data.get("section_subject", ""))
         effective_subject = section_subject or subject
@@ -3221,6 +3825,11 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
             print(f"[Section-Chapters] '{sec_name}' ({effective_subject}): "
                   f"{len(sec_chapters)}/{len(chapters or [])} chapters → {sec_chapters}")
         hints = _query_hints_for_types(sec_types, effective_subject)
+        # Literature-extract sections need STORY/POEM text, not the chapter's grammar or
+        # skill-box pages — steer retrieval toward narrative content first.
+        _sec_slots = [sl for sl in (sec_data.get("question_slots") or []) if isinstance(sl, dict)]
+        if any(str(sl.get("type") or "") == "extract" for sl in _sec_slots):
+            hints.insert(0, f"{effective_subject} story prose poem narrative dialogue lines")
         ctx = get_section_context(class_name, effective_subject, sec_chapters, hints, school_id=school_id)
 
         # If subsection store is empty (e.g. 10_history not ingested), retry with parent subject
@@ -3237,6 +3846,25 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
             if len(ctx_broad) > len(ctx):
                 ctx = ctx_broad
                 print(f"[Context-QC] '{sec_name}': broad retry improved to {len(ctx)} chars")
+
+        # Extract-slot sections additionally get CONTINUOUS passage spans prepended: the
+        # similarity-ordered chunks above hold no unbroken passage longer than ~170 words,
+        # so a pattern's extract length (e.g. "approximately 500 words per passage") is
+        # unquotable without them and the verbatim/continuity validators reject anything
+        # longer that the model improvises.
+        if any(str(sl.get("type") or "") == "extract" for sl in _sec_slots):
+            _span_chars = _extract_span_chars(sec_data.get("extract_instruction"))
+            spans = get_extract_spans(class_name, effective_subject, sec_chapters,
+                                      school_id=school_id, span_chars=_span_chars)
+            if spans:
+                block = "\n\n".join(
+                    f"[CONTINUOUS PASSAGE {i} — one unbroken excerpt exactly as printed; "
+                    f"quote each extract from inside a single block]\n{sp}\n[END OF PASSAGE {i}]"
+                    for i, sp in enumerate(spans, 1)
+                )
+                ctx = f"{block}\n\n{ctx}"
+                print(f"[Extract-Spans] '{sec_name}': +{len(spans)} contiguous spans "
+                      f"({len(block)} chars, target {_span_chars}/span)")
 
         context_map[sec_name] = ctx
         print(f"[Section-Context] '{sec_name}' (subject={effective_subject}): {len(ctx)} chars")
@@ -3513,14 +4141,17 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             q_count = typed_count
             if typed_marks > 0:
                 marks = int(round(typed_marks))
-                mpq = round(typed_marks / typed_count, 1)
+                # 2 decimals, not 1: a pattern stating 2.25m/question must not drift to
+                # 2.2 here — reconcile_uniform_marks stamps THIS value onto every
+                # question and the paper audit then flags each one against the slots.
+                mpq = round(typed_marks / typed_count, 2)
 
         # Derive any missing per-question marks / question count so a section NEVER asks for
         # 0 questions. AI-generated patterns sometimes leave questions_count/marks_per_question
         # null with only the section marks set (e.g. VSA 12m, SA 18m, LA 30m) — without this,
         # those sections generate nothing and come out empty.
         if mpq <= 0:
-            mpq = round(marks / q_count, 1) if q_count else _typical_marks_for_types(types_list)
+            mpq = round(marks / q_count, 2) if q_count else _typical_marks_for_types(types_list)
         if q_count <= 0:
             q_count = max(1, round(marks / mpq)) if (marks and mpq) else 1
 
@@ -3571,6 +4202,13 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         }
         mixed_marks = len(marks_values) > 1
 
+        # Belt-and-braces with get_section_context_map's retrieval skip: even a context
+        # retrieved by an older map (or another caller) is withheld from an all-general
+        # section, covering build_single_question_prompt's context_by_type fallback too.
+        _all_general = bool(slots) and all(
+            str(s.get("source") or "").strip().lower() == "general" for s in slots
+        )
+
         wo = SectionWorkOrder(
             section_name=sec_name,
             section_id=section_id,
@@ -3581,7 +4219,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             question_types=types_list,
             instructions=ps.get("instructions", sec_data.get("instructions", [])),
             constraints=ps.get("constraints", sec_data.get("constraints", {})),
-            context_text=context_map.get(sec_name, ""),
+            context_text="" if _all_general else context_map.get(sec_name, ""),
             difficulty=difficulty,
             subject=subject,
             class_name=class_name,
@@ -3594,7 +4232,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             passage_instruction=ps.get("passage_instruction"),
             extract_instruction=ps.get("extract_instruction"),
             subsections=[] if slots else subsecs,
-            context_by_type=context_by_type_all.get(sec_name, {}),  # 3.2
+            context_by_type={} if _all_general else context_by_type_all.get(sec_name, {}),  # 3.2
             slots=slots,
         )
         work_orders.append(wo)

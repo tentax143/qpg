@@ -59,7 +59,7 @@ CBSE-seeded dialect already uses `questions` as an integer count
     {"label": "A", "type": "mcq", "marks": 1, "topic": "…"}
   ],
   "attempt": 5,               // with choice=="open" + parts: answer N of len(parts)
-  "source": "textbook",       // "textbook" | "unseen" | null — for extract/passage material
+  "source": "textbook",       // "textbook" | "unseen" | "general" | null
   "condition": "…"            // free text special instruction (optional)
 }
 ```
@@ -239,6 +239,35 @@ printed-vs-storage qnum divergence) for slot papers.
   banners; pattern edit page has a slot editor (type/topic/format/marks/choice)
   and `ExamPatternViewSet.perform_update` re-validates + re-derives aggregates
   server-side on every sections PUT.
+- `source: "general"` (teacher: "give in general, NOT from the text book"):
+  extraction prompt documents the value with trigger phrases; `normalize_slots`
+  canonicalizes spellings ("GK", "general knowledge", …); the slot prompt line
+  forbids textbook content for that question; sections whose slots are ALL
+  general skip pgvector retrieval entirely (`_slots_all_general` in
+  `get_section_context_map` + context blanked on the work order), and STRICT
+  RULE 5 flips to "compose from your own knowledge".
+- Internal-choice extract/CBQ slots: `or_alternative` must be a full OBJECT
+  (own `source_text`, `text`, `sub_questions` matching the first option's
+  count/marks) — demanded in the prompt (slot line + or_rule) and enforced in
+  `_validate_by_subtype`'s CBQ branch. The renderer (`process_question`)
+  prints a dict alternative completely: passage, stem, lettered sub-questions,
+  options. Previously the second option printed as a bare "OR" header.
+- Slot `parts` are enforced at generation: `len(sub_questions)` must equal
+  `len(slot.parts)` and per-part marks are checked positionally (the open-choice
+  marks-sum exemption no longer lets an undercount through).
+- Verbatim extracts: `type: "extract"` / `source: "textbook"` CBQ passages must
+  share wording with the retrieved reference material (`_text_overlaps_context`,
+  8-word-shingle overlap ≥ 30%) — a composed "the text explores…" meta-summary
+  is rejected and retried. Prompt wording demands a word-for-word quotation.
+- Renderer: Assertion-Reason questions merged into the "Multiple Choice
+  Questions" display group (`_regroup_section` folds the `ar` bucket into `mcq`
+  after marks stamping — AR keeps distinct marks; no separate "II. Assertion–
+  Reason Questions" subheader). `sub_questions` now render in the
+  `"question"`-key branch too, and sub-question dicts keyed `q`/`question`
+  are no longer dropped.
+- Extraction prompt: letter ranges ("Q21 A TO E … MCQ 2 and 3 short") MUST be
+  captured as `parts`; with `choice: "internal"` the same parts describe each
+  OR alternative (two passages, each with its own sub-questions).
 
 ## Out of scope (later)
 
