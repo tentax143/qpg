@@ -158,7 +158,7 @@ def school_users(request, pk):
         users = User.objects.filter(profile__school=school).select_related('profile')
         return Response(UserSerializer(users, many=True).data)
 
-    serializer = CreateUserSerializer(data=request.data)
+    serializer = CreateUserSerializer(data=request.data, context={'request': request})
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -651,3 +651,149 @@ def my_school(request):
     if not school:
         return Response({'error': 'No school assigned'}, status=status.HTTP_404_NOT_FOUND)
     return Response(_school_to_dict(school, include_stats=True))
+
+
+# ── system notifications ──────────────────────────────────────────────────────
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsSuperAdmin])
+def notifications_manage(request):
+    """Superadmin: GET active notifications, POST to create a new one."""
+    from core.models import SystemNotification, School
+
+    if request.method == 'GET':
+        notifications = SystemNotification.objects.filter(is_active=True).prefetch_related('schools').order_by('-created_at')
+        data = [{
+            'id': n.id,
+            'title': n.title,
+            'message': n.message,
+            'severity': n.severity,
+            'animation_interval': n.animation_interval,
+            'is_active': n.is_active,
+            'school_ids': list(n.schools.values_list('id', flat=True)),
+            'school_names': [s.name for s in n.schools.all()],
+            'is_global': n.schools.count() == 0,
+            'created_at': n.created_at,
+            'created_by': n.created_by.username if n.created_by else 'System',
+        } for n in notifications]
+        return Response({'notifications': data})
+
+    if request.method == 'POST':
+        title = (request.data.get('title') or '').strip()
+        message = (request.data.get('message') or '').strip()
+        severity = request.data.get('severity', 'info')
+        school_ids = request.data.get('school_ids', []) or []
+
+        if not title:
+            return Response({'error': 'title is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not message:
+            return Response({'error': 'message is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if severity not in ['info', 'warning', 'error']:
+            return Response({'error': 'Invalid severity'}, status=status.HTTP_400_BAD_REQUEST)
+
+        n = SystemNotification.objects.create(
+            title=title,
+            message=message,
+            severity=severity,
+            created_by=request.user,
+        )
+
+        # Assign schools if provided
+        if school_ids:
+            schools = School.objects.filter(id__in=school_ids)
+            n.schools.set(schools)
+
+        return Response({
+            'id': n.id,
+            'title': n.title,
+            'message': n.message,
+            'severity': n.severity,
+            'school_ids': list(n.schools.values_list('id', flat=True)),
+            'school_names': [s.name for s in n.schools.all()],
+            'is_global': n.schools.count() == 0,
+            'is_active': n.is_active,
+        }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['PATCH', 'DELETE'])
+@permission_classes([IsSuperAdmin])
+def notification_detail(request, pk):
+    """Superadmin: PATCH to update, DELETE to remove a notification."""
+    from core.models import SystemNotification, School
+
+    try:
+        n = SystemNotification.objects.get(pk=pk)
+    except SystemNotification.DoesNotExist:
+        return Response({'error': 'Notification not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'DELETE':
+        n.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    if request.method == 'PATCH':
+        if 'title' in request.data:
+            n.title = (request.data.get('title') or '').strip()
+        if 'message' in request.data:
+            n.message = (request.data.get('message') or '').strip()
+        if 'severity' in request.data:
+            severity = request.data.get('severity')
+            if severity not in ['info', 'warning', 'error']:
+                return Response({'error': 'Invalid severity'}, status=status.HTTP_400_BAD_REQUEST)
+            n.severity = severity
+        if 'is_active' in request.data:
+            n.is_active = request.data.get('is_active', True)
+        if 'school_ids' in request.data:
+            school_ids = request.data.get('school_ids') or []
+            schools = School.objects.filter(id__in=school_ids)
+            n.schools.set(schools)
+
+        n.save()
+        return Response({
+            'id': n.id,
+            'title': n.title,
+            'message': n.message,
+            'severity': n.severity,
+            'school_ids': list(n.schools.values_list('id', flat=True)),
+            'school_names': [s.name for s in n.schools.all()],
+            'is_global': n.schools.count() == 0,
+            'is_active': n.is_active,
+        })
+
+
+@api_view(['GET'])
+def notifications_public(request):
+    """Public endpoint: fetch active notifications for display.
+    Returns global notifications + school-specific notifications based on user's school."""
+    from core.models import SystemNotification
+    from django.db.models import Q
+
+    # Get user's school if they belong to one
+    user_school_id = None
+    if request.user.is_authenticated:
+        try:
+            user_school_id = request.user.profile.school_id
+        except Exception:
+            pass
+
+    # Get notifications: global (no schools) OR targeted to user's school
+    if user_school_id:
+        notifications = SystemNotification.objects.filter(
+            is_active=True
+        ).filter(
+            Q(schools__isnull=True) | Q(schools__id=user_school_id)
+        ).distinct().order_by('-created_at')
+    else:
+        # Non-authenticated or no school: only global notifications
+        notifications = SystemNotification.objects.filter(
+            is_active=True,
+            schools__isnull=True
+        ).order_by('-created_at')
+
+    data = [{
+        'id': n.id,
+        'title': n.title,
+        'message': n.message,
+        'severity': n.severity,
+        'animation_interval': n.animation_interval,
+    } for n in notifications]
+    return Response({'notifications': data})

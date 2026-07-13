@@ -52,12 +52,57 @@ class CreateUserSerializer(serializers.ModelSerializer):
         model = User
         fields = ('username', 'email', 'password')
 
+    def validate_username(self, value):
+        # Check if request is from superadmin (via context)
+        request = self.context.get('request')
+        is_superadmin = False
+        if request and hasattr(request, 'user'):
+            try:
+                is_superadmin = request.user.profile.role == 'superadmin'
+            except Exception:
+                is_superadmin = request.user.is_superuser
+
+        # If not superadmin, apply Django's default username validation
+        if not is_superadmin:
+            from django.contrib.auth.validators import UnicodeUsernameValidator
+            validator = UnicodeUsernameValidator()
+            try:
+                validator(value)
+            except Exception as e:
+                raise serializers.ValidationError(str(e))
+
+        # Check for uniqueness
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("A user with this username already exists.")
+
+        return value
+
     def create(self, validated_data):
-        user = User.objects.create_user(
-            username=validated_data['username'],
-            email=validated_data.get('email', ''),
-            password=validated_data['password'],
-        )
+        # Check if superadmin to bypass Django's username validators
+        request = self.context.get('request')
+        is_superadmin = False
+        if request and hasattr(request, 'user'):
+            try:
+                is_superadmin = request.user.profile.role == 'superadmin'
+            except Exception:
+                is_superadmin = request.user.is_superuser
+
+        username = validated_data['username']
+        email = validated_data.get('email', '')
+        password = validated_data['password']
+
+        if is_superadmin:
+            # For superadmins, bypass validators by creating directly without full_clean
+            user = User(username=username, email=email)
+            user.set_password(password)
+            user.save()  # Save without running full_clean() which has validators
+        else:
+            # For non-superadmins, use normal creation with validation
+            user = User.objects.create_user(
+                username=username,
+                email=email,
+                password=password,
+            )
         return user
 
 class PasswordUpdateSerializer(serializers.Serializer):

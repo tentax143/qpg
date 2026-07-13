@@ -22,6 +22,7 @@ import {
   ListOrdered,
   Menu,
   X,
+  Bell,
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -62,6 +63,7 @@ export default function Sidebar() {
     { href: '/superadmin/vector-stores', icon: Database, label: 'Vector Stores' },
     { href: '/superadmin/cbse-patterns', icon: ClipboardList, label: 'CBSE Patterns' },
     { href: '/superadmin/queue', icon: ListOrdered, label: 'Queue' },
+    { href: '/superadmin/notifications', icon: Bell, label: 'Notifications' },
   ];
 
   // SuperAdmin content management — populates the shared/global vector store.

@@ -511,3 +511,29 @@ class VectorStore(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class SystemNotification(models.Model):
+    """System-wide or school-targeted notifications shown as a banner at the top of all pages."""
+    SEVERITY_CHOICES = [
+        ('info', 'Info'),
+        ('warning', 'Warning'),
+        ('error', 'Error'),
+    ]
+
+    title = models.CharField(max_length=200)
+    message = models.TextField()
+    severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES, default='info')
+    animation_interval = models.IntegerField(default=10, help_text="Scroll animation interval in seconds (higher = slower)")
+    is_active = models.BooleanField(default=True, db_index=True)
+    # Schools to target (empty = all schools/global notification)
+    schools = models.ManyToManyField('School', related_name='notifications', blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} ({self.severity})"

@@ -1,0 +1,18 @@
+django:
+
+cd /d "D:\GIT REPO MAIN\qpg" 
+conda activate tpm && cls
+python manage.py runserver 172.16.71.183:1223
+
+frontend:
+
+cd /d "D:\GIT REPO MAIN\qpg" && cd frontend && cls
+npm run dev
+
+redis:
+cd /d "D:\GIT REPO MAIN\qpg\redis" && cls && redis-server redis.windows.conf
+
+celery:
+cd /d "D:\GIT REPO MAIN\qpg" && conda activate tpm && cls
+celery -A qpg worker --loglevel=info --pool=solo
+

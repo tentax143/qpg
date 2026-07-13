@@ -3,6 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import Sidebar from './Sidebar';
+import NotificationBanner from './NotificationBanner';
 
 // Pages reachable without a session (the root "/" is itself the login screen).
 const PUBLIC_PATHS = ['/', '/login', '/register', '/forgot-password', '/change-password'];
@@ -44,13 +45,20 @@ export default function ClientLayout({ children }) {
   }
 
   return (
-    <div className="flex min-h-screen">
-      <Sidebar />
-      <main className="flex-1 lg:ml-64 min-w-0 pt-14 lg:pt-0">
-        <div className="max-w-7xl mx-auto px-4 md:px-8 py-8">
-          {children}
+    <div className="flex min-h-screen flex-col">
+      <div className="px-4 md:px-8 py-4 bg-white z-40">
+        <div className="flex justify-center">
+          <NotificationBanner />
         </div>
-      </main>
+      </div>
+      <div className="flex flex-1">
+        <Sidebar />
+        <main className="flex-1 lg:ml-64 min-w-0 pt-14 lg:pt-0">
+          <div className="max-w-7xl mx-auto px-4 md:px-8 py-8">
+            {children}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

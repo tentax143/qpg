@@ -36,6 +36,9 @@ from .admin_views import (
     update_cbse_patterns,
     cbse_update_status,
     cbse_patterns_list,
+    notifications_manage,
+    notification_detail,
+    notifications_public,
 )
 
 # Create a router and register our viewsets
@@ -90,6 +93,11 @@ urlpatterns = [
     path('admin/cbse-patterns/', cbse_patterns_list, name='api_cbse_patterns_list'),
     path('admin/cbse-patterns/update/', update_cbse_patterns, name='api_update_cbse_patterns'),
     path('admin/cbse-patterns/status/<str:task_id>/', cbse_update_status, name='api_cbse_update_status'),
+
+    # System notifications
+    path('admin/notifications/', notifications_manage, name='api_notifications_manage'),
+    path('admin/notifications/<int:pk>/', notification_detail, name='api_notification_detail'),
+    path('notifications/', notifications_public, name='api_notifications_public'),
 
     path('', include(router.urls)),
 ]

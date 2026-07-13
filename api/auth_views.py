@@ -82,7 +82,7 @@ def user_management(request):
         return Response(UserSerializer(users, many=True).data)
 
     elif request.method == 'POST':
-        serializer = CreateUserSerializer(data=request.data)
+        serializer = CreateUserSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             user = serializer.save()
             # Assign school and role for school admins creating users
