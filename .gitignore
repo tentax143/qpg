@@ -16,6 +16,7 @@ venv/
 *.log
 local_settings.py
 db.sqlite3
+db.sqlite3-*
 media/
 
 # Environment variables
@@ -57,3 +58,6 @@ temp_*
 
 # DB migration dump (contains password hashes + all data)
 datadump.json
+
+# superadmin generator
+create_db.py

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useSyncExternalStore } from 'react';
 import {
   LayoutDashboard,
   PenTool,
@@ -30,27 +30,83 @@ const ROLE_LABELS = {
   teacher: 'Teacher',
 };
 
+function subscribeToAuthState(callback) {
+  window.addEventListener('storage', callback);
+  window.addEventListener('focus', callback);
+  return () => {
+    window.removeEventListener('storage', callback);
+    window.removeEventListener('focus', callback);
+  };
+}
+
+function getAuthTokenSnapshot() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  return localStorage.getItem('authToken');
+}
+
+function getAuthUserSnapshot() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  return localStorage.getItem('user');
+}
+
+function NavLink({ href, icon: Icon, label, active, onClick }) {
+  return (
+    <Link
+      href={href}
+      onClick={onClick}
+      className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors duration-150 ${
+        active
+          ? 'bg-blue-50 text-blue-700 font-medium'
+          : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+      }`}
+    >
+      <Icon className="w-4 h-4 shrink-0" />
+      <span>{label}</span>
+    </Link>
+  );
+}
+
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [user, setUser] = useState(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const token = useSyncExternalStore(subscribeToAuthState, getAuthTokenSnapshot, () => null);
+  const userData = useSyncExternalStore(subscribeToAuthState, getAuthUserSnapshot, () => null);
+  const user = useMemo(() => {
+    if (!userData) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(userData);
+    } catch {
+      return null;
+    }
+  }, [userData]);
+  const isAuthenticated = Boolean(token && userData);
+
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem('authToken');
-    const userData = localStorage.getItem('user');
-    if (token && userData) {
-      setIsAuthenticated(true);
-      setUser(JSON.parse(userData));
-    } else {
-      setIsAuthenticated(false);
+    if (!mounted) return;
+    if (pathname === '/' || pathname === '/login') {
+      return;
     }
-  }, [pathname]);
+    if (!isAuthenticated) {
+      router.replace('/login');
+    }
+  }, [pathname, router, isAuthenticated, mounted]);
 
   const isAuthPage = pathname === '/' || pathname === '/login';
-  if (isAuthPage || !isAuthenticated) return null;
+  if (!mounted || isAuthPage || !isAuthenticated) return null;
 
   const role = user?.role || 'teacher';
   const isSuperAdmin = role === 'superadmin';
@@ -97,24 +153,6 @@ export default function Sidebar() {
     return pathname === href || pathname.startsWith(href + '/');
   };
 
-  const NavLink = ({ href, icon: Icon, label }) => {
-    const active = isActive(href);
-    return (
-      <Link
-        href={href}
-        onClick={() => setMobileOpen(false)}
-        className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors duration-150 ${
-          active
-            ? 'bg-blue-50 text-blue-700 font-medium'
-            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-        }`}
-      >
-        <Icon className="w-4 h-4 shrink-0" />
-        <span>{label}</span>
-      </Link>
-    );
-  };
-
   return (
     <>
       {/* Mobile top bar */}
@@ -124,7 +162,7 @@ export default function Sidebar() {
             <GraduationCap className="w-4 h-4 text-white" />
           </div>
           <span className="ml-2.5 text-sm font-semibold text-slate-900 tracking-tight truncate">
-            {isSuperAdmin ? 'QPG' : (user?.school_name || 'QPG')}
+            {isSuperAdmin ? 'Shiken' : (user?.school_name || 'Shiken')}
           </span>
         </div>
         <button
@@ -157,7 +195,7 @@ export default function Sidebar() {
             </div>
             <div className="ml-3 min-w-0">
               <span className="text-[15px] font-semibold text-slate-900 tracking-tight truncate block">
-                {isSuperAdmin ? 'QPG' : (user?.school_name || 'QPG')}
+                {isSuperAdmin ? 'Shiken' : (user?.school_name || 'Shiken')}
               </span>
               {isSuperAdmin && (
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
@@ -184,7 +222,7 @@ export default function Sidebar() {
               <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Administration</p>
               <div className="space-y-0.5">
                 {superAdminItems.map((item) => (
-                  <NavLink key={item.href} {...item} />
+                  <NavLink key={item.href} {...item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} />
                 ))}
               </div>
             </div>
@@ -192,7 +230,7 @@ export default function Sidebar() {
               <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Shared Content</p>
               <div className="space-y-0.5">
                 {superAdminContentItems.map((item) => (
-                  <NavLink key={item.href} {...item} />
+                  <NavLink key={item.href} {...item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} />
                 ))}
               </div>
             </div>
@@ -203,7 +241,7 @@ export default function Sidebar() {
               <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Main</p>
               <div className="space-y-0.5">
                 {mainItems.map((item) => (
-                  <NavLink key={item.href} {...item} />
+                  <NavLink key={item.href} {...item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} />
                 ))}
               </div>
             </div>
@@ -212,7 +250,7 @@ export default function Sidebar() {
               <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Management</p>
               <div className="space-y-0.5">
                 {managementItems.filter(item => !item.roles || item.roles.includes(role)).map((item) => (
-                  <NavLink key={item.href} {...item} />
+                  <NavLink key={item.href} {...item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} />
                 ))}
               </div>
             </div>
@@ -220,7 +258,7 @@ export default function Sidebar() {
         )}
 
         <div className="pt-2 border-t border-slate-100">
-          <NavLink href="/manual" icon={HelpCircle} label="User Manual" />
+          <NavLink href="/manual" icon={HelpCircle} label="User Manual" active={isActive('/manual')} onClick={() => setMobileOpen(false)} />
         </div>
       </nav>
 

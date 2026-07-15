@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import connection, models
 from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
@@ -421,9 +421,12 @@ class MaterialChunk(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['class_name', 'subject', 'school'], name='chunk_css_idx'),
-            HnswIndex(name='chunk_emb_local_hnsw', fields=['embedding_local'],
-                      m=16, ef_construction=64, opclasses=['vector_cosine_ops']),
-        ]
+        ] + (
+            [HnswIndex(name='chunk_emb_local_hnsw', fields=['embedding_local'],
+                       m=16, ef_construction=64, opclasses=['vector_cosine_ops'])]
+            if connection.vendor == 'postgresql'
+            else []
+        )
 
     def __str__(self):
         return f"chunk[{self.class_name}/{self.subject}] {self.title} #{self.chunk_index}"

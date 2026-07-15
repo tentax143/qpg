@@ -42,11 +42,13 @@ export default function BlueprintsPage() {
       setTemplates(templateData);
       setBlueprints(blueprintData);
     } catch (err) {
-      console.error("Failed to fetch blueprint data", err);
+      if (err.response?.status !== 401 && err.response?.status !== 403) {
+        console.error("Failed to fetch blueprint data", err);
+      }
       // Don't show error if it's just a 404 on one of them
       if (err.response?.status === 404) {
         console.warn("One of the endpoints was not found");
-      } else {
+      } else if (err.response?.status !== 401 && err.response?.status !== 403) {
         setError('Failed to load blueprint management data. Please try again.');
       }
     } finally {
