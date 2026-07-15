@@ -171,6 +171,7 @@ def ingest_material_task(self, class_name, subject, materials, material_type="te
             embeddings.ingest_bulk(class_name, subject, materials, material_type=material_type, provider=provider, school_id=school_id)
             chunks_label = f"school_{school_id}"
         print(f"[ingest_material_task] Done — {class_name}/{subject} → {chunks_label} via {provider}")
+        _enqueue_enrichment([m.get("material_id") for m in materials])
         return {"count": len(materials), "provider": provider, "school_id": school_id}
     except Exception as exc:
         print(f"[ingest_material_task] Error: {exc}")
@@ -213,6 +214,7 @@ def split_book_task(self, class_name, subject, file_path, material_type="textboo
                                   material_type=material_type, provider=provider, school_id=school_id, page_range=pr, source_id=material_id)
 
     created = 0
+    ingested_ids = []
     for idx, ch in enumerate(chapters):
         unit = ch["unit"]
         pr = (ch["start_page"], ch["end_page"])
@@ -235,10 +237,12 @@ def split_book_task(self, class_name, subject, file_path, material_type="textboo
                 )
             _ingest(unit, pr, mat.id)
             created += 1
+            ingested_ids.append(mat.id)
         except Exception as e:
             print(f"[split_book_task] chapter '{unit}' failed: {e}")
 
     print(f"[split_book_task] Done — created/ingested {created}/{len(chapters)} chapter unit(s)")
+    _enqueue_enrichment(ingested_ids)
     return {"chapters": created, "school_id": school_id}
 
 
@@ -279,6 +283,7 @@ def ingest_url_task(self, class_name, subject, url, material_type="textbook",
             embeddings.ingest_text(class_name, subject, unit, text, title=unit,
                                    material_type=material_type, provider=provider, school_id=school_id, source_id=material_id)
 
+    ingested_ids = []
     for ch in chapters:
         unit = ch.get("unit")
         if not unit:
@@ -297,11 +302,106 @@ def ingest_url_task(self, class_name, subject, url, material_type="textbook",
             mat.save()
             _ingest(unit, ch["text"], mat.id)
             created += 1
+            ingested_ids.append(mat.id)
         except Exception as e:
             print(f"[ingest_url_task] chapter '{unit}' failed: {e}")
 
     print(f"[ingest_url_task] Done — created/ingested {created}/{len(chapters)} chapter unit(s) from {url}")
+    _enqueue_enrichment(ingested_ids)
     return {"chapters": created, "school_id": school_id}
+
+
+# ── Chunk enrichment (LLM metadata labeling) ──────────────────────────────────
+
+def _enqueue_enrichment(material_ids):
+    """Fire-and-forget: push freshly ingested materials through the LLM chunk-enrichment
+    pipeline (core/enrichment.py). One small task per material so the solo worker stays
+    responsive; enrichment problems must never break ingestion."""
+    for mid in {m for m in (material_ids or []) if m}:
+        try:
+            enrich_material_task.delay(mid)
+        except Exception as e:
+            print(f"[Enrich] could not enqueue material {mid}: {e}")
+
+
+@shared_task(bind=True)
+def enrich_material_task(self, material_id, run_id=None, force=False):
+    """LLM-label one material's chunks (content kind / language / per-chunk chapter /
+    garbled flag + chapter summary chunks — see core/enrichment.py). Deliberately small:
+    one material per task so a corpus backfill interleaves with paper generation on the
+    solo worker and stays far under the Celery hard time limit. Idempotent — already
+    enriched chunks are skipped unless force=True, so retries never re-bill the LLM.
+
+    `run_id` ties the task to an EnrichmentRun row (superadmin backfill); counters are
+    updated there so the frontend polls durable DB state, not Celery's result backend."""
+    from django.utils import timezone
+    from .models import EnrichmentRun, UsageEvent, Material
+    from . import enrichment
+
+    ok, stats, err = True, None, None
+    try:
+        stats = enrichment.enrich_material(material_id, force=force)
+    except Exception as e:
+        ok = False
+        err = str(e)[:300]
+        print(f"[enrich_material_task] material {material_id} failed: {e}")
+
+    stats = stats or {}
+    input_tokens = int(stats.get("input_tokens") or 0)
+    output_tokens = int(stats.get("output_tokens") or 0)
+    cost = enrichment.calculate_cost(input_tokens, output_tokens) if (input_tokens or output_tokens) else 0
+
+    mat = Material.objects.filter(id=material_id).first()
+    run = EnrichmentRun.objects.filter(id=run_id).first() if run_id else None
+
+    if input_tokens or output_tokens:
+        try:
+            if mat and mat.school_id:
+                School.objects.filter(pk=mat.school_id).update(
+                    total_tokens_used=F('total_tokens_used') + input_tokens + output_tokens,
+                    total_cost_accumulated=F('total_cost_accumulated') + (cost or 0),
+                )
+        except Exception as _se:
+            print(f"[enrich_material_task] Could not update school cumulative stats: {_se}")
+        user = (run.created_by if run else None) or (mat.uploaded_by if mat else None)
+        if user:
+            try:
+                UsageEvent.record(user=user, school=(mat.school if mat else None), kind='enrichment',
+                                  input_tokens=input_tokens, output_tokens=output_tokens, cost=cost or 0)
+            except Exception as _ue:
+                print(f"[enrich_material_task] Could not record usage event: {_ue}")
+
+    if run:
+        try:
+            EnrichmentRun.objects.filter(id=run.id).update(
+                done_groups=F('done_groups') + (1 if ok else 0),
+                failed_groups=F('failed_groups') + (0 if ok else 1),
+                chunks_labeled=F('chunks_labeled') + int(stats.get('chunks_labeled') or 0),
+                summaries_created=F('summaries_created') + int(stats.get('summaries_created') or 0),
+                garbled_found=F('garbled_found') + int(stats.get('garbled') or 0),
+                input_tokens=F('input_tokens') + input_tokens,
+                output_tokens=F('output_tokens') + output_tokens,
+                cost=F('cost') + (cost or 0),
+                updated_at=timezone.now(),  # .update() skips auto_now — set it so staleness checks work
+            )
+            run.refresh_from_db()
+            errs = [str(e) for e in (stats.get('errors') or [])]
+            if err:
+                errs.append(err)
+            if errs and len(run.error_samples or []) < 20:
+                run.error_samples = ((run.error_samples or []) +
+                                     [f"material {material_id}: {e}" for e in errs])[:20]
+                run.save(update_fields=['error_samples', 'updated_at'])
+            if run.status == 'running' and run.done_groups + run.failed_groups >= run.total_groups:
+                run.status = 'failed' if (run.failed_groups and not run.done_groups) else 'done'
+                run.save(update_fields=['status', 'updated_at'])
+        except Exception as e:
+            print(f"[enrich_material_task] run bookkeeping failed: {e}")
+
+    return {"material_id": material_id, "ok": ok,
+            "chunks_labeled": stats.get("chunks_labeled", 0),
+            "summaries_created": stats.get("summaries_created", 0),
+            "skipped": stats.get("skipped", False)}
 
 
 @shared_task(bind=True)

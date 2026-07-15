@@ -2033,6 +2033,138 @@ class DeleteMaterialEmbeddingsTest(TestCase):
         emb.delete_material_embeddings("10", "Physics", None)        # must not raise / delete nothing
 
 
+class EnrichmentTest(TestCase):
+    """LLM chunk enrichment (core/enrichment.py): closed-enum label validation, per-chunk
+    chapter re-linking, summary chunks, sibling-copy mirroring, idempotent skip, fail-open."""
+
+    def setUp(self):
+        from core.models import Material, MaterialChunk, ChunkChapter
+        self.mat = Material.objects.create(
+            class_name="10", subject="Physics", title="Light+Electricity notes", type="notes",
+            file="", metadata={"chapters": ["Light", "Electricity"]})
+        self.chunks = []
+        for i, text in enumerate(["about refraction of light", "circuits exercise questions",
+                                  "garbled symbol soup"]):
+            c = MaterialChunk.objects.create(material=self.mat, class_name="10", subject="physics",
+                                             content=text, chunk_index=i, provider="local")
+            # Mimic ingestion's over-linking: every chunk linked to ALL declared chapters.
+            ChunkChapter.objects.create(chunk=c, unit="light")
+            ChunkChapter.objects.create(chunk=c, unit="electricity")
+            self.chunks.append(c)
+
+    def _reply(self):
+        import json
+        return json.dumps({
+            "chunks": {
+                # over-long "clean" (way beyond 2x the original) is a hallucination — dropped
+                "c0": {"kinds": ["prose"], "unit": "Light", "lang": "english", "garbled": False,
+                       "clean": "X" * 3000},
+                # legitimate selective cleanup — stored on content_clean, content untouched
+                "c1": {"kinds": ["concept", "exercise"], "unit": "Electricity", "lang": "english",
+                       "garbled": False, "clean": "circuits concept text only"},
+                # bogus kind dropped, unknown unit dropped, language lowercased, garbled kept
+                "c2": {"kinds": ["bogus", "poem"], "unit": "Nonexistent", "lang": "ENGLISH", "garbled": True},
+                "c99": {"kinds": ["prose"]},   # hallucinated id — must be ignored
+            },
+            "summaries": {"Light": "L" * 300, "Electricity": "E" * 300, "Hallucinated": "H" * 300},
+        })
+
+    def _enrich(self, reply=None, **kwargs):
+        from unittest import mock
+        from core import enrichment
+        with mock.patch.object(enrichment.mantle_client, "converse",
+                               return_value=(reply or self._reply(), 100, 50)) as conv, \
+             mock.patch("core.enrichment.get_embeddings_batch",
+                        side_effect=lambda texts, provider: [[0.0] * 768 for _ in texts]):
+            stats = enrichment.enrich_material(self.mat.id, **kwargs)
+        return stats, conv
+
+    def test_labels_relinks_and_summaries(self):
+        from core.models import MaterialChunk, ChunkChapter
+        stats, conv = self._enrich()
+        self.assertEqual(conv.call_count, 1)                      # one batch, one call
+        self.assertEqual(stats["chunks_labeled"], 3)
+        self.assertEqual(stats["garbled"], 1)
+        self.assertFalse(stats["skipped"])
+
+        c0, c1, c2 = [MaterialChunk.objects.get(pk=c.pk) for c in self.chunks]
+        self.assertEqual(c0.content_kinds, ["prose"])
+        self.assertEqual(c1.content_kinds, ["concept", "exercise"])
+        self.assertEqual(c2.content_kinds, ["poem"])              # "bogus" dropped by closed enum
+        self.assertEqual(c2.language, "english")                  # lowercased
+        self.assertTrue(c2.garbled and not c0.garbled)
+        self.assertTrue(all(c.enriched_at for c in (c0, c1, c2)))
+        # Selective clean copy: stored for c1, hallucinated over-long clean on c0 dropped,
+        # absent on c2; originals never mutated.
+        self.assertEqual(c1.content_clean, "circuits concept text only")
+        self.assertEqual(c0.content_clean, "")
+        self.assertEqual(c2.content_clean, "")
+        self.assertEqual(c1.content, "circuits exercise questions")
+
+        # Per-chunk chapter attribution replaces the over-linking — except c2, whose LLM
+        # unit wasn't in the declared list, so it keeps its original links (fail open).
+        self.assertEqual(set(ChunkChapter.objects.filter(chunk=c0).values_list("unit", flat=True)), {"light"})
+        self.assertEqual(set(ChunkChapter.objects.filter(chunk=c1).values_list("unit", flat=True)), {"electricity"})
+        self.assertEqual(ChunkChapter.objects.filter(chunk=c2).count(), 2)
+
+        # Two summary chunks (hallucinated chapter dropped), negative index, linked to units.
+        summaries = MaterialChunk.objects.filter(kind="summary")
+        self.assertEqual(summaries.count(), 2)
+        self.assertTrue(all(s.chunk_index < 0 for s in summaries))
+        self.assertEqual(set(ChunkChapter.objects.filter(chunk__in=summaries)
+                             .values_list("unit", flat=True)), {"light", "electricity"})
+
+    def test_second_run_skips_without_llm_call(self):
+        self._enrich()
+        stats, conv = self._enrich()
+        self.assertEqual(conv.call_count, 0)
+        self.assertTrue(stats["skipped"])
+
+    def test_force_reprocesses(self):
+        self._enrich()
+        stats, conv = self._enrich(force=True)
+        self.assertEqual(conv.call_count, 1)
+        self.assertEqual(stats["chunks_labeled"], 3)
+
+    def test_mirrors_labels_to_school_copy_without_second_llm_call(self):
+        from core.models import School, MaterialChunk
+        school = School.objects.create(name="S1")
+        for c in self.chunks:                                     # textbook double-ingest twin copy
+            MaterialChunk.objects.create(material=self.mat, school=school, class_name="10",
+                                         subject="physics", content=c.content,
+                                         chunk_index=c.chunk_index, provider="local")
+        stats, conv = self._enrich()
+        self.assertEqual(conv.call_count, 1)                      # mirror is free — no second LLM pass
+        self.assertEqual(stats["chunks_labeled"], 6)
+        school_rows = MaterialChunk.objects.filter(school=school, kind="body")
+        self.assertTrue(all(r.enriched_at for r in school_rows))
+        # The selective clean copy mirrors too.
+        self.assertEqual(school_rows.get(chunk_index=1).content_clean, "circuits concept text only")
+        # The school copy gets its own summary chunks (scoped queries filter by school).
+        self.assertEqual(MaterialChunk.objects.filter(kind="summary", school=school).count(), 2)
+        self.assertEqual(MaterialChunk.objects.filter(kind="summary", school__isnull=True).count(), 2)
+
+    def test_llm_failure_fails_open(self):
+        from core.models import MaterialChunk
+        stats, conv = self._enrich(reply="not json at all")
+        self.assertEqual(conv.call_count, 2)                      # one corrective retry
+        self.assertEqual(stats["chunks_labeled"], 0)
+        self.assertTrue(stats["errors"])
+        self.assertTrue(all(c.enriched_at is None
+                            for c in MaterialChunk.objects.filter(kind="body")))
+
+    def test_summary_chunks_excluded_from_span_and_query_scope(self):
+        from core.models import MaterialChunk
+        from core import embeddings as emb
+        self._enrich()
+        summary = MaterialChunk.objects.filter(kind="summary").first()
+        # A summary seed returns only itself — never spliced with body neighbours.
+        self.assertEqual(emb.fetch_contiguous_span(summary.id), summary.content.strip())
+        # And a body seed's span never absorbs summary rows (negative index + kind filter).
+        body_span = emb.fetch_contiguous_span(self.chunks[0].id, before=2000, after=2000)
+        self.assertNotIn(summary.content[:50], body_span)
+
+
 class ChunkingTest(TestCase):
     """Structure-aware chunker: natural boundaries, size bound, overlap, tiny-tail merge."""
 

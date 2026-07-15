@@ -1,6 +1,8 @@
-# Chapter Metadata Enrichment + Distribution Fixes (planned — not yet implemented)
+# Chapter Metadata Enrichment + Distribution Fixes
 
-Status: **PLANNED** (design agreed 2026-07-15, waiting to start).
+Status: **PHASE 1 (enrichment pipeline) IMPLEMENTED 2026-07-15** — see §5. Companion
+fixes 1–5 (§4) and retrieval usage of the labels (§3 "Usage at retrieval") are still
+pending.
 Origin: user report — generated papers sometimes have multiple questions coming from the
 same unit/chapter. Full pipeline audit performed; root causes below are verified with
 file:line references against the code as of this date.
@@ -119,6 +121,44 @@ labels, and turn retrieval steering into hard DB filters.**
 
 ---
 
+## 5. Implemented 2026-07-15 — enrichment pipeline (phase 1)
+
+- **Schema (migrations 0040 + 0041):** `MaterialChunk` gained `kind` ('body'|'summary',
+  indexed), `content_kinds` (JSON list, closed enum), `language`, `garbled`,
+  `enriched_at` (null = pending, indexed), and `content_clean` (0041 — selective
+  LLM-cleaned copy for mixed/noisy chunks only: page noise / glued-on book-back
+  questions removed, kept text verbatim, original `content` never mutated; empty =
+  already clean). New `EnrichmentRun` model = durable backfill progress row
+  (status/counters/tokens/cost/error_samples). `UsageEvent` gained kind `enrichment`.
+- **Taxonomy widened for all subjects (2026-07-15, user request):** prose | poem |
+  grammar (languages) + concept | example | activity (science/maths/social) +
+  exercise | supplementary | intro | other. Still a CLOSED enum.
+- **`core/enrichment.py`:** `enrich_material(material_id, force)` — batches a
+  material's body chunks (≤24k chars/call), one GEN_MODEL call per batch at temp 0.0,
+  ids `c0..cN` validated against input (hallucinated ids/enums dropped, fail open),
+  per-chunk unit re-links ChunkChapter ONLY when the material declares >1 chapters,
+  chapter summaries stored as `kind='summary'` chunks at `chunk_index -1000-i` with
+  normal unit links. Textbook double-copies (shared + school) are labeled once and
+  mirrored by (chunk_index, identical content) — LLM never paid twice; unmirrorable
+  copies get their own pass.
+- **`core/tasks.py`:** `enrich_material_task` (one material per task — solo worker
+  stays responsive, idempotent via enriched_at) + `_enqueue_enrichment` hooks at the
+  end of `ingest_material_task`, `split_book_task`, `ingest_url_task` → every new
+  upload auto-enriches. Re-ingest on chapter edit re-enriches automatically (chunks
+  are recreated → enriched_at null).
+- **Retrieval guards:** `_scoped_chunks` and `fetch_contiguous_span` exclude
+  `kind='summary'` so summaries can't pollute ANN retrieval or verbatim spans until
+  the metadata-aware retrieval phase lands.
+- **API:** `GET /api/admin/enrichment/stats/` (live DB coverage counters + latest run),
+  `POST /api/admin/enrichment/run/` ({force}) — 409 if a fresh run is in progress,
+  auto-fails runs stale >15 min.
+- **Frontend:** `/superadmin/enrichment` page (stats cards, Process Stored Chunks
+  button, force checkbox, progress bar polling stats every 3 s — survives refresh) +
+  Sidebar entry.
+- **Tests:** `core.tests.EnrichmentTest` (6 tests: labeling/relink/summaries, skip,
+  force, mirroring, fail-open, span/query exclusion).
+
 *Context notes: Celery worker must be restarted by the user (never by Claude) for any
-core/ change to take effect. Migration 0039 must run on prod at next deploy. Pre-fix
+core/ change to take effect — required before the enrichment task exists in the worker.
+Migration 0039 AND 0040 must run on prod at next deploy. Pre-fix
 Tamil papers need regeneration to clear the whole-book-retrieval clustering.*

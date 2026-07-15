@@ -333,6 +333,7 @@ class UsageEvent(models.Model):
         ("edit", "AI Edit"),
         ("answer_key", "Answer Key"),
         ("pattern", "Pattern"),
+        ("enrichment", "Chunk Enrichment"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="usage_events")
@@ -447,6 +448,23 @@ class MaterialChunk(models.Model):
     embedding_or = VectorField(dimensions=EMBED_OPENROUTER_DIM, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # ── LLM metadata enrichment (core/enrichment.py, docs/CHAPTER_ENRICHMENT_PLAN.md) ──
+    # 'body' = ordinary ingested chunk; 'summary' = LLM-written whole-chapter summary stored
+    # as an extra chunk (negative chunk_index so it can never splice into a verbatim span).
+    kind = models.CharField(max_length=16, default='body', db_index=True)
+    # 1-2 dominant labels per chunk from the CLOSED enum in core.enrichment.CONTENT_KINDS
+    # (prose|poem|grammar|concept|example|activity|exercise|supplementary|intro|other).
+    # JSONField, not ArrayField, to keep the SQLite dev fallback working.
+    content_kinds = models.JSONField(default=list, blank=True)
+    language = models.CharField(max_length=32, blank=True, default='')
+    garbled = models.BooleanField(default=False)     # legacy-font/mojibake extraction noise
+    # LLM-cleaned copy, produced ONLY for mixed/noisy chunks (page noise or glued-on
+    # book-back questions removed; the kept text stays verbatim). Empty = original is
+    # already clean. `content` itself is NEVER mutated — verbatim extracts and answer
+    # keys depend on it.
+    content_clean = models.TextField(blank=True, default='')
+    enriched_at = models.DateTimeField(null=True, blank=True, db_index=True)  # null = not enriched yet
+
     class Meta:
         indexes = [
             models.Index(fields=['class_name', 'subject', 'school'], name='chunk_css_idx'),
@@ -473,6 +491,39 @@ class ChunkChapter(models.Model):
 
     def __str__(self):
         return f"{self.chunk_id} → {self.unit}"
+
+
+class EnrichmentRun(models.Model):
+    """One chunk-enrichment sweep over the stored corpus (superadmin button / backfill).
+
+    The run row is the durable progress record: the launcher counts the material groups it
+    queues (total_groups) and every per-material Celery task increments the counters as it
+    finishes — so the superadmin page polls THIS row, not Celery's volatile AsyncResult, and
+    progress survives page refreshes and worker restarts."""
+    STATUS_CHOICES = [
+        ('running', 'Running'),
+        ('done', 'Done'),
+        ('failed', 'Failed'),
+    ]
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='running')
+    force = models.BooleanField(default=False)        # re-label already-enriched chunks too
+    total_groups = models.IntegerField(default=0)     # materials queued
+    done_groups = models.IntegerField(default=0)
+    failed_groups = models.IntegerField(default=0)
+    chunks_labeled = models.IntegerField(default=0)
+    summaries_created = models.IntegerField(default=0)
+    garbled_found = models.IntegerField(default=0)
+    input_tokens = models.BigIntegerField(default=0)
+    output_tokens = models.BigIntegerField(default=0)
+    cost = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    error_samples = models.JSONField(default=list, blank=True)  # first few error strings
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"EnrichmentRun {self.id} ({self.status} {self.done_groups + self.failed_groups}/{self.total_groups})"
 
 
 class SchoolVectorLink(models.Model):

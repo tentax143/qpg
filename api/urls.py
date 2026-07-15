@@ -36,6 +36,10 @@ from .admin_views import (
     update_cbse_patterns,
     cbse_update_status,
     cbse_patterns_list,
+    enrichment_stats,
+    enrichment_run,
+    enrichment_coverage,
+    enrichment_unit_detail,
     notifications_manage,
     notification_detail,
     notifications_public,
@@ -93,6 +97,12 @@ urlpatterns = [
     path('admin/cbse-patterns/', cbse_patterns_list, name='api_cbse_patterns_list'),
     path('admin/cbse-patterns/update/', update_cbse_patterns, name='api_update_cbse_patterns'),
     path('admin/cbse-patterns/status/<str:task_id>/', cbse_update_status, name='api_cbse_update_status'),
+
+    # SuperAdmin — chunk enrichment (LLM metadata labeling)
+    path('admin/enrichment/stats/', enrichment_stats, name='api_enrichment_stats'),
+    path('admin/enrichment/run/', enrichment_run, name='api_enrichment_run'),
+    path('admin/enrichment/coverage/', enrichment_coverage, name='api_enrichment_coverage'),
+    path('admin/enrichment/unit/', enrichment_unit_detail, name='api_enrichment_unit_detail'),
 
     # System notifications
     path('admin/notifications/', notifications_manage, name='api_notifications_manage'),

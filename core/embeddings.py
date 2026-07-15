@@ -373,7 +373,11 @@ def _scoped_chunks(cls, subj, field, school_id):
     copy-shared-into-each-school approach — access changes take effect instantly, no duplication."""
     from .models import MaterialChunk, School
     from .access import visibility_q
-    base = MaterialChunk.objects.filter(class_name=cls, subject=subj, **{f"{field}__isnull": False})
+    # kind='summary' rows (LLM chapter summaries, core/enrichment.py) are excluded from
+    # ordinary ANN retrieval for now — they get their own retrieval path when the
+    # metadata-filtered context assembly lands (docs/CHAPTER_ENRICHMENT_PLAN.md §usage).
+    base = (MaterialChunk.objects.filter(class_name=cls, subject=subj, **{f"{field}__isnull": False})
+            .exclude(kind='summary'))
     school = School.objects.filter(id=school_id).first() if school_id else None
     return base.filter(visibility_q(school, visibility_field="material__visibility",
                                     school_field="school", store_field="material__vector_store"))
@@ -435,12 +439,14 @@ def fetch_contiguous_span(chunk_id, before=1, after=4, max_chars=3500):
     row = MaterialChunk.objects.filter(id=chunk_id).first()
     if not row:
         return ""
-    if row.material_id is None:
-        # No material FK to anchor neighbour order — the seed chunk is all we can trust.
+    if row.material_id is None or row.kind == 'summary':
+        # No material FK to anchor neighbour order (or an LLM summary chunk, which has no
+        # physical neighbours) — the seed chunk is all we can trust.
         return (row.content or "").strip()
     rows = list(
         MaterialChunk.objects.filter(
             material_id=row.material_id,
+            kind='body',  # never splice an LLM summary chunk into a verbatim passage
             chunk_index__gte=row.chunk_index - max(0, int(before)),
             chunk_index__lte=row.chunk_index + max(0, int(after)),
         ).order_by("chunk_index").values_list("chunk_index", "content")

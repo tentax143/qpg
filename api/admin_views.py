@@ -635,6 +635,196 @@ def cbse_update_status(request, task_id):
     return Response({'state': 'error', 'error': str(result.info)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+# ── Chunk enrichment (LLM metadata labeling — core/enrichment.py) ─────────────
+
+def _enrichment_run_to_dict(run):
+    if run is None:
+        return None
+    return {
+        'id': run.id,
+        'status': run.status,
+        'force': run.force,
+        'total_groups': run.total_groups,
+        'done_groups': run.done_groups,
+        'failed_groups': run.failed_groups,
+        'chunks_labeled': run.chunks_labeled,
+        'summaries_created': run.summaries_created,
+        'garbled_found': run.garbled_found,
+        'input_tokens': run.input_tokens,
+        'output_tokens': run.output_tokens,
+        'cost': str(run.cost),
+        'error_samples': run.error_samples or [],
+        'created_by': run.created_by.username if run.created_by else None,
+        'created_at': run.created_at,
+        'updated_at': run.updated_at,
+    }
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperAdmin])
+def enrichment_stats(request):
+    """Coverage counters for the enrichment page. Live DB counts (not Celery state), so
+    progress survives page refreshes and worker restarts."""
+    from django.utils import timezone
+    from core.models import MaterialChunk, EnrichmentRun
+
+    # A run whose counters haven't moved in 15 min is dead (worker restarted mid-run) —
+    # flip it here, where the UI polls, or the page would show "running" forever.
+    latest = EnrichmentRun.objects.order_by('-created_at').first()
+    if latest and latest.status == 'running' and \
+            (timezone.now() - latest.updated_at).total_seconds() > 900:
+        latest.status = 'failed'
+        latest.error_samples = (latest.error_samples or []) + ['run went stale (worker restart?)']
+        latest.save(update_fields=['status', 'error_samples', 'updated_at'])
+
+    body = MaterialChunk.objects.filter(kind='body')
+    total = body.count()
+    enriched = body.filter(enriched_at__isnull=False).count()
+    return Response({
+        'total_chunks': total,
+        'enriched_chunks': enriched,
+        'pending_chunks': total - enriched,
+        'garbled_chunks': body.filter(garbled=True).count(),
+        'summary_chunks': MaterialChunk.objects.filter(kind='summary').count(),
+        # Chunks without a Material FK can't be grouped for enrichment — surfaced so the
+        # superadmin knows they exist rather than wondering why pending never hits zero.
+        'unlinked_chunks': body.filter(material__isnull=True).count(),
+        'pending_materials': body.filter(enriched_at__isnull=True, material__isnull=False)
+                                 .values('material_id').distinct().count(),
+        'latest_run': _enrichment_run_to_dict(latest),
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperAdmin])
+def enrichment_run(request):
+    """Queue the enrichment backfill: one small Celery task per material that still has
+    unenriched chunks (or every material when force=true), tied to an EnrichmentRun row
+    the frontend polls. 409 if a run is already making progress."""
+    from django.utils import timezone
+    from core.models import MaterialChunk, EnrichmentRun
+    from core.tasks import enrich_material_task
+
+    force = bool(request.data.get('force'))
+
+    latest = EnrichmentRun.objects.order_by('-created_at').first()
+    if latest and latest.status == 'running':
+        # A run whose counters haven't moved in 15 min is presumed dead (worker restart) —
+        # same staleness convention the dashboard uses for stuck generations.
+        if (timezone.now() - latest.updated_at).total_seconds() < 900:
+            return Response({'error': 'An enrichment run is already in progress',
+                             'run': _enrichment_run_to_dict(latest)},
+                            status=status.HTTP_409_CONFLICT)
+        latest.status = 'failed'
+        latest.error_samples = (latest.error_samples or []) + ['run went stale (worker restart?)']
+        latest.save(update_fields=['status', 'error_samples', 'updated_at'])
+
+    qs = MaterialChunk.objects.filter(kind='body', material__isnull=False)
+    if not force:
+        qs = qs.filter(enriched_at__isnull=True)
+    material_ids = list(qs.values_list('material_id', flat=True).distinct())
+
+    if not material_ids:
+        return Response({'detail': 'Nothing to enrich — all chunks are already labeled.',
+                         'run': None})
+
+    run = EnrichmentRun.objects.create(status='running', force=force,
+                                       total_groups=len(material_ids), created_by=request.user)
+    for mid in material_ids:
+        enrich_material_task.delay(mid, run_id=run.id, force=force)
+
+    return Response({'run': _enrichment_run_to_dict(run)}, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperAdmin])
+def enrichment_coverage(request):
+    """Corpus browser: per (class, subject, unit) row counts so the superadmin can see
+    what is stored and how far enrichment got, chapter by chapter. A chunk linked to
+    several chapters appears under each (that's the per-unit view's point); chunks with
+    no chapter link group under unit=null."""
+    from django.db.models import Count, Q
+    from core.models import MaterialChunk
+
+    rows = (MaterialChunk.objects.filter(kind='body')
+            .values('class_name', 'subject', 'chapter_links__unit')
+            .annotate(
+                chunks=Count('id', distinct=True),
+                enriched=Count('id', filter=Q(enriched_at__isnull=False), distinct=True),
+                garbled=Count('id', filter=Q(garbled=True), distinct=True),
+                cleaned=Count('id', filter=~Q(content_clean=''), distinct=True),
+                materials=Count('material_id', distinct=True),
+            )
+            .order_by('class_name', 'subject', 'chapter_links__unit'))
+
+    summary_counts = {
+        (r['class_name'], r['subject'], r['chapter_links__unit']): r['n']
+        for r in (MaterialChunk.objects.filter(kind='summary')
+                  .values('class_name', 'subject', 'chapter_links__unit')
+                  .annotate(n=Count('id')))
+    }
+
+    data = [{
+        'class_name': r['class_name'],
+        'subject': r['subject'],
+        'unit': r['chapter_links__unit'],
+        'materials': r['materials'],
+        'chunks': r['chunks'],
+        'enriched': r['enriched'],
+        'garbled': r['garbled'],
+        'cleaned': r['cleaned'],
+        'summaries': summary_counts.get((r['class_name'], r['subject'], r['chapter_links__unit']), 0),
+    } for r in rows]
+    return Response({'rows': data, 'count': len(data)})
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperAdmin])
+def enrichment_unit_detail(request):
+    """Drill-down for one (class, subject, unit): content-kind and language histograms,
+    the chapter summary text, and previews of garbled chunks. Query params because unit
+    labels are free text in any script."""
+    from core.models import MaterialChunk
+
+    cls = (request.query_params.get('class') or '').strip()
+    subj = (request.query_params.get('subject') or '').strip()
+    unit = (request.query_params.get('unit') or '').strip()
+    if not cls or not subj:
+        return Response({'error': 'class and subject are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    qs = MaterialChunk.objects.filter(kind='body', class_name=cls, subject=subj)
+    qs = qs.filter(chapter_links__unit=unit) if unit else qs.filter(chapter_links__isnull=True)
+
+    kinds, languages = {}, {}
+    garbled_samples, cleaned_count, enriched_count, total = [], 0, 0, 0
+    for content_kinds, language, garbled, has_clean, content in (
+            qs.values_list('content_kinds', 'language', 'garbled', 'content_clean', 'content')[:3000]):
+        total += 1
+        for k in (content_kinds or []):
+            kinds[k] = kinds.get(k, 0) + 1
+        if language:
+            languages[language] = languages.get(language, 0) + 1
+        if content_kinds or language:
+            enriched_count += 1
+        if has_clean:
+            cleaned_count += 1
+        if garbled and len(garbled_samples) < 3:
+            garbled_samples.append((content or '')[:180])
+
+    summary_qs = MaterialChunk.objects.filter(kind='summary', class_name=cls, subject=subj)
+    summary_qs = summary_qs.filter(chapter_links__unit=unit) if unit else summary_qs
+    summary = summary_qs.values_list('content', flat=True).first()
+
+    return Response({
+        'total': total,
+        'kinds': dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
+        'languages': dict(sorted(languages.items(), key=lambda kv: -kv[1])),
+        'cleaned': cleaned_count,
+        'garbled_samples': garbled_samples,
+        'summary': summary,
+    })
+
+
 # ── my-school (school admin self-service) ─────────────────────────────────────
 
 @api_view(['GET'])
