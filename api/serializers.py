@@ -37,16 +37,26 @@ class QuestionPaperSerializer(serializers.ModelSerializer):
     )
     created_by = UserSerializer(read_only=True)
     file = serializers.SerializerMethodField()
+    answer_key_status = serializers.SerializerMethodField()
 
     def get_file(self, obj):
         return signed_file_url(self.context.get('request'), obj.file)
+
+    def get_answer_key_status(self, obj):
+        # Raw stored status (no staleness re-hash here — the /answer_key/ endpoint does
+        # that on read; hashing paper_data for every listed paper would be wasteful).
+        try:
+            return obj.answer_key.status
+        except Exception:
+            return 'none'
 
     class Meta:
         model = QuestionPaper
         fields = [
             'id', 'class_name', 'subject', 'pattern', 'pattern_id',
             'chapters', 'difficulty', 'file', 'status', 'status_detail', 'task_id',
-            'edited_content', 'cost', 'created_by', 'created_at', 'updated_at'
+            'edited_content', 'cost', 'created_by', 'created_at', 'updated_at',
+            'answer_key_status'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'status', 'status_detail', 'task_id']
 
@@ -57,6 +67,7 @@ class QuestionPaperListSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     has_paper_data = serializers.SerializerMethodField()
     file = serializers.SerializerMethodField()
+    answer_key_status = serializers.SerializerMethodField()
 
     def get_has_paper_data(self, obj):
         return obj.paper_data is not None
@@ -64,17 +75,24 @@ class QuestionPaperListSerializer(serializers.ModelSerializer):
     def get_file(self, obj):
         return signed_file_url(self.context.get('request'), obj.file)
 
+    def get_answer_key_status(self, obj):
+        # Raw stored status — see QuestionPaperSerializer.get_answer_key_status.
+        try:
+            return obj.answer_key.status
+        except Exception:
+            return 'none'
+
     class Meta:
         model = QuestionPaper
         fields = [
             'id', 'class_name', 'subject', 'pattern_name', 'difficulty',
             'status', 'status_detail', 'cost', 'created_by_name', 'created_at',
-            'updated_at', 'file', 'has_paper_data'
+            'updated_at', 'file', 'has_paper_data', 'answer_key_status'
         ]
         read_only_fields = [
             'id', 'class_name', 'subject', 'pattern_name', 'difficulty',
             'status', 'status_detail', 'cost', 'created_by_name', 'created_at',
-            'updated_at', 'has_paper_data',
+            'updated_at', 'has_paper_data', 'answer_key_status',
         ]
 
 

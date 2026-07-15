@@ -7,7 +7,7 @@ import apiClient from '@/lib/api';
 import {
   ArrowLeft, Save, FileDown, Loader2, ImagePlus,
   Sparkles, Send, CheckCircle, AlertCircle, X, RotateCcw, Eye, Pencil,
-  History, Undo2, PanelRightClose, PanelRightOpen, Clock, RefreshCw
+  History, Undo2, PanelRightClose, PanelRightOpen, Clock, RefreshCw, KeyRound
 } from 'lucide-react';
 
 // What the AI edit bar can do — shown in the sidebar box; clicking a chip fills the input with its example.
@@ -41,6 +41,9 @@ export default function EditPaperPage() {
   const [history, setHistory]         = useState([]);   // change log; newest first
   const [showLog, setShowLog]         = useState(true);  // right-side change-log panel
   const [docText, setDocText]         = useState('');   // properly-ordered text from backend
+
+  const [answerKey, setAnswerKey]     = useState(null); // {status,...} from /answer_key/; null until fetched
+  const [keyBusy, setKeyBusy]         = useState(false);
 
   const [imgUploading, setImgUploading] = useState(false);
   const fileRef      = useRef(null);
@@ -206,6 +209,28 @@ export default function EditPaperPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // ── answer key (teacher copy) — status fetch + polling while it generates ──
+  const refreshAnswerKey = useCallback(async () => {
+    try {
+      const res = await apiClient.get(`/papers/${id}/answer_key/`);
+      setAnswerKey(res.data);
+      return res.data;
+    } catch { return null; }
+  }, [id]);
+
+  useEffect(() => { refreshAnswerKey(); }, [refreshAnswerKey]);
+
+  const keyStatus = answerKey?.status || 'none';
+  useEffect(() => {
+    if (keyStatus !== 'queued' && keyStatus !== 'generating') return;
+    const timer = setInterval(async () => {
+      const st = await refreshAnswerKey();
+      if (st?.status === 'done') showToast('success', 'Answer key ready — click Answer Key to download');
+      else if (st?.status === 'failed') showToast('error', st.error_detail || 'Answer key generation failed');
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [keyStatus, refreshAnswerKey]);
+
   // ── persist the change log per-paper so a reload doesn't lose it ───────────
   // Hydrate from localStorage on mount. The prev_data snapshots are JSON, so revert
   // still works after a reload (it restores server-side via /restore_data/).
@@ -286,6 +311,58 @@ export default function EditPaperPage() {
       const c = await apiClient.get(`/papers/${id}/get_content/`);
       setDocText(c.data.content || '');
     } catch { /* non-fatal */ }
+    refreshAnswerKey();   // paper content changed — server re-checks key staleness
+  };
+
+  // ── answer key actions ─────────────────────────────────────────────────────
+  const requestAnswerKey = async () => {
+    try {
+      setKeyBusy(true);
+      const res = await apiClient.post(`/papers/${id}/answer_key/`);
+      setAnswerKey(res.data);
+      showToast('success', 'Generating answer key — one answer per question, this can take a few minutes');
+    } catch (e) {
+      const msg = e?.response?.data?.error;
+      showToast('error', msg === 'no_paper_data'
+        ? 'This paper has no stored question data (older paper) — regenerate the paper first.'
+        : (msg || 'Could not start answer key generation'));
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
+  const downloadAnswerKey = async () => {
+    try {
+      setKeyBusy(true);
+      const res = await apiClient.get(`/papers/${id}/answer_key_docx/`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Answer_Key_${paper?.subject || 'paper'}_Class_${paper?.class_name || id}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      showToast('error', 'Could not download the answer key');
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
+  const handleAnswerKey = async () => {
+    const st = answerKey?.status || 'none';
+    if (st === 'queued' || st === 'generating') return;
+    if (st === 'done') return downloadAnswerKey();
+    if (st === 'stale') {
+      if (window.confirm('The paper has changed since this answer key was generated.\n\n'
+        + 'OK — regenerate the key for the current paper\nCancel — download the old key anyway')) {
+        return requestAnswerKey();
+      }
+      return downloadAnswerKey();
+    }
+    if (st === 'failed' && !window.confirm('The last answer key generation failed. Try again?')) return;
+    return requestAnswerKey();   // 'none' or retry after 'failed'
   };
 
   // ── Regenerate the whole paper from its existing config ────────────────────
@@ -308,6 +385,7 @@ export default function EditPaperPage() {
           setHistory([]);                                 // old edit log no longer applies
           try { localStorage.removeItem(LOG_KEY); } catch { /* ignore */ }
           await load();                                   // reload the freshly generated paper
+          refreshAnswerKey();                             // new questions — key (if any) is now stale
           showToast('success', 'Paper regenerated');
           return;
         }
@@ -553,6 +631,30 @@ export default function EditPaperPage() {
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
             <span className="hidden sm:inline">Export DOCX</span>
           </button>
+
+          {(() => {
+            const busy = keyBusy || keyStatus === 'queued' || keyStatus === 'generating';
+            const cls = keyStatus === 'stale'
+              ? 'text-amber-700 bg-amber-50 border-amber-200 hover:bg-amber-100'
+              : keyStatus === 'failed'
+                ? 'text-red-700 bg-red-50 border-red-200 hover:bg-red-100'
+                : 'text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100';
+            const label = busy ? 'Answer key…'
+              : keyStatus === 'stale' ? 'Answer Key ⚠'
+              : keyStatus === 'failed' ? 'Retry Key' : 'Answer Key';
+            const title = busy ? 'Generating the answer key — one answer per question, this can take a few minutes'
+              : keyStatus === 'done' ? 'Download the teacher answer key (Word)'
+              : keyStatus === 'stale' ? 'The paper changed after this key was generated — click to regenerate or download the old key'
+              : keyStatus === 'failed' ? 'Answer key generation failed — click to retry'
+              : 'Generate a teacher answer key with marking scheme (Word document)';
+            return (
+              <button onClick={handleAnswerKey} disabled={busy} title={title} aria-label="Answer Key"
+                className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors disabled:opacity-50 ${cls}`}>
+                {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />}
+                <span className="hidden sm:inline">{label}</span>
+              </button>
+            );
+          })()}
 
           {/* Change-log panel toggle */}
           <button onClick={() => setShowLog(v => !v)} title={showLog ? 'Hide change log' : 'Show change log'}

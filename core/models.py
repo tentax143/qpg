@@ -168,6 +168,34 @@ class QuestionPaper(models.Model):
     def __str__(self):
         return f"{self.class_name} - {self.subject} ({self.pattern})"
 
+
+class AnswerKey(models.Model):
+    STATUS_CHOICES = [
+        ('queued', 'Queued'),
+        ('generating', 'Generating'),
+        ('done', 'Done'),
+        ('failed', 'Failed'),
+        ('stale', 'Stale'),
+    ]
+
+    paper = models.OneToOneField(QuestionPaper, on_delete=models.CASCADE, related_name='answer_key')
+    requested_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name='requested_answer_keys')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='queued')
+    task_id = models.CharField(max_length=255, blank=True, null=True)
+    source_revision_hash = models.CharField(max_length=64, blank=True, default='')
+    data = models.JSONField(default=dict, blank=True)
+    error_detail = models.TextField(blank=True, default='')
+    cost = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    input_tokens = models.BigIntegerField(default=0)
+    output_tokens = models.BigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Answer key for paper {self.paper_id} ({self.status})"
+
+
 class Material(models.Model):
     MATERIAL_TYPES = [
         ("textbook", "Textbook"),
@@ -303,6 +331,7 @@ class UsageEvent(models.Model):
         ("regenerate", "Regenerate"),
         ("rerender", "Re-render"),
         ("edit", "AI Edit"),
+        ("answer_key", "Answer Key"),
         ("pattern", "Pattern"),
     ]
 

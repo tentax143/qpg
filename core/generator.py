@@ -942,6 +942,7 @@ def _emit_section_questions(all_questions, questions_list, sec_info, q_counter,
             all_questions.append(("subheader", label))
         for q in qs:
             if isinstance(q, dict):
+                _inject_missing_diagram_prompt(q, sec_info)
                 q["qnum"] = q_counter
                 q_counter = process_question(all_questions, q, q_counter,
                                              class_name, subject, chapters, paper_id)
@@ -1082,6 +1083,9 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
         if section_key in sections_data:
             section_data = sections_data[section_key]
             print(f"[DEBUG] Found section data for '{sec}', keys: {list(section_data.keys()) if isinstance(section_data, dict) else type(section_data)}")
+            sec_render_info = dict(sec_info)
+            sec_render_info["_section_name"] = sec
+            sec_render_info["section_title"] = title
 
             # Check if it's the new structure with subsections
             if "subsections" in section_data:
@@ -1162,6 +1166,7 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                         img_path = section_data.get('image_path', '')
                         if img_path and os.path.isfile(img_path):
                             all_questions.append(("image", img_path))
+                            sec_render_info["_shared_image_present"] = True
 
                     if 'passage' in section_data:
                         passage_text = section_data.get('passage', '')
@@ -1199,12 +1204,12 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
                         # Regroup by type (MCQ → VSA → SA → CBQ → LA) with sub-headings and
                         # restore per-type marks from the section blueprint.
                         q_counter = _emit_section_questions(
-                            all_questions, questions_list, sec_info, q_counter,
+                            all_questions, questions_list, sec_render_info, q_counter,
                             class_name, subject, chapters, paper_id)
                 elif isinstance(section_data, list):
                     # section_data is directly a list of questions
                     q_counter = _emit_section_questions(
-                        all_questions, section_data, sec_info, q_counter,
+                        all_questions, section_data, sec_render_info, q_counter,
                         class_name, subject, chapters, paper_id)
                 else:
                     pass
@@ -1233,7 +1238,8 @@ def _marks_suffix(marks_raw):
 # — instead of emitting a structured image_prompt field, so no image gets generated. This catches
 # that parenthetical/bracketed description so we can render a real image and drop the stray text.
 _INLINE_IMG_RE = re.compile(
-    r'[\(\[]\s*(?:image\s*description|image|diagram|figure|picture|illustration)\b[:\-\s]*'
+    r'[\(\[]\s*(?:image\s*description|image|diagram|figure|picture|illustration)'
+    r'(?:\s+placeholder)?\b[:\-\s]*'
     r'(.*?)[\)\]]',
     re.IGNORECASE | re.DOTALL,
 )
@@ -1278,6 +1284,112 @@ def _extract_inline_image(text):
     if len(desc) < 12:
         return clean or text, None
     return clean, desc
+
+
+_DIAGRAM_SECTION_RE = re.compile(
+    r'\b(diagram|figure|picture|visual|image)(?:\s+based)?\b',
+    re.IGNORECASE,
+)
+_DIAGRAM_PROMPT_PREFIX_RE = re.compile(
+    r'^\s*(?:'
+    r'a\s+student\s+is\s+given\s+a\s+diagram\s+showing|'
+    r'the\s+diagram(?:\s+(?:below|above|given|shown))?\s+shows|'
+    r'the\s+figure(?:\s+(?:below|above|given|shown))?\s+shows|'
+    r'a\s+diagram\s+illustrates(?:\s+the\s+concept\s+of)?|'
+    r'the\s+diagram\s+illustrates(?:\s+the\s+concept\s+of)?|'
+    r'the\s+diagram\s+below\s+shows\s+a?\s*|'
+    r'the\s+schematic\s+representation\s+of'
+    r')\s*',
+    re.IGNORECASE,
+)
+_DIAGRAM_PROMPT_STOP_RE = re.compile(
+    r'(?:\(\s*i+\s*\)|\bidentify\b|\bcalculate\b|\bdefine\b|\bstate\b|\bexplain\b|'
+    r'\bgive\s+reason\b|\bbased\s+on\s+the\s+diagram\b|\bwhich\s+label\b|\bwhich\s+side\b)',
+    re.IGNORECASE,
+)
+
+
+def _section_wants_question_diagrams(sec_info) -> bool:
+    """True when the section metadata signals per-question diagrams."""
+    if not isinstance(sec_info, dict):
+        return False
+    if sec_info.get("_shared_image_present"):
+        return False
+
+    blobs = [
+        sec_info.get("_section_name", ""),
+        sec_info.get("section_name", ""),
+        sec_info.get("title", ""),
+        sec_info.get("section_title", ""),
+    ]
+
+    instr = sec_info.get("instructions")
+    if isinstance(instr, (list, tuple)):
+        blobs.extend(str(i) for i in instr)
+    elif instr:
+        blobs.append(str(instr))
+
+    qtypes = sec_info.get("question_types") or []
+    if isinstance(qtypes, str):
+        blobs.append(qtypes)
+    else:
+        for qt in qtypes:
+            blobs.append(qt.get("type", "") if isinstance(qt, dict) else str(qt))
+
+    return bool(_DIAGRAM_SECTION_RE.search(" ".join(str(b) for b in blobs if b)))
+
+
+def _derive_diagram_prompt(text: str) -> str | None:
+    """Build a usable diagram prompt from descriptive question text."""
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not raw:
+        return None
+
+    desc = _DIAGRAM_PROMPT_PREFIX_RE.sub("", raw, count=1).strip(" :,-")
+    desc = re.split(r"\n\s*\(\s*i+\s*\)", desc, maxsplit=1, flags=re.IGNORECASE)[0]
+    desc = _DIAGRAM_PROMPT_STOP_RE.split(desc, maxsplit=1)[0].strip(" :;,-")
+
+    if not desc or len(desc) < 18 or _is_generic_image_stem(desc):
+        return None
+
+    parts = [p.strip() for p in re.split(r'(?<=[.!?])\s+', desc) if p.strip()]
+    desc = " ".join(parts[:3]).strip()
+    if not desc or len(desc) < 18:
+        return None
+
+    return (
+        "Scientific textbook diagram, pure white background, black line art, "
+        "clean labels where needed: "
+        f"{desc}"
+    )
+
+
+def _inject_missing_diagram_prompt(q, sec_info):
+    """Backfill image_prompt when a diagram section question forgot to provide one."""
+    if not isinstance(q, dict):
+        return q
+    if str(q.get("image_prompt", "")).strip():
+        return q
+    if not _section_wants_question_diagrams(sec_info):
+        return q
+
+    text = str(q.get("text") or q.get("question") or "").strip()
+    if not text:
+        return q
+
+    clean_text, inline_prompt = _extract_inline_image(text)
+    if inline_prompt:
+        if "text" in q:
+            q["text"] = clean_text
+        elif "question" in q:
+            q["question"] = clean_text
+        q["image_prompt"] = inline_prompt
+        return q
+
+    prompt = _derive_diagram_prompt(text)
+    if prompt:
+        q["image_prompt"] = prompt
+    return q
 
 
 def _emit_sub_questions(all_questions, sub_qs):
@@ -2898,11 +3010,8 @@ IMAGE_OPENAI_ATTEMPTS = int(os.environ.get("IMAGE_OPENAI_ATTEMPTS", "2"))
 class ImageNotCached(Exception):
     """Raised when an image is requested in cache-only mode but isn't already on disk.
 
-    Synchronous endpoints (re-render, AI-edit re-render, restore) run in a web request
-    and must never make the slow external image-generation calls (OpenAI/Together can
-    block for minutes per image → the page times out). Images are already generated and
-    cached during the async Celery generation, so those endpoints reuse the cache and
-    skip anything missing instead of regenerating it."""
+    Callers normally use this to skip missing images in fast synchronous paths.
+    Some rerender flows may catch it and opt into on-demand generation explicitly."""
 
 
 def _decode_image_item(item, _requests):
@@ -3032,12 +3141,13 @@ def generate_ai_image(prompt: str, width: int = 1024, height: int = 1024, cfg_sc
     return rel_path
 
 
-def materialize_images(all_questions, allow=True, cache_only=False):
+def materialize_images(all_questions, allow=True, cache_only=False, generate_missing_images=False):
     """Convert ('image_gen', prompt) and [IMAGE:/[Picture:/[Diagram:] markers (case-insensitive) to ('image', rel_path).
     Supports markers embedded in any text type (q, subq, instruction, passage).
 
     cache_only=True (synchronous re-render path): reuse images already on disk but never
-    call the external image APIs — uncached images are skipped, keeping the request fast."""
+    call the external image APIs — unless generate_missing_images=True, in which case
+    cache misses are generated on demand."""
     if not allow:
         return all_questions
     import re
@@ -3053,7 +3163,15 @@ def materialize_images(all_questions, allow=True, cache_only=False):
                     rel = generate_ai_image(str(text), cache_only=cache_only)
                     out.append(('image', rel))
                 except ImageNotCached:
-                    print(f"[ImageGen] cache-only re-render: skipping uncached image ({str(text)[:60]})")
+                    if generate_missing_images:
+                        print(f"[ImageGen] cache miss during re-render — generating image on demand ({str(text)[:60]})")
+                        try:
+                            rel = generate_ai_image(str(text), cache_only=False)
+                            out.append(('image', rel))
+                        except Exception as ge:
+                            print(f"[ImageGen] On-demand generation failed for prompt '{str(text)[:60]}': {ge}")
+                    else:
+                        print(f"[ImageGen] cache-only re-render: skipping uncached image ({str(text)[:60]})")
                 continue
 
             if isinstance(text, str):
@@ -3084,7 +3202,16 @@ def materialize_images(all_questions, allow=True, cache_only=False):
                             out.append(('image', rel))
                             generated_any = True
                         except ImageNotCached:
-                            print(f"[ImageGen] cache-only re-render: skipping uncached image ({prompt_clean[:60]})")
+                            if generate_missing_images:
+                                print(f"[ImageGen] cache miss during re-render — generating marker image on demand ({prompt_clean[:60]})")
+                                try:
+                                    rel = generate_ai_image(prompt_clean, cache_only=False)
+                                    out.append(('image', rel))
+                                    generated_any = True
+                                except Exception as ge:
+                                    print(f"[ImageGen] On-demand marker generation failed for prompt '{prompt_clean[:60]}': {ge}")
+                            else:
+                                print(f"[ImageGen] cache-only re-render: skipping uncached image ({prompt_clean[:60]})")
                         except Exception as ge:
                             print(f"[ImageGen] Generation failed for prompt '{prompt_clean[:60]}': {ge}")
 
@@ -3106,7 +3233,7 @@ def materialize_images(all_questions, allow=True, cache_only=False):
 _COST_PER_INPUT_1K  = 0.49   # INR per 1k input tokens
 _COST_PER_OUTPUT_1K = 1.47   # INR per 1k output tokens
 
-def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters, additional_context, pattern, total_input_tokens=0, total_output_tokens=0, allow_images=True, cache_only=False):
+def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters, additional_context, pattern, total_input_tokens=0, total_output_tokens=0, allow_images=True, cache_only=False, generate_missing_images=False):
     """
     Render a pre-generated paper_data dict to DOCX.
     Used by the parallel pipeline after generate_paper_parallel() succeeds.
@@ -3132,7 +3259,12 @@ def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters
         render_data[sec_name] = clean_sec
 
     all_questions = render_section_questions([], render_data, blueprint, class_name, subject, chapters, None)
-    all_questions = materialize_images(all_questions, allow=allow_images, cache_only=cache_only)
+    all_questions = materialize_images(
+        all_questions,
+        allow=allow_images,
+        cache_only=cache_only,
+        generate_missing_images=generate_missing_images,
+    )
 
     summary = {sec: {"title": sec, "marks": render_data.get(sec, {}).get("marks", 0)} for sec in render_data.keys()}
 

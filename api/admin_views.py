@@ -7,6 +7,7 @@ from django.utils import timezone
 from core.models import School, UserProfile, QuestionPaper
 from .permissions import IsSuperAdmin, IsSchoolAdminOrAbove
 from .auth_serializers import UserSerializer, CreateUserSerializer
+from .serializers import QuestionPaperListSerializer
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -282,19 +283,14 @@ def school_papers(request, pk):
     papers = QuestionPaper.objects.filter(
         created_by__profile__school=school
     ).select_related('created_by').order_by('-created_at')[:100]
-
-    return Response([{
-        'id': p.id,
-        'class_name': p.class_name,
-        'subject': p.subject,
-        'status': p.status,
-        'difficulty': p.difficulty,
-        'cost': str(p.cost) if p.cost else None,
-        'input_tokens': p.input_tokens,
-        'output_tokens': p.output_tokens,
-        'created_by': p.created_by.username if p.created_by else None,
-        'created_at': p.created_at,
-    } for p in papers])
+    rows = QuestionPaperListSerializer(
+        papers,
+        many=True,
+        context={'request': request},
+    ).data
+    for row, paper in zip(rows, papers):
+        row['created_by'] = paper.created_by.username if paper.created_by else None
+    return Response(rows)
 
 
 # ── per-user usage within a school ───────────────────────────────────────────

@@ -70,13 +70,23 @@ Semantics:
   - `parts` present, `choice != "open"` → `sum(part.marks) == marks`.
   - `parts` present, `choice == "open"` → parts carry uniform marks and
     `attempt * part_marks == marks`.
+  - `normalize_slots` enforces the open-choice identity deterministically:
+    when `marks` equals the per-part value or the all-parts sum (the two
+    LLM confusions observed on the Tamil PT-1, which shipped a 40-mark
+    paper at 30), it is rewritten to `attempt * part_marks`. Any other
+    conflict is left for the validator; `repair_preserves_slots` exempts
+    such conflicted slots so a repair may fix their marks.
 - `choice == "internal"` → generation must emit `or_alternative` on this
   question (and ONLY slot-flagged questions get the OR requirement in
   slot-driven sections).
 - Ranges in source text ("Q1-4 MCQs") are expanded to one slot per qnum.
 - Reading/extract source material stays at section level
-  (`passage_instruction` / `extract_instruction`); a slot's `source` says
-  where its material comes from.
+  (`passage_instruction` / `extract_instruction`) ONLY when the whole
+  section shares one passage; a slot's `source` says where its material
+  comes from. A "read the passage/poem and answer" exercise is ONE
+  `cbq` (source `unseen`, passage composed into `source_text`) or
+  `extract` (source `textbook`, quoted verbatim) slot per passage with
+  the questions as `parts` — independent loose slots print no passage.
 
 ### Canonical type enum → pipeline category
 

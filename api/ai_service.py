@@ -94,6 +94,11 @@ REPAIR RULES — CRITICAL:
   the declared section/total marks disagree, the per-question detail is the truth:
   KEEP every slot exactly as it is and CHANGE the section "marks" (and "total_marks")
   to the sum of its slots.
+- EXCEPTION — open-choice slots (choice "open"): the slot's "marks" MUST equal
+  attempt x per-part marks (the total the student can earn). When an error flags that
+  identity, FIX the slot's "marks" to attempt x per-part marks (e.g. attempt 4 of
+  6 parts x 2m -> marks 8) — never "fix" it by shrinking the section or paper total
+  the teacher declared.
 - Change only what the errors above require; keep everything else identical.
 
 {_SLOT_SCHEMA_RULES}

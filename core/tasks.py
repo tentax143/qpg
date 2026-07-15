@@ -529,6 +529,75 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
             print(f"[Task] dispatch_next_queued failed for user {paper.created_by_id}: {_dq}")
 
 
+# ── Answer key generation ─────────────────────────────────────────────────────
+
+@shared_task(bind=True)
+def generate_answer_key_task(self, answer_key_id):
+    """Generate the teacher answer key for one paper (one LLM call per question, so it
+    runs async). Stores the structured JSON on AnswerKey.data; the DOCX is rendered on
+    demand at download time from that JSON, so there is no file to keep in sync."""
+    from .models import AnswerKey, UsageEvent
+    from . import answer_key_generator
+
+    key = AnswerKey.objects.select_related('paper', 'requested_by').get(id=answer_key_id)
+    key.status = 'generating'
+    key.task_id = self.request.id
+    key.error_detail = ''
+    key.save(update_fields=['status', 'task_id', 'error_detail', 'updated_at'])
+
+    paper = key.paper
+    try:
+        school = None
+        school_id = None
+        try:
+            school = paper.created_by.profile.school
+            school_id = school.id if school else None
+        except Exception:
+            pass
+
+        data, input_tokens, output_tokens = answer_key_generator.build_answer_key(
+            paper, school_id=school_id)
+        cost = answer_key_generator.calculate_cost(input_tokens, output_tokens)
+
+        key.data = data
+        key.source_revision_hash = answer_key_generator.paper_revision_hash(paper.paper_data)
+        key.input_tokens = input_tokens
+        key.output_tokens = output_tokens
+        key.cost = cost
+        key.status = 'done'
+        key.save()
+
+        # School cumulative usage (tokens/cost only — an answer key is not a new paper).
+        try:
+            if school:
+                School.objects.filter(pk=school.pk).update(
+                    total_tokens_used=F('total_tokens_used') + input_tokens + output_tokens,
+                    total_cost_accumulated=F('total_cost_accumulated') + (cost or 0),
+                )
+        except Exception as _se:
+            print(f"[AnswerKeyTask] Could not update school cumulative stats: {_se}")
+
+        # Per-user usage log — the requester pays, not necessarily the paper's creator.
+        try:
+            UsageEvent.record(
+                user=key.requested_by or paper.created_by, school=school,
+                paper_id=paper.id, kind='answer_key',
+                input_tokens=input_tokens, output_tokens=output_tokens, cost=cost or 0,
+            )
+        except Exception as _ue:
+            print(f"[AnswerKeyTask] Could not record usage event: {_ue}")
+
+        return {'generated_questions': data.get('generated_questions'),
+                'errors': len(data.get('errors') or [])}
+
+    except Exception as e:
+        key.status = 'failed'
+        key.error_detail = str(e)[:500]
+        key.save(update_fields=['status', 'error_detail', 'updated_at'])
+        print(f"[AnswerKeyTask Failed] AnswerKey {answer_key_id} (paper {paper.id}): {e}")
+        raise
+
+
 # ── CBSE pattern updater ──────────────────────────────────────────────────────
 
 _CBSE_SYSTEM_PROMPT = """You are a CBSE curriculum expert with precise knowledge of official CBSE Sample Question Papers (SQP) 2024-25 and 2025-26.

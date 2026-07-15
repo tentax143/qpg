@@ -29,10 +29,17 @@ EMBED_DIMS = {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def normalize_label(label: str) -> str:
+    # Non-ASCII chars must survive: Indic-script chapter names (Tamil/Hindi/…) otherwise
+    # normalize to "" — ChunkChapter links were never created for them at ingestion and the
+    # unit filter in query() silently vanished, so every "per-chapter" retrieval searched
+    # the whole book. ASCII labels keep the exact old behavior (a-z, 0-9, _ only).
     if not label:
         return None
     clean = label.lower().replace(" ", "_").replace("-", "_")
-    clean = re.sub(r"[^a-z0-9_]", "", clean)
+    clean = "".join(
+        ch for ch in clean
+        if not ch.isascii() or ch == "_" or "a" <= ch <= "z" or "0" <= ch <= "9"
+    )
     return re.sub(r"_+", "_", clean).strip("_")
 
 

@@ -1,0 +1,1127 @@
+ ▐▛███▜▌   Claude Code v2.1.208
+▝▜█████▛▘  Fable 5 · Claude Team
+  ▘▘ ▝▝    D:\GIT REPO MAIN\qpg
+
+ ▎ Extended through July 19
+ ▎ We're extending Claude Fable 5 access on all paid plans, as well as keeping Claude Code’s weekly rate limits 50% higher, through July 19.
+ ▎
+ ▎ As before, you can use up to half of your weekly usage limit on Fable 5. After that, you can keep using Fable 5 with usage credits, or switch to another model to keep working within your remaining limits.
+ ▎
+ ▎ More details here: https://support.claude.com/en/articles/15424964-claude-fable-5-promotional-access
+
+● Sounds good. Quick checklist so the test is meaningful:
+
+  1. Restart the Celery worker first — otherwise the regeneration runs with the
+  old prompt rules and you'll see the same output.
+  2. Regenerate the pattern from the teacher text (not just edit/save), then
+  generate the paper from the fresh pattern.
+
+  What a correct result looks like:
+
+  - Pattern JSON: பகுதி-அ should be ~2 slots (one per passage: உரைப்பத்தி + பாடல்), each
+  type cbq, source: "unseen", marks 4, with 4 × 1m mcq parts. பகுதி-ஈ slots
+  should show marks 8 and 8 (not 2 and 4), section marks 16, total 40, and no 
+  _structure_warnings.
+  - Paper: Section அ prints a passage/poem followed by its 4 questions each;
+  Q18-style question shows "[8]" with sub-parts at 2 marks each ("attempt any 4
+  of 6"), and the paper totals 40.
+
+  If the pattern LLM still gets something wrong, paste the new pattern JSON and
+  paper like last time — the interesting bit will be whether the reconcile
+  caught it (marks right, no warnings) versus the prompt still mis-encoding the
+  comprehension section.
+
+✻ Brewed for 18s
+
+※ recap: Fixing Tamil paper generation: pattern fixes for wrong marks (30/40) and missing comprehension passages are done and tested. Next: restart the Celery worker, regenerate the pattern from teacher text, generate a paper, and report the result. (disable recaps in /config)
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Read C:\Users\Administrator\.claude\projects\D--GIT-REPO-MAIN-qpg\memory\pr
+     oject_openchoice_comprehension.md (15 lines)
+  ⎿  Referenced file docs\PER_QUESTION_STRUCTURE.md
+  ⎿  Referenced file core\tests.py
+  ⎿  Referenced file core\section_generator.py
+  ⎿  Read api\ai_service.py (115 lines)
+
+※ recap: Fixing Tamil paper generation: pattern fixes for wrong marks (30/40) and missing comprehension passages are done and tested. Next: restart the Celery worker, regenerate the pattern from teacher text, generate a paper, and report the result. (disable recaps in /config)
+
+❯ ok for grammer that is இலக்கணம் that should come from chapter related to        
+  grammer not questions from instde othere chapters the llm shopld identify he  
+  chapters related to grammer  it should not take from inside othere chapter    
+    {                                                                           
+      "id": "SEC_A",                                                            
+      "name": "பகுதி - அ",                                                        
+      "marks": 8,                                                               
+      "constraints": {},                                                        
+      "instructions": [                                                         
+        "பகுதி - அ"                                                               
+      ],                                                                        
+      "question_slots": [                                                       
+        {                                                                       
+          "qnum": 1,                                                            
+          "type": "extract",                                                    
+          "marks": 4,                                                           
+          "parts": [                                                            
+            {                                                                   
+              "type": "mcq",                                                    
+              "label": "A",                                                     
+              "marks": 1                                                        
+            },                                                                  
+            {                                                                   
+              "type": "mcq",                                                    
+              "label": "B",                                                     
+              "marks": 1                                                        
+            },                                                                  
+            {                                                                   
+              "type": "mcq",                                                    
+              "label": "C",                                                     
+              "marks": 1                                                        
+            },                                                                  
+            {                                                                   
+              "type": "mcq",                                                    
+              "label": "D",                                                     
+              "marks": 1                                                        
+            }                                                                   
+          ],                                                                    
+          "choice": "none",                                                     
+          "format": "உரைப்பத்தியை படித்து பொருளுணர்ந்து வினாக்களுக்கு விடையளி",                        
+          "source": "textbook"                                                  
+        },                                                                      
+        {                                                                       
+          "qnum": 2,                                                            
+          "type": "extract",                                                    
+          "marks": 4,                                                           
+          "parts": [                                                            
+            {                                                                   
+              "type": "mcq",                                                    
+              "label": "A",                                                     
+              "marks": 1                                                        
+            },                                                                  
+            {                                                                   
+              "type": "mcq",                                                    
+              "label": "B",                                                     
+              "marks": 1                                                        
+            },                                                                  
+            {                                                                   
+              "type": "mcq",                                                    
+              "label": "C",                                                     
+              "marks": 1                                                        
+            },                                                                  
+            {                                                                   
+              "type": "mcq",                                                    
+              "label": "D",                                                     
+              "marks": 1                                                        
+            }                                                                   
+          ],                                                                    
+          "choice": "none",                                                     
+          "format": "பாடலை படித்து பொருளுணர்ந்து வினாக்களுக்கு விடையளி",                            
+          "source": "textbook"                                                  
+        }                                                                       
+      ],                                                                        
+      "question_types": [                                                       
+        {                                                                       
+          "type": "Extract-Based",                                              
+          "count": 2,                                                           
+          "range": "Q1-Q2",                                                     
+          "marks_each": 4                                                       
+        }                                                                       
+      ],                                                                        
+      "questions_count": 2,                                                     
+      "marks_per_question": 4                                                   
+    },                                                                          
+    {                                                                           
+      "id": "SEC_B",                                                            
+      "name": "பகுதி - ஆ",                                                        
+      "marks": 8,                                                               
+      "constraints": {},                                                        
+      "instructions": [                                                         
+        "பகுதி - ஆ"                                                               
+      ],                                                                        
+      "question_slots": [                                                       
+        {                                                                       
+          "qnum": 3,                                                            
+          "type": "writing",                                                    
+          "marks": 8,                                                           
+          "choice": "internal",                                                 
+          "format": "ஏதேனும் ஒரு வினாவுக்கு ஏற்ற விடையளி",                                   
+          "alternatives": [                                                     
+            "கட்டுரை",                                                             
+            "கடிதம்",                                                             
+            "துணைப்பாடம்"                                                            
+          ]                                                                     
+        }                                                                       
+      ],                                                                        
+      "question_types": [                                                       
+        {                                                                       
+          "type": "Writing",                                                    
+          "count": 1,                                                           
+          "range": "Q3",                                                        
+          "marks_each": 8                                                       
+        }                                                                       
+      ],                                                                        
+      "questions_count": 1,                                                     
+      "ma                                                                       
+  ──── (260 lines hidden) ───────────────────────────────────────────────────── 
+  __ ஐ அறிமுகப்படுத்தினார். [1]                                                         
+                                                                                
+  (f)ஓலைச்சுவடிகளில் புள்ளிகளும், கோடுகளும் பயன்படுத்தப்பட்டதன் காரணம் __________. [1]                 
+                                                                                
+  5.ஏதேனும் 6ல் ஏதேனும் 4ற்கு சரியான விடையைத் தேர்ந்தெடுத்து எழுதுக: [4]                                
+                                                                                
+  (a)‘தமிழ்மொழி வாழ்த்து’ பாடலில் 'மொழிகள் தம் இனிய சுவையால் உலகை மகிழ்விக்கின்றன' எனும் கருத்தை வெளிப்படுத்தும் வரி    
+  எது? a) தமிழ் எமது உயிர் b) மொழி எல்லாம் தெய்வீகம் c) இனிய தமிழ் பேசுவோம் d) உலகம் மகிழ்ந்து வாழ [1]      
+                                                                                
+  (b)தமிழ்மொழியின் சிறப்பைப் பற்றிக் கூறும் 'தமிழ்மொழி வாழ்த்து' பாடலின் முக்கிய கருத்து எது? a) தமிழ் பழமையான மொழி b)  
+  தமிழ் வளமான இலக்கியங்களைக் கொண்டது c) தமிழ் நமது கலாச்சார அடையாளம் d) தமிழ் எளிதில் கற்றுக்கொள்ளக்கூடியது [1]   
+                                                                                
+  (c)பாடலாசிரியர் தமிழ்மொழியை வாழ்த்துவதற்கான முதன்மைக் காரணம் என்ன? a) அதன் எளிய இலக்கணம் b) அதன் இசைத்தன்மை   
+  மற்றும் பண்பாட்டு மதிப்பு c) அதன் பரவலான பயன்பாடு d) அதன் புதிய சொற்களின் தோற்றம் [1]                  
+                                                                                
+  (d)'தாய்மொழி எனும் தமிழே' என்ற தொடரின் மூலம் பாடலாசிரியர் குறிப்பிடுவது எது? a) தமிழ் பேசும் மக்களின் எண்ணிக்கை b)  
+  தமிழின் தாய்த்தன்மை மற்றும் அர்ப்பணிப்பு c) தமிழ் கற்பதற்கான சவால்கள் d) தமிழின் எதிர்காலம் [1]              
+                                                                                
+  (e)தமிழ்மொழி வாழ்த்துப் பாடலின் இறுதி வரியான 'வாழ்க தமிழ்!' என்பது எதை வலியுறுத்துகிறது? a) தமிழின் முடிவு b)     
+  தமிழின் நீடித்த வளர்ச்சிக்கான ஆசி c) தமிழை மறப்பதற்கான அழைப்பு d) தமிழின் பழமையை மட்டும் போற்றுதல் [1]        
+                                                                                
+  (f)பாடலில் 'இனிய தமிழ் பேசுவோம்' என்று கூறப்படுவதன் நோக்கம் என்ன? a) தமிழை மட்டுமே பேச வேண்டும் b) தமிழைப்     
+  பேசும்போது அதன் இனிமையை உணர வேண்டும் c) பிற மொழிகளைத் தவிர்க்க வேண்டும் d) தமிழை விரைவாகப் பேச வேண்டும் [1]       
+                                                                                
+  SECTION – பகுதி - ஈ (16 MARKS)                                                  
+                                                                                
+  6.பின்வரும் ஆறு வினாக்களில் ஏதேனும் நான்கு வினாக்களுக்கு குறு விடையளிக்க. [8]                             
+                                                                                
+  (a)மயங்கொலிகள் என்ற சொல் எதைக் குறிக்கிறது? [2]                                             
+                                                                                
+  (b)மயங்கொலி எழுத்துக்களின் வகைகள் யாவை? [2]                                                
+                                                                                
+  (c)‘ங்’ என்ற மயங்கொலி எழுத்து எந்த எழுத்துடன் சேரும்? [2]                                     
+                                                                                
+  (d)‘சென்னை’ என்ற சொல்லில் உள்ள மயங்கொலி எழுத்து எது? [2]                                      
+                                                                                
+  (e)மயங்கொலிகள் இல்லாமல் எழுத்துகள் எழுதப்படுமா? [2]                                          
+                                                                                
+  (f)‘வாண்டி’ என்ற சொல்லை சரியாகப் பிரித்து எழுதுக. [2]                                         
+                                                                                
+  7.பின்வரும் நான்கு வினாக்களில் ஏதேனும் இரண்டு வினாக்களுக்கு விரிவான விடையளிக்க. [8]                         
+                                                                                
+  (a)“முகநக நட்பு” என்ற திருக்குறளின் அடிப்படையில், நட்பின் முக்கியத்துவத்தை விளக்குக. [4]                  
+                                                                                
+  (b)“அருந்தும் உணவின் அருமை உணர்ந்தவர்கள் நம் தமிழர்கள்” - இக்குறளை அடிப்படையாகக் கொண்டு, உணவின் முக்கியத்துவம்   
+  குறித்து எழுதுக. [4]                                                                
+                                                                                
+  (c)“பிறரால் மதிக்கப்படும் ஒருவர் எத்தகைய பண்புகளைக் கொண்டிருக்க வேண்டும்?” என்பதைத் திருக்குறளின் வழியாக விளக்குக.   
+  [4]                                                                           
+                                                                                
+  (d)திருக்குறள் ‘உழைப்பின் மேன்மை’ பற்றி எவ்வாறு கூறுகிறது?    பகுதி - ஈ  it has grammer releted      
+  question idk check and also these changes should not affect othere subjects   
+
+● Good progress — both earlier fixes landed (பகுதி-ஈ slots now carry 8/8 → total
+  40, and பகுதி-அ prints a passage before each question set). Now let me dig into
+  the grammar-sourcing problem: how the generator picks chapters/chunks per
+  section, so I can route இலக்கணம் sections to grammar chapters only.
+
+  Searched for 4 patterns, read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● Units for class 10 Tamil are just numbers, and no class 6 Tamil showed up. Let
+  me check what class/subject values exist and find the class 6 Tamil material.
+
+  Searched for 6 patterns, read 2 files, ran 2 shell commands (ctrl+o to expand)
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\norm_test.py)
+  ⎿  Wrote 39 lines to
+     C:\Users\Administrator\.claude\jobs\422fe76b\tmp\norm_test.py
+      1 # -*- coding: utf-8 -*-
+      2 import re
+      3 
+      4 def norm_new(label):
+      5     if not label:
+      6         return None
+      7     clean = label.lower().replace(" ", "_").replace("-", "_")
+      8     clean = re.sub(r"[^a-z0-9_-\U0010ffff]", "", clean)
+      9     return re.sub(r"_+", "_", clean).strip("_")
+     … +31 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\norm_test.py)
+  ⎿  Error editing file
+
+● Write(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\norm_test.py)
+  ⎿  Added 4 lines
+      37      if norm_new("a" + ch + "b") != norm_old("a" + ch + "b"):
+      38          diff.append(repr(ch))
+      39  print("ASCII divergence:", diff or "NONE")
+      40 +                                                               
+      41 +# idempotence: normalizing an already-normalized Tamil label is
+         + a no-op                                                       
+      42 +t = norm_new("மொழிமுதல் எழுத்துகள்")                                   
+      43 +print("idempotent:", norm_new(t) == t)                         
+
+● Update(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\norm_test.py)
+  ⎿  Error editing file
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● Write(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\norm_test.py)
+  ⎿  Error writing file
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\norm_test2.py)
+  ⎿  Wrote 47 lines to
+     C:\Users\Administrator\.claude\jobs\422fe76b\tmp\norm_test2.py
+       1 # -*- coding: utf-8 -*-
+       2 import re
+       3 
+       4 def norm_new(label):
+       5     if not label:
+       7     clean = label.lower().replace(" ", "_").replace("-", "_")
+       8     clean = "".join(
+       9         ch for ch in clean
+      10         if not ch.isascii() or ch == "_" or "a" <= ch <= "z" or 
+         "0" <= ch <= "9"
+     … +40 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Verified — byte-identical for all ASCII inputs, preserves Tamil/Hindi,
+  idempotent. Applying to core/embeddings.py:
+
+  Read 1 file (ctrl+o to expand)
+● Update(core\embeddings.py)
+  ⎿  Added 8 lines, removed 1 line
+      29  
+      30  # ── Helpers ──────────────────────────────────────────────────
+          ─────────────────
+      31  def normalize_label(label: str) -> str:
+      32 +    # Non-ASCII chars must survive: Indic-script chapter names 
+         +(Tamil/Hindi/…) otherwise                                      
+      33 +    # normalize to "" — ChunkChapter links were never created f
+         +or them at ingestion and the                                   
+      34 +    # unit filter in query() silently vanished, so every "per-c
+         +hapter" retrieval searched                                     
+      35 +    # the whole book. ASCII labels keep the exact old behavior 
+         +(a-z, 0-9, _ only).                                            
+      36      if not label:
+      37          return None
+      38      clean = label.lower().replace(" ", "_").replace("-", "_")
+      35 -    clean = re.sub(r"[^a-z0-9_]", "", clean)                   
+      39 +    clean = "".join(                                           
+      40 +        ch for ch in clean                                     
+      41 +        if not ch.isascii() or ch == "_" or "a" <= ch <= "z" or
+         + "0" <= ch <= "9"                                              
+      42 +    )                                                          
+      43      return re.sub(r"_+", "_", clean).strip("_")
+      44  
+      45  
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now the backfill migration:
+
+● Write(core\migrations\0039_backfill_unicode_chunk_links.py)
+  ⎿  Wrote 58 lines to core\migrations\0039_backfill_unicode_chunk_links.py
+      1 # Backfill ChunkChapter links for chunks whose chapter names norm
+      2 # ASCII-only normalize_label (Indic-script books: Tamil/Hindi/…).
+         Those chunks were ingested
+      3 # with NO chapter links, so the unit filter in embeddings.query n
+      4 # "per-chapter" retrieval silently searched the whole book. norma
+        lize_label now preserves
+        each Material's declared
+      6 # chapters (metadata["chapters"], falling back to Material.unit).
+      7 import re
+      9 from django.db import migrations
+     … +65 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\verify_links.py)
+  ⎿  Wrote 18 lines to
+     C:\Users\Administrator\.claude\jobs\422fe76b\tmp\verify_links.py
+       1 # -*- coding: utf-8 -*-
+       2 from core.models import MaterialChunk, ChunkChapter
+       3 from core import embeddings
+       4 from django.db.models import Count
+       5 
+       7 qs = (ChunkChapter.objects.filter(chunk__class_name="6", chunk__
+         subject="tamil")
+       8       .values("unit").annotate(n=Count("id")).order_by("unit"))
+       9 for r in qs:
+      10     print(r["unit"], "|", r["n"])
+     … +11 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+  ⎿  You've hit your session limit · resets 2:40pm (Asia/Calcutta)
+     /usage-credits to finish what you’re working on.
+
+✻ Cooked for 12m 32s
+
+❯ continue                                                                      
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now I'll implement. First, read the chapter-block area to anchor the prompt
+  edit:
+
+  Read 1 file (ctrl+o to expand)
+
+● Now applying all the edits. First, the dataclass field and the grammar prompt
+  block:
+
+● Update(core\section_generator.py)
+  ⎿  Added 1 line
+      116      context_by_type: dict = field(default_factory=dict)  # 3.2
+           : {type_key: context_str}
+      117      chapter_plan: list = field(default_factory=list)     # one
+            chapter name per question slot (weighted allocation)
+      118      slots: list = field(default_factory=list)            # que
+           stion_slots (per-question structure) — see docs/PER_QUESTION_S
+           TRUCTURE.md
+      119 +    is_grammar: bool = False                             # gra
+          +mmar (இலக்கணம்/व्याकरण) section — chapters routed to grammar lesso
+          +ns only                                                       
+      120  
+      121  
+      122  # ─────────────────────────────────────────────
+
+● Update(core\section_generator.py)
+  ⎿  Added 12 lines
+      708              "specification are exempt — they must NOT come fro
+           m any chapter; set their "
+      709              '"chapter_tag" to "General".'
+      710          )
+      711 +    # Grammar sections: the chapter list is already routed to 
+          +the textbook's grammar                                        
+      712 +    # LESSONS (see identify_grammar_chapters), but the model m
+          +ust also be told to test                                      
+      713 +    # grammar CONCEPTS — otherwise it happily writes literatur
+          +e-comprehension questions                                     
+      714 +    # about whatever text appears in the retrieved excerpts.  
+      715 +    if wo.is_grammar and not _all_general:                    
+      716 +        chapter_block += (                                    
+      717 +            "\nGRAMMAR SECTION — MANDATORY: this section tests
+          + GRAMMAR only. Every question "                               
+      718 +            "must test a grammar concept (letters/sounds, spel
+          +ling, joining/sandhi rules, "                                 
+      719 +            "word forms and classes, sentence structure) as ta
+          +ught in the grammar lessons "                                 
+      720 +            "listed above. Do NOT ask reading-comprehension or
+          + literature questions here — "                                
+      721 +            "no story/poem content, characters, authors or poe
+          +m lines."                                                     
+      722 +        )                                                     
+      723  
+      724      # QUESTION TYPE — MANDATORY. The STRICT RULES below are MC
+           Q-heavy, and uniform non-MCQ
+      725      # sections otherwise drift into producing MCQs (a "Short A
+           nswer" section coming back full
+● Now the classifier helpers, placed right after _chapters_for_subject:
+
+● Update(core\section_generator.py)
+  ⎿  Added 101 lines
+      3803      return matched or list(all_chapters)
+      3804  
+      3805  
+      3806 +# ─────────────────────────────────────────────              
+      3807 +# Grammar-section chapter routing                            
+      3808 +# ─────────────────────────────────────────────              
+      3809 +# Language papers carry a dedicated grammar section (இலக்கணம் /
+           + व्याकरण / "Grammar") whose                                    
+      3810 +# questions must come from the textbook's grammar LESSONS — n
+           +ot from grammar-adjacent lines                               
+      3811 +# inside prose/poem chapters — and conversely the literature 
+           +sections must not spend their                                
+      3812 +# question slots on the grammar lessons. Chapter titles rarel
+           +y carry a literal grammar                                    
+      3813 +# marker (class 6 Tamil grammar lessons: "மொழிமுதல் எழுத்துகள்", "முதலெ
+           +ழுத்தும்                                                         
+      3814 +# சார்பெழுத்தும்"…), so identification is keyword-first with one cac
+           +hed LLM classification                                       
+      3815 +# on top. Routing only activates when the paper actually HAS 
+           +a grammar-named section, so                                  
+      3816 +# every other subject/pattern is untouched.                  
+      3817 +                                                             
+      3818 +_GRAMMAR_MARKERS = ("இலக்கணம்", "இலக்கண", "grammar", "व्याकरण", "v
+           +yakaran", "ilakkanam")                                       
+      3819 +                                                             
+      3820 +                                                             
+      3821 +def _is_grammar_section(sec_name: str, instructions=None) -> 
+           +bool:                                                        
+      3822 +    """True when a section is a grammar section, judged by it
+           +s name + instructions."""                                    
+      3823 +    hay = str(sec_name or "").lower()                        
+      3824 +    for ins in instructions or []:                           
+      3825 +        hay += " " + str(ins).lower()                        
+      3826 +    return any(m in hay for m in _GRAMMAR_MARKERS)           
+      3827 +                                                             
+      3828 +                                                             
+      3829 +def _blueprint_has_grammar_section(blueprint: dict) -> bool: 
+      3830 +    return any(                                              
+      3831 +        _is_grammar_section(sn, sd.get("instructions"))      
+      3832 +        for sn, sd in (blueprint or {}).items()              
+      3833 +        if isinstance(sd, dict)                              
+      3834 +    )                                                        
+      3835 +                                                             
+      3836 +                                                             
+      3837 +_grammar_chapters_cache: dict = {}                           
+      3838 +                                                             
+      3839 +                                                             
+      3840 +def identify_grammar_chapters(class_name: str, subject: str, 
+           +chapters: list) -> list:                                     
+      3841 +    """Subset of `chapters` that are grammar LESSONS (vs pros
+           +e/poetry/supplementary).                                     
+      3842 +                                                             
+      3843 +    Title-keyword pass first, then ONE LLM classification (VA
+           +L_MODEL, cached per                                          
+      3844 +    class+subject+chapters) for the titles a keyword can't de
+           +cide. Fails open to []                                       
+      3845 +    — meaning "no routing" — on any LLM error, so generation 
+           +never starves."""                                            
+      3846 +    chs = [str(c) for c in (chapters or []) if c]            
+      3847 +    if not chs:                                              
+      3848 +        return []                                            
+      3849 +    key = (str(class_name), str(subject), tuple(sorted(chs)))
+      3850 +    if key in _grammar_chapters_cache:                       
+      3851 +        gram = _grammar_chapters_cache[key]                  
+      3852 +        return [c for c in chs if c in gram]                 
+      3853 +                                                             
+      3854 +    kw = {c for c in chs if any(m in c.lower() for m in _GRAM
+           +MAR_MARKERS)}                                                
+      3855 +    unknown = [c for c in chs if c not in kw]                
+      3856 +    llm: set = set()                                         
+      3857 +    if unknown:                                              
+      3858 +        titles = "\n".join(f"- {c}" for c in unknown)        
+      3859 +        prompt = (                                           
+      3860 +            f"These are chapter titles from a class {class_na
+           +me} {subject} school textbook "                              
+      3861 +            "(titles may be in any language):\n"             
+      3862 +            f"{titles}\n\n"                                  
+      3863 +            "Which of these are GRAMMAR lessons — lessons tha
+           +t TEACH language structure "                                 
+      3864 +            "(letters/sounds, spelling, joining/sandhi rules,
+           + word forms and classes, "                                   
+      3865 +            "sentence structure; இலக்கணம் / व्याकरण) — as opposed
+           + to prose, poetry or "                                       
+      3866 +            "supplementary-reader lessons?\n"                
+      3867 +            "Reply with ONLY a JSON array of the exact titles
+           + that are grammar lessons, "                                 
+      3868 +            'e.g. ["title1", "title2"]. Reply [] if none are.
+           +'                                                            
+      3869 +        )                                                    
+      3870 +        try:                                                 
+      3871 +            raw, _, _ = mantle_client.converse(              
+      3872 +                model_id=mantle_client.VAL_MODEL, prompt=prom
+           +pt,                                                          
+      3873 +                max_tokens=500, temperature=0.0,             
+      3874 +            )                                                
+      3875 +            m = re.search(r"\[.*\]", raw or "", re.DOTALL)   
+      3876 +            if m:                                            
+      3877 +                by_strip = {c.strip(): c for c in unknown}   
+      3878 +                llm = {                                      
+      3879 +                    by_strip[str(t).strip()]                 
+      3880 +                    for t in json.loads(m.group(0))          
+      3881 +                    if isinstance(t, str) and str(t).strip() 
+           +in by_strip                                                  
+      3882 +                }                                            
+      3883 +        except Exception as e:                               
+      3884 +            print(f"[Grammar-Chapters] LLM classification fai
+           +led: {e}")                                                   
+      3885 +                                                             
+      3886 +    gram = kw | llm                                          
+      3887 +    _grammar_chapters_cache[key] = gram                      
+      3888 +    print(f"[Grammar-Chapters] {class_name}/{subject}: "     
+      3889 +          f"{sorted(gram) if gram else 'none identified'}")  
+      3890 +    return [c for c in chs if c in gram]                     
+      3891 +                                                             
+      3892 +                                                             
+      3893 +def _route_grammar_chapters(is_grammar: bool, sec_chapters: l
+           +ist, grammar_chapters: list) -> list:                        
+      3894 +    """Grammar sections keep ONLY the grammar chapters; every
+           + other section drops them.                                   
+      3895 +    Falls back to the incoming list whenever routing would le
+           +ave the section empty                                        
+      3896 +    (unidentified grammar lessons must not starve generation)
+           +."""                                                         
+      3897 +    gset = set(grammar_chapters or [])                       
+      3898 +    if not gset:                                             
+      3899 +        return list(sec_chapters or [])                      
+      3900 +    if is_grammar:                                           
+      3901 +        kept = [c for c in (sec_chapters or []) if c in gset]
+      3902 +    else:                                                    
+      3903 +        kept = [c for c in (sec_chapters or []) if c not in g
+           +set]                                                         
+      3904 +    return kept or list(sec_chapters or [])                  
+      3905 +                                                             
+      3906 +                                                             
+      3907  def _slots_all_general(sec_data) -> bool:
+      3908      """True when EVERY question slot in a section says source
+            ='general' — the teacher
+      3909      demanded the questions NOT come from the textbook ("give 
+            in general, not from the
+
+● Now wire routing into get_section_context_map:
+
+● Update(core\section_generator.py)
+  ⎿  Added 7 lines
+      3930      context_map: dict = {}
+      3931      context_by_type_map: dict = {}  # {sec_name: {type_key: c
+            tx_str}}
+      3932  
+      3933 +    # Grammar routing (language papers): identify the grammar
+           + lessons once, only when the                                 
+      3934 +    # paper actually has a grammar-named section — every othe
+           +r paper skips this entirely.                                 
+      3935 +    grammar_chapters = (                                     
+      3936 +        identify_grammar_chapters(class_name, subject, chapte
+           +rs)                                                          
+      3937 +        if _blueprint_has_grammar_section(blueprint) else [] 
+      3938 +    )                                                        
+      3939 +                                                             
+      3940      for sec_name, sec_data in blueprint.items():
+      3941          # All-general sections (teacher: "not from the textbo
+            ok") get NO context at all —
+      3942          # retrieval is skipped and the quality pre-check must
+             not fight the empty result.
+
+● Update(core\section_generator.py)
+  ⎿  Added 12 lines
+      3955          if sec_chapters != list(chapters or []):
+      3956              print(f"[Section-Chapters] '{sec_name}' ({effecti
+            ve_subject}): "
+      3957                    f"{len(sec_chapters)}/{len(chapters or [])}
+             chapters → {sec_chapters}")
+      3958 +        # Grammar routing: grammar sections retrieve from gra
+           +mmar lessons only, the rest                                  
+      3959 +        # exclude them (no-op when no grammar section / no gr
+           +ammar chapters identified).                                  
+      3960 +        sec_is_grammar = _is_grammar_section(sec_name, sec_da
+           +ta.get("instructions"))                                      
+      3961 +        routed = _route_grammar_chapters(sec_is_grammar, sec_
+           +chapters, grammar_chapters)                                  
+      3962 +        if routed != sec_chapters:                           
+      3963 +            print(f"[Grammar-Route] '{sec_name}': "          
+      3964 +                  f"{'grammar-only' if sec_is_grammar else 'g
+           +rammar-excluded'} → {routed}")                               
+      3965 +            sec_chapters = routed                            
+      3966          hints = _query_hints_for_types(sec_types, effective_s
+            ubject)
+      3967 +        if sec_is_grammar:                                   
+      3968 +            # Steer similarity toward the rules/exercises pag
+           +es of the grammar lessons.                                   
+      3969 +            hints.insert(0, f"{effective_subject} grammar இலக்
+           +கணம் व्याकरण rules letters "                                    
+      3970 +                            "word forms examples exercises") 
+      3971          # Literature-extract sections need STORY/POEM text, n
+            ot the chapter's grammar or
+      3972          # skill-box pages — steer retrieval toward narrative 
+            content first.
+      3973          _sec_slots = [sl for sl in (sec_data.get("question_sl
+            ots") or []) if isinstance(sl, dict)]
+
+● Update(core\section_generator.py)
+  ⎿  Added 8 lines, removed 3 lines
+      3981              hints = _query_hints_for_types(sec_types, subject
+            )
+      3982              ctx = get_section_context(class_name, subject, se
+            c_chapters, hints, school_id=school_id)
+      3983  
+      3984 -        # 3.3 — Context quality pre-check with fallback      
+      3984 +        # 3.3 — Context quality pre-check with fallback. Gram
+           +mar sections keep their chapter                              
+      3985 +        # filter even on the broad retry — dropping it would 
+           +reopen the literature leak the                               
+      3986 +        # routing above just closed.                         
+      3987          if not _validate_context_quality(ctx, sec_name, q_cou
+            nt, effective_subject, class_name, sec_types):
+      3986 -            print(f"[Context-QC] '{sec_name}': retrying with 
+           -broader query (no chapter filter)")                          
+      3988 +            print(f"[Context-QC] '{sec_name}': retrying with 
+           +broader query"                                               
+      3989 +                  f"{' (chapter filter kept: grammar section)
+           +' if sec_is_grammar else ' (no chapter filter)'}")           
+      3990              broad_hints = [f"{effective_subject} {ch}" for ch
+             in (sec_chapters or [])] + hints
+      3988 -            ctx_broad = get_section_context(class_name, effec
+           -tive_subject, [], broad_hints, school_id=school_id)          
+      3991 +            ctx_broad = get_section_context(class_name, effec
+           +tive_subject,                                                
+      3992 +                                            sec_chapters if s
+           +ec_is_grammar else [],                                       
+      3993 +                                            broad_hints, scho
+           +ol_id=school_id)                                             
+      3994              if len(ctx_broad) > len(ctx):
+      3995                  ctx = ctx_broad
+      3996                  print(f"[Context-QC] '{sec_name}': broad retr
+            y improved to {len(ctx)} chars")
+
+● Now build_work_orders:
+
+● Update(core\section_generator.py)
+  ⎿  Added 7 lines
+      4210      # 3.2: extract per-type context map stored under sentinel
+             key
+      4211      context_by_type_all = context_map.get("__context_by_type_
+            _", {})
+      4212  
+      4213 +    # Grammar routing — same scoping the retrieval used (iden
+           +tify_grammar_chapters is                                     
+      4214 +    # cached, so this repeat call costs nothing).            
+      4215 +    grammar_chapters = (                                     
+      4216 +        identify_grammar_chapters(class_name, subject, chapte
+           +rs)                                                          
+      4217 +        if _blueprint_has_grammar_section(blueprint) else [] 
+      4218 +    )                                                        
+      4219 +                                                             
+      4220      work_orders = []
+      4221      for idx, (sec_name, sec_data) in enumerate(blueprint.item
+            s()):
+      4222          ps = pattern_section_map.get(sec_name, {})
+
+● Update(core\section_generator.py)
+  ⎿  Added 5 lines
+      4323          # Scope chapters to this section's sub-subject (compo
+            und papers only; single-subject
+      4324          # papers get the full list back unchanged — see _chap
+            ters_for_subject).
+      4325          section_chapters = _chapters_for_subject(section_subj
+            ect, subject, chapters)
+      4326 +        # Grammar routing: grammar sections draw from the gra
+           +mmar lessons only, other                                     
+      4327 +        # sections exclude them — this feeds chapter_plan and
+           + the prompt's chapter block.                                 
+      4328 +        sec_is_grammar = _is_grammar_section(                
+      4329 +            sec_name, sec_data.get("instructions") or ps.get(
+           +"instructions"))                                             
+      4330 +        section_chapters = _route_grammar_chapters(sec_is_gra
+           +mmar, section_chapters, grammar_chapters)                    
+      4331  
+      4332          # MO-01: attempt-N-of-M support — 'attempt' = student
+            s answer, 'count'/'provided' = questions generated
+      4333          # (coerced to int — these feed a division in the sect
+            ion marks-total check).
+
+● Update(core\section_generator.py)
+  ⎿  Added 1 line
+      4394              subsections=[] if slots else subsecs,
+      4395              context_by_type={} if _all_general else context_b
+            y_type_all.get(sec_name, {}),  # 3.2
+      4396              slots=slots,
+      4397 +            is_grammar=sec_is_grammar,                       
+      4398          )
+      4399          work_orders.append(wo)
+      4400          subj_tag = f" [{section_subject}]" if section_subject
+             else ""
+
+● Wiring complete. Quick smoke test of the new helpers (no LLM call — keyword
+  path + routing only):
+
+● Write(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\smoke_grammar.py)
+  ⎿  Wrote 26 lines to
+     C:\Users\Administrator\.claude\jobs\422fe76b\tmp\smoke_grammar.py
+       1 # -*- coding: utf-8 -*-
+       2 from core import section_generator as sg
+       3 
+       5 print(sg._is_grammar_section("பகுதி - இ (இலக்கணம்)"), "== True")
+       6 print(sg._is_grammar_section("Section B", ["Writing & Grammar"])
+         , "== True")
+       7 print(sg._is_grammar_section("பகுதி - அ"), "== False")
+       8 print(sg._is_grammar_section("Section C — Literature"), "== Fals
+       9 
+      10 bp = {
+     … +25 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Helpers all pass. Now the critical validation — the real LLM classification
+  against the actual class 6 Tamil chapter list:
+
+● Write(C:\Users\Administrator\.claude\jobs\422fe76b\tmp\live_classify.py)
+  ⎿  Wrote 23 lines to
+     C:\Users\Administrator\.claude\jobs\422fe76b\tmp\live_classify.py
+       1 # -*- coding: utf-8 -*-
+       2 from core import section_generator as sg
+       3 
+       4 chapters = [
+       5     "இன்பத்தமிழ்",
+       6     "ஏசிலிக்குருவிகள்",
+       7     "ஒளி பிறந்தது",
+       8     "கல்விக்கண் திறந்தவர்",
+       9     "கல்வியைப் போற்று",
+      10     "கிழவனும் கடலும்",
+     … +13 lines (ctrl+o to expand)
+
+  Searched for 2 patterns, read 1 file, ran 2 shell commands (ctrl+o to expand)
+● Now appending the test classes to core/tests.py:
+
+● Update(core\tests.py)
+  ⎿  Added 196 lines
+      3641      def test_pattern_prompt_rules_state_both_conventions(self
+            ):
+      3642          self.assertIn("READING COMPREHENSION", psx.SLOT_SCHEM
+            A_PROMPT_RULES)
+      3643          self.assertIn("attempt x per-part marks", psx.SLOT_SC
+            HEMA_PROMPT_RULES)
+      3644 +                                                             
+      3645 +                                                             
+      3646 +class NormalizeLabelUnicodeTest(TestCase):                   
+      3647 +    """normalize_label must preserve non-ASCII (Indic-script)
+           + chapter names — the old                                     
+      3648 +    ASCII-only regex reduced them to "", so Tamil/Hindi chunk
+           +s got no ChunkChapter links                                  
+      3649 +    and the unit filter in embeddings.query silently vanished
+           + (whole-book retrieval)."""                                  
+      3650 +                                                             
+      3651 +    def test_tamil_chapter_name_survives(self):              
+      3652 +        from core.embeddings import normalize_label          
+      3653 +        self.assertEqual(normalize_label("மொழிமுதல் எழுத்துகள்"), "மொழி
+           +முதல்_எழுத்துகள்")                                                 
+      3654 +                                                             
+      3655 +    def test_hindi_chapter_name_survives(self):              
+      3656 +        from core.embeddings import normalize_label          
+      3657 +        self.assertEqual(normalize_label("क्षितिज - बालगोबिन भगत"),
+           + "क्षितिज_बालगोबिन_भगत")                                           
+      3658 +                                                             
+      3659 +    def test_ascii_behavior_unchanged(self):                 
+      3660 +        from core.embeddings import normalize_label          
+      3661 +        # Existing ChunkChapter rows store labels produced by
+           + the OLD function — these                                    
+      3662 +        # exact outputs must never change or every stored lin
+           +k goes stale.                                                
+      3663 +        self.assertEqual(normalize_label("Light - Reflection 
+           +& Refraction"),                                              
+      3664 +                         "light_reflection_refraction")      
+      3665 +        self.assertEqual(normalize_label("English Language & 
+           +Literature"),                                                
+      3666 +                         "english_language_literature")      
+      3667 +        self.assertEqual(normalize_label("Class 10"), "class_
+           +10")                                                         
+      3668 +        self.assertEqual(normalize_label("chapter_1"), "chapt
+           +er_1")                                                       
+      3669 +                                                             
+      3670 +    def test_ascii_punctuation_still_stripped(self):         
+      3671 +        from core.embeddings import normalize_label          
+      3672 +        self.assertEqual(normalize_label("நூலகம் நோக்கி ..."), "நூல
+           +கம்_நோக்கி")                                                     
+      3673 +        self.assertIsNone(normalize_label(""))               
+      3674 +        self.assertEqual(normalize_label("..."), "")         
+      3675 +                                                             
+      3676 +    def test_idempotent(self):                               
+      3677 +        from core.embeddings import normalize_label          
+      3678 +        once = normalize_label("மொழிமுதல் எழுத்துகள்")               
+      3679 +        self.assertEqual(normalize_label(once), once)        
+      3680 +                                                             
+      3681 +                                                             
+      3682 +class UnicodeChapterLinkTest(TestCase):                      
+      3683 +    """_store_chunks must create ChunkChapter links for non-A
+           +SCII unit labels (they were                                  
+      3684 +    dropped entirely before), and the query-side unit filter 
+           +must match them."""                                          
+      3685 +                                                             
+      3686 +    def _run_ingest(self, **kwargs):                         
+      3687 +        from unittest import mock                            
+      3688 +        from core import embeddings as emb                   
+      3689 +        unit = kwargs.pop("unit", "ignored")                 
+      3690 +        with mock.patch.object(emb, "PdfReader", lambda *_a, 
+           +**_k: _FakeReader("x" * 1600)), \                            
+      3691 +             mock.patch.object(emb, "get_embeddings_batch",  
+      3692 +                               side_effect=lambda chunks, pro
+           +vider: [[0.0] * 768 for _ in chunks]):                       
+      3693 +            return emb.ingest_pdf("6", "Tamil", unit, "C:/fak
+           +e.pdf", **kwargs)                                            
+      3694 +                                                             
+      3695 +    def test_tamil_unit_creates_links(self):                 
+      3696 +        from core.models import MaterialChunk, ChunkChapter  
+      3697 +        n = self._run_ingest(unit="மொழிமுதல் எழுத்துகள்", material_ty
+           +pe="textbook")                                               
+      3698 +        self.assertEqual(n, 2)                               
+      3699 +        self.assertEqual(set(ChunkChapter.objects.values_list
+           +("unit", flat=True)),                                        
+      3700 +                         {"மொழிமுதல்_எழுத்துகள்"})                   
+      3701 +        # and the same normalization on the query side finds 
+           +them                                                         
+      3702 +        from core.embeddings import normalize_label          
+      3703 +        u = normalize_label("மொழிமுதல் எழுத்துகள்")                  
+      3704 +        self.assertEqual(MaterialChunk.objects.filter(chapter
+           +_links__unit=u).count(), 2)                                  
+      3705 +                                                             
+      3706 +                                                             
+      3707 +class GrammarSectionDetectTest(TestCase):                    
+      3708 +    """_is_grammar_section: grammar sections are detected fro
+           +m name/instructions in any                                   
+      3709 +    supported script; ordinary sections never match."""      
+      3710 +                                                             
+      3711 +    def test_tamil_grammar_name(self):                       
+      3712 +        self.assertTrue(sg._is_grammar_section("பகுதி - இ (இலக்க
+           +ணம்)"))                                                       
+      3713 +                                                             
+      3714 +    def test_english_grammar_in_instructions(self):          
+      3715 +        self.assertTrue(sg._is_grammar_section("Section B", [
+           +"Writing & Grammar"]))                                       
+      3716 +                                                             
+      3717 +    def test_hindi_grammar_name(self):                       
+      3718 +        self.assertTrue(sg._is_grammar_section("खंड ब (व्याकरण)"
+           +))                                                           
+      3719 +                                                             
+      3720 +    def test_plain_sections_do_not_match(self):              
+      3721 +        self.assertFalse(sg._is_grammar_section("பகுதி - அ", ["
+           +பகுதி - அ"]))                                                  
+      3722 +        self.assertFalse(sg._is_grammar_section("Section C — 
+           +Literature"))                                                
+      3723 +        self.assertFalse(sg._is_grammar_section("Section A", 
+           +["Answer all questions"]))                                   
+      3724 +                                                             
+      3725 +    def test_blueprint_gate(self):                           
+      3726 +        self.assertTrue(sg._blueprint_has_grammar_section(   
+      3727 +            {"பகுதி - அ": {}, "பகுதி - இ (இலக்கணம்)": {"instruction
+           +s": []}}))                                                   
+      3728 +        self.assertFalse(sg._blueprint_has_grammar_section(  
+      3729 +            {"Section A": {"instructions": ["Answer all"]}, "
+           +Section B": {}}))                                            
+      3730 +                                                             
+      3731 +                                                             
+      3732 +class GrammarChapterIdentifyTest(TestCase):                  
+      3733 +    """identify_grammar_chapters: keyword titles skip the LLM
+           +; unknown titles get ONE                                     
+      3734 +    cached LLM classification; hallucinated titles are droppe
+           +d; LLM failure fails open."""                                
+      3735 +                                                             
+      3736 +    def setUp(self):                                         
+      3737 +        sg._grammar_chapters_cache.clear()                   
+      3738 +                                                             
+      3739 +    def tearDown(self):                                      
+      3740 +        sg._grammar_chapters_cache.clear()                   
+      3741 +                                                             
+      3742 +    def test_keyword_titles_skip_llm(self):                  
+      3743 +        from unittest import mock                            
+      3744 +        with mock.patch.object(sg.mantle_client, "converse") 
+           +as conv:                                                     
+      3745 +            out = sg.identify_grammar_chapters("6", "tamil", 
+           +["மொழி இலக்கணம்", "Grammar Basics"])                             
+      3746 +        conv.assert_not_called()                             
+      3747 +        self.assertEqual(set(out), {"மொழி இலக்கணம்", "Grammar Bas
+           +ics"})                                                       
+      3748 +                                                             
+      3749 +    def test_llm_classifies_unknown_titles_and_caches(self): 
+      3750 +        from unittest import mock                            
+      3751 +        chapters = ["இன்பத்தமிழ்", "மொழிமுதல் எழுத்துகள்", "திருக்குறள்"]     
+      3752 +        reply = '["மொழிமுதல் எழுத்துகள்", "Hallucinated Chapter"]'   
+      3753 +        with mock.patch.object(sg.mantle_client, "converse", 
+      3754 +                               return_value=(reply, 0, 0)) as
+           + conv:                                                       
+      3755 +            out1 = sg.identify_grammar_chapters("6", "tamil",
+           + chapters)                                                   
+      3756 +            out2 = sg.identify_grammar_chapters("6", "tamil",
+           + chapters)                                                   
+      3757 +        self.assertEqual(out1, ["மொழிமுதல் எழுத்துகள்"])   # hallucin
+           +ation filtered out                                           
+      3758 +        self.assertEqual(out2, out1)                         
+      3759 +        conv.assert_called_once()                            
+           +# second call served from cache                              
+      3760 +                                                             
+      3761 +    def test_llm_failure_fails_open(self):                   
+      3762 +        from unittest import mock                            
+      3763 +        with mock.patch.object(sg.mantle_client, "converse", 
+           +side_effect=RuntimeError("down")):                           
+      3764 +            out = sg.identify_grammar_chapters("6", "tamil", 
+           +["இன்பத்தமிழ்", "திருக்குறள்"])                                       
+      3765 +        self.assertEqual(out, [])                            
+      3766 +                                                             
+      3767 +    def test_empty_chapters(self):                           
+      3768 +        self.assertEqual(sg.identify_grammar_chapters("6", "t
+           +amil", []), [])                                              
+      3769 +                                                             
+      3770 +                                                             
+      3771 +class GrammarChapterRoutingTest(TestCase):                   
+      3772 +    """_route_grammar_chapters + build_work_orders wiring: gr
+           +ammar sections keep only the                                 
+      3773 +    grammar lessons, other sections drop them, and nothing ch
+           +anges when no grammar section                                
+      3774 +    exists or no grammar chapters were identified."""        
+      3775 +                                                             
+      3776 +    CHAPTERS = ["இன்பத்தமிழ்", "மொழிமுதல் எழுத்துகள்", "திருக்குறள்"]         
+      3777 +    GRAM = ["மொழிமுதல் எழுத்துகள்"]                                  
+      3778 +                                                             
+      3779 +    def setUp(self):                                         
+      3780 +        sg._grammar_chapters_cache.clear()                   
+      3781 +                                                             
+      3782 +    def tearDown(self):                                      
+      3783 +        sg._grammar_chapters_cache.clear()                   
+      3784 +                                                             
+      3785 +    def test_route_helper(self):                             
+      3786 +        self.assertEqual(sg._route_grammar_chapters(True, sel
+           +f.CHAPTERS, self.GRAM), self.GRAM)                           
+      3787 +        self.assertEqual(sg._route_grammar_chapters(False, se
+           +lf.CHAPTERS, self.GRAM),                                     
+      3788 +                         ["இன்பத்தமிழ்", "திருக்குறள்"])              
+      3789 +        # fail-open fallbacks: no grammar chapters identified
+           + / routing would starve the section                          
+      3790 +        self.assertEqual(sg._route_grammar_chapters(True, ["a
+           +", "b"], []), ["a", "b"])                                    
+      3791 +        self.assertEqual(sg._route_grammar_chapters(True, ["a
+           +", "b"], ["c"]), ["a", "b"])                                 
+      3792 +        self.assertEqual(sg._route_grammar_chapters(False, ["
+           +c"], ["c"]), ["c"])                                          
+      3793 +                                                             
+      3794 +    def _blueprint(self):                                    
+      3795 +        return {                                             
+      3796 +            "பகுதி - அ": {"marks": 8, "questions_count": 2, "ma
+           +rks_per_question": 4,                                        
+      3797 +                          "question_types": ["Short Answer"],
+           + "instructions": ["பகுதி - அ"]},                               
+      3798 +            "பகுதி - இ (இலக்கணம்)": {"marks": 8, "questions_count
+           +": 2, "marks_per_question": 4,                               
+      3799 +                                     "question_types": ["MCQ"
+           +],                                                           
+      3800 +                                     "instructions": ["பகுதி - 
+           +இ (இலக்கணம்)"]},                                               
+      3801 +        }                                                    
+      3802 +                                                             
+      3803 +    def _work_orders(self):                                  
+      3804 +        from unittest import mock                            
+      3805 +        with mock.patch.object(sg.mantle_client, "converse", 
+      3806 +                               return_value=('["மொழிமுதல் எழுத்துகள்"
+           +]', 0, 0)):                                                  
+      3807 +            return sg.build_work_orders(self._blueprint(), No
+           +ne, {}, "Medium",                                            
+      3808 +                                        "6", "Tamil", list(se
+           +lf.CHAPTERS))                                                
+      3809 +                                                             
+      3810 +    def test_work_orders_scope_chapters(self):               
+      3811 +        wos = {w.section_name: w for w in self._work_orders()
+           +}                                                            
+      3812 +        gram_wo = wos["பகுதி - இ (இலக்கணம்)"]                    
+      3813 +        lit_wo = wos["பகுதி - அ"]                              
+      3814 +        self.assertTrue(gram_wo.is_grammar)                  
+      3815 +        self.assertFalse(lit_wo.is_grammar)                  
+      3816 +        self.assertEqual(gram_wo.chapters, self.GRAM)        
+      3817 +        self.assertEqual(lit_wo.chapters, ["இன்பத்தமிழ்", "திருக்குறள்
+           +"])                                                          
+      3818 +        # chapter_plan follows the scoped lists              
+      3819 +        self.assertTrue(set(gram_wo.chapter_plan) <= set(self
+           +.GRAM))                                                      
+      3820 +        self.assertTrue(set(lit_wo.chapter_plan) <= {"இன்பத்தமிழ்
+           +", "திருக்குறள்"})                                                
+      3821 +                                                             
+      3822 +    def test_grammar_prompt_rule(self):                      
+      3823 +        wos = {w.section_name: w for w in self._work_orders()
+           +}                                                            
+      3824 +        gram_prompt = sg.build_section_prompt(wos["பகுதி - இ (இ
+           +லக்கணம்)"])                                                    
+      3825 +        lit_prompt = sg.build_section_prompt(wos["பகுதி - அ"]) 
+      3826 +        self.assertIn("GRAMMAR SECTION", gram_prompt)        
+      3827 +        self.assertIn("Do NOT ask reading-comprehension", gra
+           +m_prompt)                                                    
+      3828 +        self.assertNotIn("GRAMMAR SECTION", lit_prompt)      
+      3829 +                                                             
+      3830 +    def test_no_grammar_section_means_no_llm_and_no_scoping(s
+           +elf):                                                        
+      3831 +        from unittest import mock                            
+      3832 +        bp = {"Section A": {"marks": 10, "questions_count": 2
+           +, "marks_per_question": 5,                                   
+      3833 +                            "question_types": ["Short Answer"
+           +], "instructions": ["Answer all"]}}                          
+      3834 +        with mock.patch.object(sg.mantle_client, "converse") 
+           +as conv:                                                     
+      3835 +            wos = sg.build_work_orders(bp, None, {}, "Medium"
+           +, "10", "Science",                                           
+      3836 +                                       ["Light", "Electricity
+           +"])                                                          
+      3837 +        conv.assert_not_called()                             
+      3838 +        self.assertEqual(wos[0].chapters, ["Light", "Electric
+           +ity"])                                                       
+      3839 +        self.assertFalse(wos[0].is_grammar)                  
+
+  Searched for 1 pattern, read 1 file, ran 2 shell commands, recalled 1 memory, wrote 2 memories (ctrl+o to expand)
+
+❯ /compact                                                                      
+
+● All done. Here's the full picture:
+
+  Your regenerated pattern is correct — no pattern changes needed
+
+  The earlier fixes verified cleanly: பகுதி-அ is now two extract slots with 4×1m
+  parts (passages print), பகுதி-ஈ slots carry 8/8 with 2m/4m sub-parts, total 40.
+  The remaining problems were all on the generation side, and your grammar
+  complaint led me to two real bugs — one much bigger than expected.
+
+  What I found
+
+  1. Chapter filtering has been silently broken for Tamil (and Hindi) books all 
+  along. normalize_label in core/embeddings.py stripped every non-ASCII
+  character, so a chapter name like "மொழிமுதல் எழுத்துகள்" normalized to an empty
+  string. Consequence: Tamil chunks never got chapter links at ingestion (I
+  confirmed: zero links for class 6 Tamil), and every "per-chapter" retrieval
+  query silently dropped its chapter filter and searched the whole book. That's
+  why questions came from anywhere.
+
+  2. Chapter allocation is grammar-blind. The planner spreads chapters across
+  sections round-robin for coverage — so poem chapters (தமிழ்மொழி வாழ்த்து-type content)
+  got assigned to the இலக்கணம் section, and the grammar lesson leaked into பகுதி-ஈ.
+  Your "idk check" instinct about Q6 was right: மயங்கொலிகள் is grammar content
+  sitting in a literature section — same bug, opposite direction.
+
+  What I fixed
+
+  - normalize_label now preserves non-ASCII — verified byte-identical behavior
+  for all ASCII inputs, so every existing English/Science chapter link stays
+  valid.
+  - Migration 0039 backfills the missing links — already applied locally (5,916
+  links created; all 14 class 6 Tamil chapters now filter correctly). It must
+  also run on prod at deploy.
+  - LLM grammar-lesson identification — exactly what you asked for: when (and
+  only when) a paper has a grammar-named section (இலக்கணம்/Grammar/व्याकरण), one
+  small cached LLM call classifies the selected chapter titles. I tested it live
+  against your real chapter list: it picked exactly the 3 grammar lessons
+  (மொழிமுதல் எழுத்துகள், முதலெழுத்தும் சார்பெழுத்தும், தமிழ் எழுத்துகளின் வகையும் தொகையும்) out of 14.
+  - Routing both ways: the grammar section retrieves and plans questions from
+  grammar lessons only; every other section excludes them. Plus an explicit
+  prompt rule telling the model the grammar section must test grammar concepts,
+  never story/poem content.
+  - Other subjects unaffected: papers without a grammar-named section skip all
+  of this (zero LLM calls, zero changes), and every routing step fails open to
+  the old behavior rather than starving a section. 19 new tests; full suite is
+  302 tests with only the pre-existing unrelated DiagramSectionPromptSalvageTest
+  failure.
+
+  To test
+
+  1. Restart the Celery worker (my changes only load there after a restart).
+  2. Just regenerate the question paper — keep this pattern, it's fine.
+
+  Expected: பகுதி-இ questions come only from the 3 grammar lessons, and பகுதி-ஈ/அ/ஆ
+  stop touching them. One side note: the printed passage in Q1 had garbled words
+  (e.g. "மண்பாணையங்கள்", "வயல்காளிகளில்") — that looks like PDF-extraction noise in the
+  source chunks; if it persists in the next run, tell me and I'll dig into that
+  separately.
+
+✻ Baked for 8m 14s
+
+※ recap: Fixing Tamil paper generation so grammar sections pull only from grammar chapters; fixes are done and tested. Next: restart the Celery worker, then regenerate the question paper (keep the pattern) and share the result. (disable recaps in /config)
+
+❯ /tui 
+  ⎿  Current renderer: fullscreen. Usage: /tui <default|fullscreen>
+
+❯ /tui default 
+  ⎿  Saved. Background sessions always use the fullscreen renderer while attached; the default renderer will apply to sessions started directly with claude.
+
+※ recap: Fixing Tamil paper generation so grammar sections pull only from grammar chapters; all fixes are done and tested. Next: restart the Celery worker, then regenerate the question paper (keep the same pattern) and share the result.
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Read C:\Users\Administrator\.claude\projects\D--GIT-REPO-MAIN-qpg\memory\pr
+     oject_grammar_chapter_routing.md (15 lines)
+  ⎿  Referenced file core\tests.py
+  ⎿  Read C:\Users\Administrator\.claude\jobs\422fe76b\tmp\live_classify.py (24 
+     lines)
+  ⎿  Read C:\Users\Administrator\.claude\jobs\422fe76b\tmp\smoke_grammar.py (27 
+     lines)
+  ⎿  Referenced file core\section_generator.py
+
+※ recap: Fixing why Tamil grammar sections pulled questions from wrong chapters; chapter routing and retrieval fixes are done and tested. Next: restart the Celery worker, then regenerate the question paper (same pattern) to verify.
+
+❯ /export                                                                       
+  ⎿  Conversation copied to clipboard

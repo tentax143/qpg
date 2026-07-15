@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Plus, FileText, Download, CheckCircle, AlertTriangle,
-  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil, RotateCw, Clock
+  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil, RotateCw, Clock, KeyRound
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -36,6 +36,8 @@ export default function DashboardPage() {
   const [success, setSuccess] = useState(null);
   const [rerenderingId, setRerenderingId] = useState(null);
   const [regeneratingId, setRegeneratingId] = useState(null);
+  const [keyStates, setKeyStates] = useState({});   // paperId → answer-key status override (clicks/polls)
+  const [keyBusyId, setKeyBusyId] = useState(null);
   const [warningPaper, setWarningPaper] = useState(null);  // paper whose warnings/failure detail is shown in the modal
   const pollingIntervalRef = useRef(null);
 
@@ -150,6 +152,80 @@ export default function DashboardPage() {
     }
   };
 
+
+  // ── Answer key (teacher copy) ───────────────────────────────────────────────
+  // Server truth comes with the list as answer_key_status; keyStates overrides it
+  // after a click or poll so the icon updates without a full list refetch.
+  const keyStatusOf = (paper) => keyStates[paper.id] || paper.answer_key_status || 'none';
+  const setKeyState = (id, st) => setKeyStates(prev => ({ ...prev, [id]: st }));
+
+  const inFlightKeyIds = stats.recent_activity
+    .filter(p => ['queued', 'generating'].includes(keyStatusOf(p)))
+    .map(p => p.id);
+
+  useEffect(() => {
+    if (!inFlightKeyIds.length) return;
+    const timer = setInterval(() => {
+      inFlightKeyIds.forEach(async (id) => {
+        try {
+          const st = (await apiClient.get(`/papers/${id}/answer_key/`)).data;
+          if (st.status !== 'queued' && st.status !== 'generating') {
+            setKeyState(id, st.status);
+            if (st.status === 'done') setSuccess('Answer key ready — click the key icon to download');
+            else if (st.status === 'failed') setError(st.error_detail || 'Answer key generation failed');
+          }
+        } catch { /* transient — next tick retries */ }
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inFlightKeyIds.join(',')]);
+
+  const downloadAnswerKey = async (paper) => {
+    const res = await apiClient.get(`/papers/${paper.id}/answer_key_docx/`, { responseType: 'blob' });
+    const url = URL.createObjectURL(res.data);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Answer_Key_${paper.subject}_Class_${paper.class_name}.docx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const startAnswerKey = async (paper) => {
+    const res = await apiClient.post(`/papers/${paper.id}/answer_key/`);
+    setKeyState(paper.id, res.data.status || 'queued');
+    setSuccess('Generating answer key — one answer per question, this can take a few minutes');
+  };
+
+  const handleAnswerKey = async (paper) => {
+    if (['queued', 'generating'].includes(keyStatusOf(paper))) return;
+    setKeyBusyId(paper.id);
+    try {
+      // Fresh status first — the GET also re-checks staleness server-side.
+      const st = (await apiClient.get(`/papers/${paper.id}/answer_key/`)).data;
+      setKeyState(paper.id, st.status);
+      if (st.status === 'queued' || st.status === 'generating') return;
+      if (st.status === 'done') return await downloadAnswerKey(paper);
+      if (st.status === 'stale') {
+        if (confirm('The paper has changed since this answer key was generated.\n\n'
+          + 'OK — regenerate the key for the current paper\nCancel — download the old key anyway')) {
+          return await startAnswerKey(paper);
+        }
+        return await downloadAnswerKey(paper);
+      }
+      if (st.status === 'failed' && !confirm('The last answer key generation failed. Try again?')) return;
+      await startAnswerKey(paper);   // 'none' or retry after 'failed'
+    } catch (err) {
+      const msg = err?.response?.data?.error;
+      setError(msg === 'no_paper_data'
+        ? 'This paper has no stored question data (older paper) — regenerate the paper first.'
+        : (msg || 'Answer key request failed'));
+    } finally {
+      setKeyBusyId(null);
+    }
+  };
 
   const toggleSelectPaper = (id) => {
     setSelectedPapers(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
@@ -332,6 +408,28 @@ export default function DashboardPage() {
                               <Download className="w-4 h-4" />
                             </a>
                           )}
+                          {paper.status === 'done' && paper.has_paper_data && (() => {
+                            const st = keyStatusOf(paper);
+                            const busy = keyBusyId === paper.id || st === 'queued' || st === 'generating';
+                            const cls = st === 'stale' ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
+                              : st === 'failed' ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                              : 'text-violet-600 bg-violet-50 hover:bg-violet-100';
+                            const title = busy ? 'Generating answer key — this can take a few minutes'
+                              : st === 'done' ? 'Download the teacher answer key (Word)'
+                              : st === 'stale' ? 'Paper changed after the key was generated — click to regenerate or download'
+                              : st === 'failed' ? 'Answer key generation failed — click to retry'
+                              : 'Generate a teacher answer key with marking scheme (Word)';
+                            return (
+                              <button
+                                onClick={() => handleAnswerKey(paper)}
+                                disabled={busy}
+                                className={`p-1.5 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${cls}`}
+                                title={title}
+                              >
+                                {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+                              </button>
+                            );
+                          })()}
                           {paper.status === 'done' && paper.has_paper_data && (
                             <button
                               onClick={() => handleRerender(paper.id)}

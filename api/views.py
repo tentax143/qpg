@@ -167,7 +167,9 @@ def _render_paper_from_stored_data(paper, request=None):
     file_path, *_rest = _render_paper_from_data(
         paper_data=paper.paper_data, blueprint=blueprint, class_name=class_name,
         subject=paper.subject, chapters=paper.chapters, additional_context=ctx, pattern=paper.pattern,
-        cache_only=True,   # web request: reuse cached images, never call the slow image APIs
+        cache_only=True, generate_missing_images=True,
+        # Reuse cached images first; if an image-backed question has no cached diagram yet,
+        # generate it now so re-rendered papers do not silently drop visuals.
     )
     if os.path.exists(os.path.join(_dj.MEDIA_ROOT, file_path)):
         paper.file.name = file_path        # assign directly — file.save() renames on collision → 404
@@ -179,6 +181,36 @@ def _render_paper_from_stored_data(paper, request=None):
     # different question than the one the teacher reads in the DOCX.
     paper.save(update_fields=['file', 'paper_data', 'updated_at'])
     return signed_file_url(request, paper.file)
+
+
+def _sync_answer_key_staleness(paper):
+    """Return the paper's AnswerKey (or None), flipping a finished key to 'stale' when the
+    paper's content changed since the key was generated. Lazy — runs on every answer-key
+    read, so it covers ALL edit paths (ai_edit / restore / rerender / whole-paper
+    regenerate) without needing a hook at each paper_data write site."""
+    from core.models import AnswerKey
+    key = AnswerKey.objects.filter(paper=paper).first()
+    if key and key.status == 'done':
+        from core.answer_key_generator import paper_revision_hash
+        if paper_revision_hash(paper.paper_data) != key.source_revision_hash:
+            key.status = 'stale'
+            key.save(update_fields=['status', 'updated_at'])
+    return key
+
+
+def _answer_key_payload(key):
+    """Status JSON the frontend polls. 'none' means no key has been requested yet."""
+    if key is None:
+        return {'status': 'none'}
+    data = key.data or {}
+    return {
+        'status': key.status,
+        'error_detail': key.error_detail or '',
+        'generated_questions': data.get('generated_questions'),
+        'failed_questions': len(data.get('errors') or []),
+        'cost': str(key.cost) if key.cost is not None else None,
+        'updated_at': key.updated_at.isoformat() if key.updated_at else None,
+    }
 
 
 def _paper_section_iter(paper_data):
@@ -563,7 +595,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         user = self.request.user
         # Hierarchical visibility: superadmin → all, school_admin → whole school,
         # teacher → only their own papers (can't see the admin's or other teachers').
-        queryset = _owner_scope(QuestionPaper.objects.all().order_by('-created_at'), user)
+        # answer_key joined so serializing answer_key_status doesn't N+1 the list.
+        queryset = _owner_scope(
+            QuestionPaper.objects.select_related('answer_key').order_by('-created_at'), user)
         if self.request.query_params.get('created_by') == 'me':
             queryset = queryset.filter(created_by=user)
         return queryset
@@ -965,7 +999,8 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                 chapters=paper.chapters,
                 additional_context=rerender_ctx,
                 pattern=paper.pattern,
-                cache_only=True,   # web request: reuse cached images, never call the slow image APIs
+                cache_only=True, generate_missing_images=True,
+                # Reuse cached images first; generate missing question images on demand.
             )
 
             import os
@@ -1235,6 +1270,67 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response({'status': 'restored', 'file': file_url})
+
+    # ── Answer key (teacher copy, rendered to DOCX on demand) ────────────────
+
+    @action(detail=True, methods=['get', 'post'])
+    def answer_key(self, request, pk=None):
+        """GET → answer-key status (lazily flips 'done' → 'stale' when the paper changed).
+        POST → queue (re)generation. One LLM call per question, so it always runs in Celery."""
+        paper = self.get_object()
+        key = _sync_answer_key_staleness(paper)
+        if request.method == 'GET':
+            return Response(_answer_key_payload(key))
+
+        if not _can_modify_paper(request.user, paper):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+        if paper.status != 'done':
+            return Response({'error': 'The paper is still generating — try again once it is done.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(paper.paper_data, dict) or not paper.paper_data:
+            return Response({'error': 'no_paper_data'}, status=status.HTTP_400_BAD_REQUEST)
+        if key and key.status in ('queued', 'generating'):
+            # Already in flight — idempotent: report the current state instead of double-queuing.
+            return Response(_answer_key_payload(key))
+
+        from core.models import AnswerKey
+        from core.tasks import generate_answer_key_task
+        if key is None:
+            key = AnswerKey.objects.create(paper=paper, requested_by=request.user)
+        else:
+            key.status = 'queued'
+            key.requested_by = request.user
+            key.error_detail = ''
+            key.task_id = None
+            key.save(update_fields=['status', 'requested_by', 'error_detail', 'task_id', 'updated_at'])
+        task = generate_answer_key_task.delay(key.id)
+        key.task_id = task.id
+        key.save(update_fields=['task_id'])
+        return Response(_answer_key_payload(key), status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=['get'])
+    def answer_key_docx(self, request, pk=None):
+        """Render and stream the answer-key DOCX from the stored JSON. A stale key still
+        downloads (the status endpoint carries the badge) — the teacher decides."""
+        from django.http import FileResponse
+        paper = self.get_object()
+        key = _sync_answer_key_staleness(paper)
+        if key is None or key.status not in ('done', 'stale') or not key.data:
+            return Response({'error': 'No generated answer key for this paper yet.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        school_name = ''
+        try:
+            s = paper.created_by.profile.school
+            school_name = (s.name or '') if s else ''
+        except Exception:
+            pass
+        from core.answer_key_docx import render_answer_key_docx
+        buffer = render_answer_key_docx(paper, key.data, school_name=school_name)
+        response = FileResponse(
+            buffer, as_attachment=True, filename=f"answer_key_{paper.id}.docx",
+            content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
 
     @action(detail=True, methods=['post'])
     def upload_image(self, request, pk=None):

@@ -1313,8 +1313,8 @@ class ImageStemGuardTest(TestCase):
 
 
 class RerenderImageCacheTest(TestCase):
-    """Synchronous re-render must reuse cached images and NEVER call the slow image APIs
-    (those calls could block the request for minutes → page timeout)."""
+    """cache_only skips uncached images by default, but rerender can opt in to
+    generate a missing image on demand."""
 
     @staticmethod
     def _boom(*a, **k):
@@ -1339,6 +1339,34 @@ class RerenderImageCacheTest(TestCase):
             out = g.materialize_images(items, allow=True, cache_only=True)
         self.assertIn(("q", "1. A question"), out)            # text preserved
         self.assertFalse(any(t == "image" for t, _ in out))   # uncached image dropped, not hung on
+
+    def test_materialize_images_can_generate_missing_image_on_rerender(self):
+        from unittest import mock
+        from core import generator as g
+
+        items = [("q", "1. A question"), ("image_gen", "another unique uncached prompt 67890")]
+        calls = []
+
+        def fake_generate(prompt, cache_only=False, **kwargs):
+            calls.append((prompt, cache_only))
+            if cache_only:
+                raise g.ImageNotCached(prompt)
+            return "generated_images/on-demand.png"
+
+        with mock.patch.object(g, "generate_ai_image", side_effect=fake_generate):
+            out = g.materialize_images(
+                items,
+                allow=True,
+                cache_only=True,
+                generate_missing_images=True,
+            )
+
+        self.assertIn(("q", "1. A question"), out)
+        self.assertIn(("image", "generated_images/on-demand.png"), out)
+        self.assertEqual(calls, [
+            ("another unique uncached prompt 67890", True),
+            ("another unique uncached prompt 67890", False),
+        ])
 
 
 class PaperMarksAuditTest(TestCase):
@@ -1661,6 +1689,16 @@ class InlineImageSalvageTest(TestCase):
         self.assertEqual(clean, "Which city is wettest?")
         self.assertIn("bar chart", prompt)
 
+    def test_diagram_placeholder_marker_is_salvaged(self):
+        t = ("The diagram below shows a vapour pressure graph.\n\n"
+             "[DIAGRAM PLACEHOLDER: A graph with two curves, one labelled Pure solvent and one "
+             "labelled Solution, showing boiling point elevation ΔTb.]\n\n"
+             "(i) Name the colligative property.")
+        clean, prompt = sg_gen._extract_inline_image(t)
+        self.assertNotIn("PLACEHOLDER", clean)
+        self.assertIn("vapour pressure graph", clean)
+        self.assertIn("boiling point elevation", prompt)
+
     def test_plain_question_untouched(self):
         t = "What is the chemical formula of water?"
         clean, prompt = sg_gen._extract_inline_image(t)
@@ -1670,6 +1708,75 @@ class InlineImageSalvageTest(TestCase):
     def test_empty_marker_not_treated_as_image(self):
         clean, prompt = sg_gen._extract_inline_image("Observe the figure (figure) below.")
         self.assertIsNone(prompt)
+
+
+class DiagramSectionPromptSalvageTest(TestCase):
+    """Diagram sections should still render images when the model forgets image_prompt."""
+
+    def test_placeholder_marker_becomes_single_question_image(self):
+        out = []
+        q = {
+            "type": "SA",
+            "subtype": "standard",
+            "marks": 5,
+            "text": (
+                "The diagram below shows a vapour pressure graph.\n\n"
+                "[DIAGRAM PLACEHOLDER: A graph with two curves, one labelled Pure solvent and "
+                "one labelled Solution, showing boiling point elevation ΔTb.]\n\n"
+                "(i) Name the colligative property."
+            ),
+        }
+        sg_gen._emit_section_questions(
+            out,
+            [q],
+            {"_section_name": "Diagram Based Questions", "title": ""},
+            1,
+        )
+        self.assertEqual(len([1 for kind, _ in out if kind == "image_gen"]), 1)
+        q_lines = [text for kind, text in out if kind == "q"]
+        self.assertTrue(q_lines)
+        self.assertNotIn("PLACEHOLDER", q_lines[0])
+
+    def test_render_injects_image_prompt_for_descriptive_diagram_question(self):
+        out = []
+        q = {
+            "type": "SA",
+            "subtype": "standard",
+            "marks": 5,
+            "text": (
+                "A diagram illustrates the concept of osmosis using a U-tube setup. "
+                "The left arm contains a pure solvent, the right arm contains a solution, "
+                "and a semi-permeable membrane separates them. "
+                "The liquid level in the solution arm is higher.\n\n"
+                "(i) Define osmotic pressure."
+            ),
+        }
+        sg_gen._emit_section_questions(
+            out,
+            [q],
+            {"_section_name": "Diagram Based Questions", "title": ""},
+            1,
+        )
+        image_prompts = [text for kind, text in out if kind == "image_gen"]
+        self.assertEqual(len(image_prompts), 1)
+        self.assertIn("U-tube setup", image_prompts[0])
+        self.assertIn("semi-permeable membrane", image_prompts[0])
+
+    def test_generic_diagram_stem_still_does_not_hallucinate_prompt(self):
+        out = []
+        q = {
+            "type": "SA",
+            "subtype": "standard",
+            "marks": 5,
+            "text": "Observe the diagram carefully and answer the following questions.",
+        }
+        sg_gen._emit_section_questions(
+            out,
+            [q],
+            {"_section_name": "Diagram Based Questions", "title": ""},
+            1,
+        )
+        self.assertFalse(any(kind == "image_gen" for kind, _ in out))
 
 
 class MissingCountDerivationTest(TestCase):
@@ -3169,3 +3276,564 @@ class MarkdownTableRenderTest(TestCase):
         self.assertEqual(cell.tables[0].cell(0, 0).text, "Metal")
         self.assertEqual(cell.tables[0].cell(1, 1).text, "Yes")
         self.assertFalse(any("| Copper" in p.text for p in cell.paragraphs))
+
+
+# ── Answer key (teacher copy) ──────────────────────────────────────────────────
+
+from core import answer_key_generator as akg
+from core.answer_key_docx import render_answer_key_docx
+from core.models import QuestionPaper, AnswerKey
+
+
+class AnswerTargetsTest(TestCase):
+    """answer_targets must expose every independently answerable part of a question:
+    the main text, each sub-question, and each internal-choice alternative."""
+
+    def test_simple_question_single_target(self):
+        t = akg.answer_targets({"text": "Define photosynthesis.", "marks": 3})
+        self.assertEqual([x["id"] for x in t], ["main"])
+        self.assertEqual(t[0]["marks"], 3)
+
+    def test_sub_questions_become_parts(self):
+        q = {"text": "Read the extract.", "marks": 4,
+             "sub_questions": [{"text": "Who wrote it?", "marks": 1},
+                               {"text": "Explain the theme.", "marks": 3}]}
+        t = akg.answer_targets(q)
+        self.assertEqual([x["id"] for x in t], ["part_1", "part_2"])
+        self.assertEqual([x["marks"] for x in t], [1, 3])
+        self.assertIn("(a)", t[0]["label"])
+
+    def test_or_alternative_dict_and_string(self):
+        q = {"text": "Main question", "marks": 5,
+             "or_alternative": [{"text": "Alt question", "marks": 5}, "Plain-text alternative"]}
+        ids = [x["id"] for x in akg.answer_targets(q)]
+        self.assertEqual(ids, ["main", "alternative_1", "alternative_2"])
+
+    def test_mcq_options_passed_through(self):
+        q = {"text": "Pick one.", "marks": 1, "options": {"a": "x", "b": "y"}}
+        t = akg.answer_targets(q)
+        self.assertEqual(t[0]["options"], {"a": "x", "b": "y"})
+
+    def test_textless_targets_dropped(self):
+        self.assertEqual(akg.answer_targets({"text": "", "marks": 1}), [])
+
+
+class AnswerKeyNormaliseTest(TestCase):
+    """_normalise_response must keep only supplied evidence ids, flag marking schemes
+    that don't total the question's marks, and reject missing/empty answers."""
+
+    EVIDENCE = [{"chunk_id": "c1", "material_id": 1, "title": "t", "unit": "u",
+                 "excerpt": "e", "distance": 0.1}]
+
+    def _payload(self, **over):
+        answer = {"target": "main", "answer": "Green plants make food using sunlight.",
+                  "correct_option": "", "marking_scheme": [{"point": "definition", "marks": 2},
+                                                           {"point": "equation", "marks": 1}],
+                  "concept": {"name": "Photosynthesis", "chapter": "Nutrition", "explanation": "x"},
+                  "insight": {"explanation": "e", "common_misconception": "m", "revision_tip": "r"},
+                  "evidence_chunk_ids": ["c1", "made-up"], "confidence": "high"}
+        answer.update(over)
+        return {"answers": [answer]}
+
+    def test_valid_answer_keeps_only_supplied_evidence(self):
+        targets = akg.answer_targets({"text": "Define photosynthesis.", "marks": 3})
+        answers, issues = akg._normalise_response(self._payload(), targets, self.EVIDENCE)
+        self.assertEqual(issues, [])
+        self.assertEqual([e["chunk_id"] for e in answers[0]["evidence"]], ["c1"])
+
+    def test_marks_mismatch_recorded_as_issue(self):
+        targets = akg.answer_targets({"text": "Define photosynthesis.", "marks": 5})
+        _, issues = akg._normalise_response(self._payload(), targets, self.EVIDENCE)
+        self.assertTrue(any("instead of 5" in i for i in issues), issues)
+
+    def test_missing_target_raises(self):
+        targets = akg.answer_targets({"text": "Define photosynthesis.", "marks": 3})
+        with self.assertRaises(ValueError):
+            akg._normalise_response({"answers": []}, targets, self.EVIDENCE)
+
+    def test_invalid_mcq_option_flagged_and_cleared(self):
+        targets = akg.answer_targets({"text": "Pick one.", "marks": 1,
+                                      "options": {"a": "x", "b": "y", "c": "z", "d": "w"}})
+        payload = self._payload(correct_option="e",
+                                marking_scheme=[{"point": "correct choice", "marks": 1}])
+        answers, issues = akg._normalise_response(payload, targets, self.EVIDENCE)
+        self.assertEqual(answers[0]["correct_option"], "")
+        self.assertTrue(any("invalid MCQ option" in i for i in issues), issues)
+
+
+class PaperRevisionHashTest(TestCase):
+    def test_key_order_independent_but_content_sensitive(self):
+        h1 = akg.paper_revision_hash({"a": 1, "b": [1, 2]})
+        h2 = akg.paper_revision_hash({"b": [1, 2], "a": 1})
+        self.assertEqual(h1, h2)
+        self.assertNotEqual(h1, akg.paper_revision_hash({"a": 2, "b": [1, 2]}))
+
+
+def _mk_paper(paper_data=None):
+    pattern = ExamPattern.objects.create(
+        name="PT-1", sections=[{"name": "A", "marks": 2, "questions_count": 1}])
+    return QuestionPaper.objects.create(
+        class_name="6-A", subject="Science", pattern=pattern, chapters=["1"],
+        status="done", paper_data=paper_data or {})
+
+
+class AnswerKeyDocxRenderTest(TestCase):
+    """The on-demand DOCX renderer must produce a readable key: title, question,
+    correct option (with the option's text), marking scheme, low-confidence flag,
+    and the failed-questions appendix."""
+
+    def test_render_contains_all_parts(self):
+        paper = _mk_paper()
+        key_data = {
+            "paper": {"id": paper.id},
+            "sections": [{"name": "Section A", "questions": [{
+                "qnum": 1, "text": "Which gas do plants release?", "type": "MCQ", "subtype": "",
+                "marks": 1, "chapter_tag": "Ch1",
+                "options": {"a": "CO2", "b": "Oxygen", "c": "Nitrogen", "d": "Hydrogen"},
+                "answers": [{"target": "main", "label": "Answer",
+                             "question": "Which gas do plants release?", "marks": 1,
+                             "answer": "Plants release oxygen during photosynthesis.",
+                             "correct_option": "b",
+                             "marking_scheme": [{"point": "names oxygen", "marks": 1}],
+                             "concept": {"name": "Photosynthesis", "chapter": "Nutrition",
+                                         "explanation": "x"},
+                             "insight": {"explanation": "e", "common_misconception": "confuses CO2",
+                                         "revision_tip": "recall the equation"},
+                             "confidence": "low", "evidence": [], "warnings": []}],
+                "warnings": [],
+            }]}],
+            "errors": [{"section": "Section A", "qnum": 2, "error": "model failed"}],
+            "generated_questions": 1,
+        }
+        from docx import Document as Doc
+        doc = Doc(render_answer_key_docx(paper, key_data, school_name="Test School"))
+        text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertIn("ANSWER KEY", text)
+        self.assertIn("Q1. Which gas do plants release?", text)
+        self.assertIn("Correct option: (b) Oxygen", text)
+        self.assertIn("names oxygen", text)
+        self.assertIn("Low confidence", text)
+        self.assertIn("Revision tip: recall the equation", text)
+        self.assertIn("model failed", text)
+
+
+class AnswerKeyStalenessTest(TestCase):
+    """A finished key must flip to 'stale' the moment the paper's stored JSON no longer
+    matches the hash the key was generated from — covering ai_edit, restore, rerender
+    and whole-paper regenerate without per-path hooks."""
+
+    def test_done_key_flips_stale_when_paper_changes(self):
+        from api.views import _sync_answer_key_staleness
+        pd = {"Section A": {"questions": [{"qnum": 1, "text": "Q?", "marks": 2}]}}
+        paper = _mk_paper(pd)
+        key = AnswerKey.objects.create(paper=paper, status="done", data={"sections": []},
+                                       source_revision_hash=akg.paper_revision_hash(pd))
+        self.assertEqual(_sync_answer_key_staleness(paper).status, "done")
+        paper.paper_data = {"Section A": {"questions": [{"qnum": 1, "text": "Edited?", "marks": 2}]}}
+        paper.save(update_fields=["paper_data"])
+        self.assertEqual(_sync_answer_key_staleness(paper).status, "stale")
+        key.refresh_from_db()
+        self.assertEqual(key.status, "stale")
+
+    def test_no_key_returns_none_and_payload_says_none(self):
+        from api.views import _sync_answer_key_staleness, _answer_key_payload
+        paper = _mk_paper()
+        self.assertIsNone(_sync_answer_key_staleness(paper))
+        self.assertEqual(_answer_key_payload(None), {"status": "none"})
+
+    def test_payload_reports_counts(self):
+        from api.views import _answer_key_payload
+        paper = _mk_paper()
+        key = AnswerKey.objects.create(
+            paper=paper, status="done",
+            data={"generated_questions": 12, "errors": [{"qnum": 3, "error": "x"}]})
+        payload = _answer_key_payload(key)
+        self.assertEqual(payload["status"], "done")
+        self.assertEqual(payload["generated_questions"], 12)
+        self.assertEqual(payload["failed_questions"], 1)
+
+
+class AnswerKeyApiTest(TestCase):
+    """End-to-end viewset flow: status 'none' → POST queues the Celery task (mocked)
+    → repeat POST is idempotent → finished key streams a valid DOCX."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.user = User.objects.create_user(username="key-teacher", password="x")
+        self.paper = _mk_paper({"Section A": {"questions": [{"qnum": 1, "text": "Q?", "marks": 2}]}})
+        self.paper.created_by = self.user
+        self.paper.save(update_fields=["created_by"])
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+
+    def test_status_queue_idempotence_and_download(self):
+        from unittest.mock import MagicMock, patch
+
+        r = self.api.get(f"/api/papers/{self.paper.id}/answer_key/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "none")
+
+        with patch("core.tasks.generate_answer_key_task") as task:
+            task.delay.return_value = MagicMock(id="tid-123")
+            r = self.api.post(f"/api/papers/{self.paper.id}/answer_key/")
+        self.assertEqual(r.status_code, 202)
+        self.assertEqual(r.json()["status"], "queued")
+        key = AnswerKey.objects.get(paper=self.paper)
+        self.assertEqual(key.task_id, "tid-123")
+
+        with patch("core.tasks.generate_answer_key_task") as task2:
+            r = self.api.post(f"/api/papers/{self.paper.id}/answer_key/")
+            self.assertEqual(r.status_code, 200)   # already in flight — reported, not re-queued
+            task2.delay.assert_not_called()
+
+        key.status = "done"
+        key.source_revision_hash = akg.paper_revision_hash(self.paper.paper_data)
+        key.data = {"sections": [{"name": "Section A", "questions": [{
+            "qnum": 1, "text": "Q?", "marks": 2, "options": {},
+            "answers": [{"target": "main", "label": "Answer", "question": "Q?", "marks": 2,
+                         "answer": "The answer.", "correct_option": "",
+                         "marking_scheme": [{"point": "p", "marks": 2}],
+                         "concept": {}, "insight": {}, "confidence": "high",
+                         "evidence": [], "warnings": []}],
+            "warnings": []}]}], "errors": [], "generated_questions": 1}
+        key.save()
+        r = self.api.get(f"/api/papers/{self.paper.id}/answer_key_docx/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(b"".join(r.streaming_content)[:2], b"PK")   # a real ZIP/DOCX
+
+    def test_post_without_paper_data_rejected(self):
+        paper = _mk_paper({})
+        paper.created_by = self.user
+        paper.save(update_fields=["created_by"])
+        r = self.api.post(f"/api/papers/{paper.id}/answer_key/")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "no_paper_data")
+
+    def test_download_without_key_is_404(self):
+        r = self.api.get(f"/api/papers/{self.paper.id}/answer_key_docx/")
+        self.assertEqual(r.status_code, 404)
+
+    def test_list_serializer_reports_answer_key_status(self):
+        r = self.api.get("/api/papers/")
+        row = next(p for p in r.json()["results"] if p["id"] == self.paper.id)
+        self.assertEqual(row["answer_key_status"], "none")
+        AnswerKey.objects.create(paper=self.paper, status="done")
+        r = self.api.get("/api/papers/")
+        row = next(p for p in r.json()["results"] if p["id"] == self.paper.id)
+        self.assertEqual(row["answer_key_status"], "done")
+
+
+# ── Open-choice slot marks + unseen comprehension (Tamil PT-1 incident) ────────
+
+def _tamil_sec_d(q18_marks=2, q19_marks=4, part_marks=(2, 4)):
+    """The exact SEC_D shape from the Tamil PT-1 incident: open-choice slots whose
+    'marks' carry the per-part value (2 and 4) instead of the earnable totals
+    (attempt 4 x 2m = 8 and attempt 2 x 4m = 8), shrinking the 40-mark paper to 30."""
+    m18, m19 = part_marks
+    # qnums 1/2 rather than the real paper's 18/19 — a lone section must still
+    # satisfy the run-1..N qnum check, and the marks logic is qnum-independent.
+    return [{"id": "SEC_D", "name": "பகுதி - ஈ", "marks": 16,
+             "instructions": ["எவையேனும் நான்கு வினாக்களுக்கு குறு விடையளி.",
+                              "எவையேனும் இரண்டு வினாக்களுக்கு மட்டும் விடையளி."],
+             "question_slots": [
+                 {"qnum": 1, "type": "vsa", "marks": q18_marks, "choice": "open", "attempt": 4,
+                  "parts": [{"label": c, "type": "vsa", "marks": m18} for c in "ABCDEF"]},
+                 {"qnum": 2, "type": "sa", "marks": q19_marks, "choice": "open", "attempt": 2,
+                  "parts": [{"label": c, "type": "sa", "marks": m19} for c in "ABCD"]},
+             ]}]
+
+
+class OpenChoiceMarksReconcileTest(TestCase):
+    """normalize_slots must promote an open-choice slot's marks to the earnable
+    total (attempt x per-part marks) when the LLM put the per-part value or the
+    all-parts sum there — deterministically, before validation, so the repair
+    round is never needed for this error class."""
+
+    def _slots(self, secs):
+        return secs[0]["question_slots"]
+
+    def test_per_part_marks_promoted_to_earnable_total(self):
+        secs = psx.normalize_slots(_tamil_sec_d())
+        self.assertEqual([s["marks"] for s in self._slots(secs)], [8, 8])
+        errors = psx.validate_pattern_structure(secs)
+        self.assertEqual(errors, [], errors)
+        psx.derive_aggregates_from_slots(secs)
+        self.assertEqual(secs[0]["marks"], 16)   # was shrunk to 6 in production
+
+    def test_all_parts_sum_also_reconciled(self):
+        # The other plausible confusion: marks = every part summed (6 x 2 = 12).
+        secs = psx.normalize_slots(_tamil_sec_d(q18_marks=12, q19_marks=16))
+        self.assertEqual([s["marks"] for s in self._slots(secs)], [8, 8])
+
+    def test_missing_marks_derived(self):
+        secs = psx.normalize_slots(_tamil_sec_d(q18_marks=0, q19_marks=0))
+        self.assertEqual([s["marks"] for s in self._slots(secs)], [8, 8])
+
+    def test_correct_marks_untouched(self):
+        secs = psx.normalize_slots(_tamil_sec_d(q18_marks=8, q19_marks=8))
+        self.assertEqual([s["marks"] for s in self._slots(secs)], [8, 8])
+        self.assertEqual(psx.validate_pattern_structure(secs), [])
+
+    def test_ambiguous_conflict_left_for_validator(self):
+        # marks 6 matches neither the per-part value (2) nor the parts sum (12) —
+        # rewriting it could destroy a correct teacher total, so it must survive
+        # normalize and be flagged by the validator instead.
+        secs = psx.normalize_slots(_tamil_sec_d(q18_marks=6, q19_marks=8))
+        self.assertEqual(self._slots(secs)[0]["marks"], 6)
+        errors = psx.validate_pattern_structure(secs)
+        self.assertTrue(any("attempt (4) x part marks" in e["msg"] for e in errors), errors)
+
+    def test_declared_paper_total_now_consistent(self):
+        # With the reconcile, the whole-paper sum check passes against the
+        # teacher's declared 16 for this section (was "30 but declared 40").
+        secs = psx.normalize_slots(_tamil_sec_d())
+        errors = psx.validate_pattern_structure(secs, declared_total=16)
+        self.assertEqual([e for e in errors if "declared total" in e["msg"]], [])
+
+    def test_repair_may_fix_conflicted_open_choice_marks(self):
+        # The ambiguous case reaches the repair round; the guard must accept a
+        # repair that changes the conflicted slot's marks to the earnable total
+        # (it used to reject ANY slot-marks change, making this class unfixable)…
+        original = psx.normalize_slots(_tamil_sec_d(q18_marks=6, q19_marks=8))
+        repaired = psx.normalize_slots(_tamil_sec_d(q18_marks=8, q19_marks=8))
+        self.assertTrue(psx.repair_preserves_slots(original, repaired))
+        # …while still rejecting marks changes on slots that were NOT conflicted.
+        clean = psx.normalize_slots(_tamil_sec_d(q18_marks=8, q19_marks=8))
+        devalued = psx.normalize_slots(_tamil_sec_d(q18_marks=8, q19_marks=8))
+        devalued[0]["question_slots"][1]["marks"] = 6
+        devalued[0]["question_slots"][1]["parts"] = [
+            {"label": c, "type": "sa", "marks": 3} for c in "ABCD"]
+        self.assertFalse(psx.repair_preserves_slots(clean, devalued))
+
+
+class UnseenComprehensionPromptTest(TestCase):
+    """A cbq slot with source 'unseen' and parts (the encoding for 'read the
+    passage/poem and answer' exercises) must instruct the generator to COMPOSE
+    a new passage in source_text — not to quote the textbook, and never to emit
+    bare standalone questions with no passage."""
+
+    def _prompt(self):
+        secs = psx.normalize_slots([{"id": "SEC_A", "name": "பகுதி - அ", "marks": 8,
+            "instructions": ["உரைப்பத்தியை படித்து பொருளுணர்ந்து வினாக்களுக்கு விடையளி."],
+            "question_slots": [
+                {"qnum": 1, "type": "cbq", "marks": 4, "source": "unseen", "topic": "உரைப்பத்தி",
+                 "parts": [{"label": c, "type": "mcq", "marks": 1} for c in "ABCD"]},
+                {"qnum": 2, "type": "cbq", "marks": 4, "source": "unseen", "topic": "பாடல்",
+                 "parts": [{"label": c, "type": "mcq", "marks": 1} for c in "ABCD"]},
+            ]}])
+        psx.derive_aggregates_from_slots(secs)
+        pattern = ExamPattern(name="p", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        wo = sg.build_work_orders(bp, pattern, {}, "Medium", "6", "Tamil", ["Ch1"])[0]
+        return sg.build_section_prompt(wo)
+
+    def test_unseen_cbq_prompt_demands_new_passage(self):
+        prompt = self._prompt()
+        self.assertIn("COMPOSE a NEW, original passage", prompt)
+        self.assertIn('"source_text"', prompt)
+        self.assertIn("answerable ONLY from that passage", prompt)
+
+    def test_unseen_cbq_prompt_does_not_demand_verbatim_quote(self):
+        # VERBATIM quoting is the textbook-extract instruction — an unseen
+        # comprehension passage must not inherit it.
+        self.assertNotIn("VERBATIM", self._prompt())
+
+    def test_pattern_prompt_rules_state_both_conventions(self):
+        self.assertIn("READING COMPREHENSION", psx.SLOT_SCHEMA_PROMPT_RULES)
+        self.assertIn("attempt x per-part marks", psx.SLOT_SCHEMA_PROMPT_RULES)
+
+
+class NormalizeLabelUnicodeTest(TestCase):
+    """normalize_label must preserve non-ASCII (Indic-script) chapter names — the old
+    ASCII-only regex reduced them to "", so Tamil/Hindi chunks got no ChunkChapter links
+    and the unit filter in embeddings.query silently vanished (whole-book retrieval)."""
+
+    def test_tamil_chapter_name_survives(self):
+        from core.embeddings import normalize_label
+        self.assertEqual(normalize_label("மொழிமுதல் எழுத்துகள்"), "மொழிமுதல்_எழுத்துகள்")
+
+    def test_hindi_chapter_name_survives(self):
+        from core.embeddings import normalize_label
+        self.assertEqual(normalize_label("क्षितिज - बालगोबिन भगत"), "क्षितिज_बालगोबिन_भगत")
+
+    def test_ascii_behavior_unchanged(self):
+        from core.embeddings import normalize_label
+        # Existing ChunkChapter rows store labels produced by the OLD function — these
+        # exact outputs must never change or every stored link goes stale.
+        self.assertEqual(normalize_label("Light - Reflection & Refraction"),
+                         "light_reflection_refraction")
+        self.assertEqual(normalize_label("English Language & Literature"),
+                         "english_language_literature")
+        self.assertEqual(normalize_label("Class 10"), "class_10")
+        self.assertEqual(normalize_label("chapter_1"), "chapter_1")
+
+    def test_ascii_punctuation_still_stripped(self):
+        from core.embeddings import normalize_label
+        self.assertEqual(normalize_label("நூலகம் நோக்கி ..."), "நூலகம்_நோக்கி")
+        self.assertIsNone(normalize_label(""))
+        self.assertEqual(normalize_label("..."), "")
+
+    def test_idempotent(self):
+        from core.embeddings import normalize_label
+        once = normalize_label("மொழிமுதல் எழுத்துகள்")
+        self.assertEqual(normalize_label(once), once)
+
+
+class UnicodeChapterLinkTest(TestCase):
+    """_store_chunks must create ChunkChapter links for non-ASCII unit labels (they were
+    dropped entirely before), and the query-side unit filter must match them."""
+
+    def _run_ingest(self, **kwargs):
+        from unittest import mock
+        from core import embeddings as emb
+        unit = kwargs.pop("unit", "ignored")
+        with mock.patch.object(emb, "PdfReader", lambda *_a, **_k: _FakeReader("x" * 1600)), \
+             mock.patch.object(emb, "get_embeddings_batch",
+                               side_effect=lambda chunks, provider: [[0.0] * 768 for _ in chunks]):
+            return emb.ingest_pdf("6", "Tamil", unit, "C:/fake.pdf", **kwargs)
+
+    def test_tamil_unit_creates_links(self):
+        from core.models import MaterialChunk, ChunkChapter
+        n = self._run_ingest(unit="மொழிமுதல் எழுத்துகள்", material_type="textbook")
+        self.assertEqual(n, 2)
+        self.assertEqual(set(ChunkChapter.objects.values_list("unit", flat=True)),
+                         {"மொழிமுதல்_எழுத்துகள்"})
+        # and the same normalization on the query side finds them
+        from core.embeddings import normalize_label
+        u = normalize_label("மொழிமுதல் எழுத்துகள்")
+        self.assertEqual(MaterialChunk.objects.filter(chapter_links__unit=u).count(), 2)
+
+
+class GrammarSectionDetectTest(TestCase):
+    """_is_grammar_section: grammar sections are detected from name/instructions in any
+    supported script; ordinary sections never match."""
+
+    def test_tamil_grammar_name(self):
+        self.assertTrue(sg._is_grammar_section("பகுதி - இ (இலக்கணம்)"))
+
+    def test_english_grammar_in_instructions(self):
+        self.assertTrue(sg._is_grammar_section("Section B", ["Writing & Grammar"]))
+
+    def test_hindi_grammar_name(self):
+        self.assertTrue(sg._is_grammar_section("खंड ब (व्याकरण)"))
+
+    def test_plain_sections_do_not_match(self):
+        self.assertFalse(sg._is_grammar_section("பகுதி - அ", ["பகுதி - அ"]))
+        self.assertFalse(sg._is_grammar_section("Section C — Literature"))
+        self.assertFalse(sg._is_grammar_section("Section A", ["Answer all questions"]))
+
+    def test_blueprint_gate(self):
+        self.assertTrue(sg._blueprint_has_grammar_section(
+            {"பகுதி - அ": {}, "பகுதி - இ (இலக்கணம்)": {"instructions": []}}))
+        self.assertFalse(sg._blueprint_has_grammar_section(
+            {"Section A": {"instructions": ["Answer all"]}, "Section B": {}}))
+
+
+class GrammarChapterIdentifyTest(TestCase):
+    """identify_grammar_chapters: keyword titles skip the LLM; unknown titles get ONE
+    cached LLM classification; hallucinated titles are dropped; LLM failure fails open."""
+
+    def setUp(self):
+        sg._grammar_chapters_cache.clear()
+
+    def tearDown(self):
+        sg._grammar_chapters_cache.clear()
+
+    def test_keyword_titles_skip_llm(self):
+        from unittest import mock
+        with mock.patch.object(sg.mantle_client, "converse") as conv:
+            out = sg.identify_grammar_chapters("6", "tamil", ["மொழி இலக்கணம்", "Grammar Basics"])
+        conv.assert_not_called()
+        self.assertEqual(set(out), {"மொழி இலக்கணம்", "Grammar Basics"})
+
+    def test_llm_classifies_unknown_titles_and_caches(self):
+        from unittest import mock
+        chapters = ["இன்பத்தமிழ்", "மொழிமுதல் எழுத்துகள்", "திருக்குறள்"]
+        reply = '["மொழிமுதல் எழுத்துகள்", "Hallucinated Chapter"]'
+        with mock.patch.object(sg.mantle_client, "converse",
+                               return_value=(reply, 0, 0)) as conv:
+            out1 = sg.identify_grammar_chapters("6", "tamil", chapters)
+            out2 = sg.identify_grammar_chapters("6", "tamil", chapters)
+        self.assertEqual(out1, ["மொழிமுதல் எழுத்துகள்"])   # hallucination filtered out
+        self.assertEqual(out2, out1)
+        conv.assert_called_once()                            # second call served from cache
+
+    def test_llm_failure_fails_open(self):
+        from unittest import mock
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=RuntimeError("down")):
+            out = sg.identify_grammar_chapters("6", "tamil", ["இன்பத்தமிழ்", "திருக்குறள்"])
+        self.assertEqual(out, [])
+
+    def test_empty_chapters(self):
+        self.assertEqual(sg.identify_grammar_chapters("6", "tamil", []), [])
+
+
+class GrammarChapterRoutingTest(TestCase):
+    """_route_grammar_chapters + build_work_orders wiring: grammar sections keep only the
+    grammar lessons, other sections drop them, and nothing changes when no grammar section
+    exists or no grammar chapters were identified."""
+
+    CHAPTERS = ["இன்பத்தமிழ்", "மொழிமுதல் எழுத்துகள்", "திருக்குறள்"]
+    GRAM = ["மொழிமுதல் எழுத்துகள்"]
+
+    def setUp(self):
+        sg._grammar_chapters_cache.clear()
+
+    def tearDown(self):
+        sg._grammar_chapters_cache.clear()
+
+    def test_route_helper(self):
+        self.assertEqual(sg._route_grammar_chapters(True, self.CHAPTERS, self.GRAM), self.GRAM)
+        self.assertEqual(sg._route_grammar_chapters(False, self.CHAPTERS, self.GRAM),
+                         ["இன்பத்தமிழ்", "திருக்குறள்"])
+        # fail-open fallbacks: no grammar chapters identified / routing would starve the section
+        self.assertEqual(sg._route_grammar_chapters(True, ["a", "b"], []), ["a", "b"])
+        self.assertEqual(sg._route_grammar_chapters(True, ["a", "b"], ["c"]), ["a", "b"])
+        self.assertEqual(sg._route_grammar_chapters(False, ["c"], ["c"]), ["c"])
+
+    def _blueprint(self):
+        return {
+            "பகுதி - அ": {"marks": 8, "questions_count": 2, "marks_per_question": 4,
+                          "question_types": ["Short Answer"], "instructions": ["பகுதி - அ"]},
+            "பகுதி - இ (இலக்கணம்)": {"marks": 8, "questions_count": 2, "marks_per_question": 4,
+                                     "question_types": ["MCQ"],
+                                     "instructions": ["பகுதி - இ (இலக்கணம்)"]},
+        }
+
+    def _work_orders(self):
+        from unittest import mock
+        with mock.patch.object(sg.mantle_client, "converse",
+                               return_value=('["மொழிமுதல் எழுத்துகள்"]', 0, 0)):
+            return sg.build_work_orders(self._blueprint(), None, {}, "Medium",
+                                        "6", "Tamil", list(self.CHAPTERS))
+
+    def test_work_orders_scope_chapters(self):
+        wos = {w.section_name: w for w in self._work_orders()}
+        gram_wo = wos["பகுதி - இ (இலக்கணம்)"]
+        lit_wo = wos["பகுதி - அ"]
+        self.assertTrue(gram_wo.is_grammar)
+        self.assertFalse(lit_wo.is_grammar)
+        self.assertEqual(gram_wo.chapters, self.GRAM)
+        self.assertEqual(lit_wo.chapters, ["இன்பத்தமிழ்", "திருக்குறள்"])
+        # chapter_plan follows the scoped lists
+        self.assertTrue(set(gram_wo.chapter_plan) <= set(self.GRAM))
+        self.assertTrue(set(lit_wo.chapter_plan) <= {"இன்பத்தமிழ்", "திருக்குறள்"})
+
+    def test_grammar_prompt_rule(self):
+        wos = {w.section_name: w for w in self._work_orders()}
+        gram_prompt = sg.build_section_prompt(wos["பகுதி - இ (இலக்கணம்)"])
+        lit_prompt = sg.build_section_prompt(wos["பகுதி - அ"])
+        self.assertIn("GRAMMAR SECTION", gram_prompt)
+        self.assertIn("Do NOT ask reading-comprehension", gram_prompt)
+        self.assertNotIn("GRAMMAR SECTION", lit_prompt)
+
+    def test_no_grammar_section_means_no_llm_and_no_scoping(self):
+        from unittest import mock
+        bp = {"Section A": {"marks": 10, "questions_count": 2, "marks_per_question": 5,
+                            "question_types": ["Short Answer"], "instructions": ["Answer all"]}}
+        with mock.patch.object(sg.mantle_client, "converse") as conv:
+            wos = sg.build_work_orders(bp, None, {}, "Medium", "10", "Science",
+                                       ["Light", "Electricity"])
+        conv.assert_not_called()
+        self.assertEqual(wos[0].chapters, ["Light", "Electricity"])
+        self.assertFalse(wos[0].is_grammar)

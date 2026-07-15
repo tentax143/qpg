@@ -88,7 +88,18 @@ SLOT_SCHEMA_PROMPT_RULES = """QUESTION SLOT RULES — inside every section, list
   breakdown ("5 questions each one mark, MCQ 2 and 3 short"), you MUST emit one part
   per letter with its type and marks — never collapse them into a bare marks total.
   With choice "internal", the SAME parts describe EACH of the two OR alternatives.
-- attempt: with choice "open" only — how many parts the student answers.
+- attempt: with choice "open" only — how many parts the student answers. The slot's "marks"
+  is then attempt x per-part marks — the TOTAL the student can earn — NEVER the per-part
+  value ("answer any 4, each 2 marks" -> 6 parts of 2 marks, attempt 4, marks 8, NOT 2).
+- READING COMPREHENSION ("read the passage/poem and answer the questions", "unseen passage",
+  "படித்து பொருளுணர்ந்து வினாக்களுக்கு விடையளி"): model EACH passage as ONE slot that carries
+  its questions as "parts" — type "cbq" with source "unseen" when the passage is to be newly
+  composed, or type "extract" with source "textbook" when it must be quoted from the book
+  (e.g. a 4-mark passage with 4 MCQs -> one slot, marks 4, parts: 4 x 1m mcq). NEVER emit the
+  comprehension questions as independent slots — the printed paper must show the passage
+  followed by its questions, and independent slots print no passage. Two passages (say one
+  prose piece and one poem) = two slots. Use the section-level "passage_instruction" ONLY
+  when the whole section shares one single passage.
 - source: "textbook" when the material must come from the textbook, "unseen" for unseen
   passages, "general" when the teacher says the questions must NOT come from the
   textbook / given content and should be set from general knowledge (trigger phrases:
@@ -287,7 +298,38 @@ def normalize_slots(sections):
                     pcanon = canonical_slot_type(part.get("type"))
                     if pcanon:
                         part["type"] = pcanon
+            _reconcile_open_choice_marks(slot)
     return sections
+
+
+def _reconcile_open_choice_marks(slot):
+    """Open-choice slots ("A to F, attempt any 4"): the earnable total is
+    attempt x per-part marks. Pattern LLMs put the per-part value (or the
+    all-parts sum) in 'marks' instead — observed on a Tamil PT-1 where two
+    'any 4 of 6 x 2m' / 'any 2 of 4 x 4m' slots shipped as 2m and 4m,
+    shrinking the 40-mark paper to 30. Those two shapes are unambiguous, so
+    fix them deterministically here; any other conflict (e.g. part marks
+    that look wrong against a plausible total) is left for the validator,
+    because rewriting marks there could destroy a correct teacher total."""
+    if str(slot.get("choice")) != "open":
+        return
+    attempt = _as_int(slot.get("attempt"), 0)
+    parts = [p for p in slot.get("parts") or [] if isinstance(p, dict)]
+    if not attempt or len(parts) < 2 or attempt >= len(parts):
+        return
+    part_marks = {round(_as_float(p.get("marks"), 0.0), 2) for p in parts}
+    if len(part_marks) != 1:
+        return
+    per_part = next(iter(part_marks))
+    if per_part <= 0:
+        return
+    earnable = attempt * per_part
+    marks = _as_float(slot.get("marks"), 0.0)
+    if abs(marks - earnable) <= 0.01:
+        return
+    all_parts_sum = len(parts) * per_part
+    if marks <= 0 or abs(marks - per_part) <= 0.01 or abs(marks - all_parts_sum) <= 0.01:
+        slot["marks"] = _int_if_whole(earnable)
 
 
 def validate_pattern_structure(sections, declared_total=None):
@@ -423,6 +465,29 @@ def _slot_signature(sections):
     return sig
 
 
+def _open_choice_conflict_qnums(sections):
+    """qnums of open-choice slots whose marks contradict attempt x uniform part
+    marks. Such a marks value is invalid by construction (the spec requires the
+    identity to hold), so it is never faithful teacher content — a repair must
+    be allowed to change it, like the off-grid marks exemption."""
+    out = set()
+    for section in sections or []:
+        for slot in slots_for_section(section):
+            if str(slot.get("choice")) != "open":
+                continue
+            attempt = _as_int(slot.get("attempt"), 0)
+            parts = [p for p in slot.get("parts") or [] if isinstance(p, dict)]
+            part_marks = {round(_as_float(p.get("marks"), 0.0), 2) for p in parts}
+            if not attempt or len(part_marks) != 1:
+                continue
+            per_part = next(iter(part_marks))
+            if per_part > 0 and abs(attempt * per_part - _as_float(slot.get("marks"), 0.0)) > 0.01:
+                qnum = slot.get("qnum")
+                if isinstance(qnum, int) and qnum > 0:
+                    out.add(qnum)
+    return out
+
+
 def repair_preserves_slots(original_sections, repaired_sections):
     """True if a repair kept every original question slot intact.
 
@@ -433,14 +498,19 @@ def repair_preserves_slots(original_sections, repaired_sections):
     rejected, whatever its error count. Repairs may still ADD slots, fill in a
     missing/zero marks value, and re-split marks that are OFF the half-mark grid
     (2.25, 3.33 — even-division artifacts the validator flags; fixing them requires
-    changing exactly those marks, and they are never faithful teacher content)."""
+    changing exactly those marks, and they are never faithful teacher content).
+    Open-choice slots whose marks contradict attempt x part marks get the same
+    exemption — the correct repair (marks = the earnable total) is otherwise
+    impossible, and rejecting it shipped a Tamil paper at 30/40 marks."""
     orig = _slot_signature(original_sections)
     rep = _slot_signature(repaired_sections)
+    reconcilable = _open_choice_conflict_qnums(original_sections)
     for qnum, marks in orig.items():
         if qnum not in rep:
             return False
         off_grid = abs(marks * 2 - round(marks * 2)) > 0.01
-        if marks > 0 and not off_grid and abs(rep[qnum] - marks) > 0.01:
+        if marks > 0 and not off_grid and qnum not in reconcilable \
+                and abs(rep[qnum] - marks) > 0.01:
             return False
     return True
 

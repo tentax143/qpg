@@ -116,6 +116,7 @@ class SectionWorkOrder:
     context_by_type: dict = field(default_factory=dict)  # 3.2: {type_key: context_str}
     chapter_plan: list = field(default_factory=list)     # one chapter name per question slot (weighted allocation)
     slots: list = field(default_factory=list)            # question_slots (per-question structure) — see docs/PER_QUESTION_STRUCTURE.md
+    is_grammar: bool = False                             # grammar (இலக்கணம்/व्याकरण) section — chapters routed to grammar lessons only
 
 
 # ─────────────────────────────────────────────
@@ -707,6 +708,18 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
             "specification are exempt — they must NOT come from any chapter; set their "
             '"chapter_tag" to "General".'
         )
+    # Grammar sections: the chapter list is already routed to the textbook's grammar
+    # LESSONS (see identify_grammar_chapters), but the model must also be told to test
+    # grammar CONCEPTS — otherwise it happily writes literature-comprehension questions
+    # about whatever text appears in the retrieved excerpts.
+    if wo.is_grammar and not _all_general:
+        chapter_block += (
+            "\nGRAMMAR SECTION — MANDATORY: this section tests GRAMMAR only. Every question "
+            "must test a grammar concept (letters/sounds, spelling, joining/sandhi rules, "
+            "word forms and classes, sentence structure) as taught in the grammar lessons "
+            "listed above. Do NOT ask reading-comprehension or literature questions here — "
+            "no story/poem content, characters, authors or poem lines."
+        )
 
     # QUESTION TYPE — MANDATORY. The STRICT RULES below are MCQ-heavy, and uniform non-MCQ
     # sections otherwise drift into producing MCQs (a "Short Answer" section coming back full
@@ -1018,6 +1031,16 @@ MATHEMATICAL NOTATION (strictly follow):
                             "of the reference material — each block is one unbroken excerpt as "
                             "printed, long enough to satisfy the stated extract length"
                         )
+                elif s.get("source") == "unseen":
+                    line += (
+                        ' | COMPOSE a NEW, original passage (or poem, if the topic/format says '
+                        "so) appropriate for this class, subject and language, and put it in "
+                        '"source_text" — the paper PRINTS it before the sub-questions. Every '
+                        "sub-question must be answerable ONLY from that passage, never from "
+                        "textbook chapters"
+                    )
+                    if wo.extract_instruction:
+                        line += f" | {wo.extract_instruction}"
                 else:
                     line += ' | include the passage/extract in "source_text" on this question'
                     if wo.extract_instruction:
@@ -3780,6 +3803,107 @@ def _chapters_for_subject(section_subject: str, parent_subject: str, all_chapter
     return matched or list(all_chapters)
 
 
+# ─────────────────────────────────────────────
+# Grammar-section chapter routing
+# ─────────────────────────────────────────────
+# Language papers carry a dedicated grammar section (இலக்கணம் / व्याकरण / "Grammar") whose
+# questions must come from the textbook's grammar LESSONS — not from grammar-adjacent lines
+# inside prose/poem chapters — and conversely the literature sections must not spend their
+# question slots on the grammar lessons. Chapter titles rarely carry a literal grammar
+# marker (class 6 Tamil grammar lessons: "மொழிமுதல் எழுத்துகள்", "முதலெழுத்தும்
+# சார்பெழுத்தும்"…), so identification is keyword-first with one cached LLM classification
+# on top. Routing only activates when the paper actually HAS a grammar-named section, so
+# every other subject/pattern is untouched.
+
+_GRAMMAR_MARKERS = ("இலக்கணம்", "இலக்கண", "grammar", "व्याकरण", "vyakaran", "ilakkanam")
+
+
+def _is_grammar_section(sec_name: str, instructions=None) -> bool:
+    """True when a section is a grammar section, judged by its name + instructions."""
+    hay = str(sec_name or "").lower()
+    for ins in instructions or []:
+        hay += " " + str(ins).lower()
+    return any(m in hay for m in _GRAMMAR_MARKERS)
+
+
+def _blueprint_has_grammar_section(blueprint: dict) -> bool:
+    return any(
+        _is_grammar_section(sn, sd.get("instructions"))
+        for sn, sd in (blueprint or {}).items()
+        if isinstance(sd, dict)
+    )
+
+
+_grammar_chapters_cache: dict = {}
+
+
+def identify_grammar_chapters(class_name: str, subject: str, chapters: list) -> list:
+    """Subset of `chapters` that are grammar LESSONS (vs prose/poetry/supplementary).
+
+    Title-keyword pass first, then ONE LLM classification (VAL_MODEL, cached per
+    class+subject+chapters) for the titles a keyword can't decide. Fails open to []
+    — meaning "no routing" — on any LLM error, so generation never starves."""
+    chs = [str(c) for c in (chapters or []) if c]
+    if not chs:
+        return []
+    key = (str(class_name), str(subject), tuple(sorted(chs)))
+    if key in _grammar_chapters_cache:
+        gram = _grammar_chapters_cache[key]
+        return [c for c in chs if c in gram]
+
+    kw = {c for c in chs if any(m in c.lower() for m in _GRAMMAR_MARKERS)}
+    unknown = [c for c in chs if c not in kw]
+    llm: set = set()
+    if unknown:
+        titles = "\n".join(f"- {c}" for c in unknown)
+        prompt = (
+            f"These are chapter titles from a class {class_name} {subject} school textbook "
+            "(titles may be in any language):\n"
+            f"{titles}\n\n"
+            "Which of these are GRAMMAR lessons — lessons that TEACH language structure "
+            "(letters/sounds, spelling, joining/sandhi rules, word forms and classes, "
+            "sentence structure; இலக்கணம் / व्याकरण) — as opposed to prose, poetry or "
+            "supplementary-reader lessons?\n"
+            "Reply with ONLY a JSON array of the exact titles that are grammar lessons, "
+            'e.g. ["title1", "title2"]. Reply [] if none are.'
+        )
+        try:
+            raw, _, _ = mantle_client.converse(
+                model_id=mantle_client.VAL_MODEL, prompt=prompt,
+                max_tokens=500, temperature=0.0,
+            )
+            m = re.search(r"\[.*\]", raw or "", re.DOTALL)
+            if m:
+                by_strip = {c.strip(): c for c in unknown}
+                llm = {
+                    by_strip[str(t).strip()]
+                    for t in json.loads(m.group(0))
+                    if isinstance(t, str) and str(t).strip() in by_strip
+                }
+        except Exception as e:
+            print(f"[Grammar-Chapters] LLM classification failed: {e}")
+
+    gram = kw | llm
+    _grammar_chapters_cache[key] = gram
+    print(f"[Grammar-Chapters] {class_name}/{subject}: "
+          f"{sorted(gram) if gram else 'none identified'}")
+    return [c for c in chs if c in gram]
+
+
+def _route_grammar_chapters(is_grammar: bool, sec_chapters: list, grammar_chapters: list) -> list:
+    """Grammar sections keep ONLY the grammar chapters; every other section drops them.
+    Falls back to the incoming list whenever routing would leave the section empty
+    (unidentified grammar lessons must not starve generation)."""
+    gset = set(grammar_chapters or [])
+    if not gset:
+        return list(sec_chapters or [])
+    if is_grammar:
+        kept = [c for c in (sec_chapters or []) if c in gset]
+    else:
+        kept = [c for c in (sec_chapters or []) if c not in gset]
+    return kept or list(sec_chapters or [])
+
+
 def _slots_all_general(sec_data) -> bool:
     """True when EVERY question slot in a section says source='general' — the teacher
     demanded the questions NOT come from the textbook ("give in general, not from the
@@ -3806,6 +3930,13 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
     context_map: dict = {}
     context_by_type_map: dict = {}  # {sec_name: {type_key: ctx_str}}
 
+    # Grammar routing (language papers): identify the grammar lessons once, only when the
+    # paper actually has a grammar-named section — every other paper skips this entirely.
+    grammar_chapters = (
+        identify_grammar_chapters(class_name, subject, chapters)
+        if _blueprint_has_grammar_section(blueprint) else []
+    )
+
     for sec_name, sec_data in blueprint.items():
         # All-general sections (teacher: "not from the textbook") get NO context at all —
         # retrieval is skipped and the quality pre-check must not fight the empty result.
@@ -3824,7 +3955,19 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
         if sec_chapters != list(chapters or []):
             print(f"[Section-Chapters] '{sec_name}' ({effective_subject}): "
                   f"{len(sec_chapters)}/{len(chapters or [])} chapters → {sec_chapters}")
+        # Grammar routing: grammar sections retrieve from grammar lessons only, the rest
+        # exclude them (no-op when no grammar section / no grammar chapters identified).
+        sec_is_grammar = _is_grammar_section(sec_name, sec_data.get("instructions"))
+        routed = _route_grammar_chapters(sec_is_grammar, sec_chapters, grammar_chapters)
+        if routed != sec_chapters:
+            print(f"[Grammar-Route] '{sec_name}': "
+                  f"{'grammar-only' if sec_is_grammar else 'grammar-excluded'} → {routed}")
+            sec_chapters = routed
         hints = _query_hints_for_types(sec_types, effective_subject)
+        if sec_is_grammar:
+            # Steer similarity toward the rules/exercises pages of the grammar lessons.
+            hints.insert(0, f"{effective_subject} grammar இலக்கணம் व्याकरण rules letters "
+                            "word forms examples exercises")
         # Literature-extract sections need STORY/POEM text, not the chapter's grammar or
         # skill-box pages — steer retrieval toward narrative content first.
         _sec_slots = [sl for sl in (sec_data.get("question_slots") or []) if isinstance(sl, dict)]
@@ -3838,11 +3981,16 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
             hints = _query_hints_for_types(sec_types, subject)
             ctx = get_section_context(class_name, subject, sec_chapters, hints, school_id=school_id)
 
-        # 3.3 — Context quality pre-check with fallback
+        # 3.3 — Context quality pre-check with fallback. Grammar sections keep their chapter
+        # filter even on the broad retry — dropping it would reopen the literature leak the
+        # routing above just closed.
         if not _validate_context_quality(ctx, sec_name, q_count, effective_subject, class_name, sec_types):
-            print(f"[Context-QC] '{sec_name}': retrying with broader query (no chapter filter)")
+            print(f"[Context-QC] '{sec_name}': retrying with broader query"
+                  f"{' (chapter filter kept: grammar section)' if sec_is_grammar else ' (no chapter filter)'}")
             broad_hints = [f"{effective_subject} {ch}" for ch in (sec_chapters or [])] + hints
-            ctx_broad = get_section_context(class_name, effective_subject, [], broad_hints, school_id=school_id)
+            ctx_broad = get_section_context(class_name, effective_subject,
+                                            sec_chapters if sec_is_grammar else [],
+                                            broad_hints, school_id=school_id)
             if len(ctx_broad) > len(ctx):
                 ctx = ctx_broad
                 print(f"[Context-QC] '{sec_name}': broad retry improved to {len(ctx)} chars")
@@ -4062,6 +4210,13 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
     # 3.2: extract per-type context map stored under sentinel key
     context_by_type_all = context_map.get("__context_by_type__", {})
 
+    # Grammar routing — same scoping the retrieval used (identify_grammar_chapters is
+    # cached, so this repeat call costs nothing).
+    grammar_chapters = (
+        identify_grammar_chapters(class_name, subject, chapters)
+        if _blueprint_has_grammar_section(blueprint) else []
+    )
+
     work_orders = []
     for idx, (sec_name, sec_data) in enumerate(blueprint.items()):
         ps = pattern_section_map.get(sec_name, {})
@@ -4168,6 +4323,11 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         # Scope chapters to this section's sub-subject (compound papers only; single-subject
         # papers get the full list back unchanged — see _chapters_for_subject).
         section_chapters = _chapters_for_subject(section_subject, subject, chapters)
+        # Grammar routing: grammar sections draw from the grammar lessons only, other
+        # sections exclude them — this feeds chapter_plan and the prompt's chapter block.
+        sec_is_grammar = _is_grammar_section(
+            sec_name, sec_data.get("instructions") or ps.get("instructions"))
+        section_chapters = _route_grammar_chapters(sec_is_grammar, section_chapters, grammar_chapters)
 
         # MO-01: attempt-N-of-M support — 'attempt' = students answer, 'count'/'provided' = questions generated
         # (coerced to int — these feed a division in the section marks-total check).
@@ -4234,6 +4394,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             subsections=[] if slots else subsecs,
             context_by_type={} if _all_general else context_by_type_all.get(sec_name, {}),  # 3.2
             slots=slots,
+            is_grammar=sec_is_grammar,
         )
         work_orders.append(wo)
         subj_tag = f" [{section_subject}]" if section_subject else ""

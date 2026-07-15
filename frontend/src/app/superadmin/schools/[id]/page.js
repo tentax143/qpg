@@ -4,10 +4,12 @@ import { useState, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import apiClient from '@/lib/api';
+import ErrorAlert from '@/components/ErrorAlert';
+import SuccessAlert from '@/components/SuccessAlert';
 import {
   ArrowLeft, Users, BarChart3, FileText, Settings,
-  Plus, Trash2, Edit3, Check, X, ChevronDown, ShieldCheck, ShieldOff,
-  Database, Link2,
+  Plus, Trash2, Edit3, Check, X, ShieldCheck, ShieldOff,
+  Database, Link2, Download, RefreshCw, Zap, Pencil, RotateCw,
 } from 'lucide-react';
 
 const TABS = [
@@ -21,6 +23,7 @@ const TABS = [
 const STATUS_COLORS = {
   done: 'bg-emerald-50 text-emerald-700',
   generating: 'bg-blue-50 text-blue-700',
+  processing: 'bg-blue-50 text-blue-700',
   queued: 'bg-slate-100 text-slate-600',
   failed: 'bg-red-50 text-red-700',
   cancelled: 'bg-slate-100 text-slate-500',
@@ -43,8 +46,13 @@ export default function SchoolDetailPage({ params }) {
   const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'teacher', allowed_subject: '' });
   const [addUserError, setAddUserError] = useState(null);
   const [addUserLoading, setAddUserLoading] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [subjects, setSubjects] = useState([]);
+  const [paperSuccess, setPaperSuccess] = useState(null);
+  const [paperError, setPaperError] = useState(null);
+  const [rerenderingId, setRerenderingId] = useState(null);
+  const [regeneratingId, setRegeneratingId] = useState(null);
+  const [retryingId, setRetryingId] = useState(null);
+  const [deletingPaperId, setDeletingPaperId] = useState(null);
   // Data tab — shared-store + cross-school links
   const [vectorData, setVectorData] = useState(null);
   const [addSource, setAddSource] = useState('');
@@ -70,6 +78,17 @@ export default function SchoolDetailPage({ params }) {
     else if (tab === 'papers') fetchPapers();
     else if (tab === 'data') { fetchVectorLinks(); fetchVectorStores(); }
   }, [tab, school]);
+
+  useEffect(() => {
+    if (tab !== 'papers') return undefined;
+    if (!papers.some((p) => ['generating', 'processing', 'queued'].includes(p.status))) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      fetchPapers(false);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [tab, papers]);
 
   async function fetchSchool() {
     try {
@@ -105,11 +124,85 @@ export default function SchoolDetailPage({ params }) {
     finally { setTabLoading(false); }
   }
 
-  async function fetchPapers() {
-    setTabLoading(true);
-    try { const r = await apiClient.get(`/admin/schools/${id}/papers/`); setPapers(r.data); }
-    catch (e) { console.error(e); }
-    finally { setTabLoading(false); }
+  async function fetchPapers(showLoading = true) {
+    if (showLoading) setTabLoading(true);
+    try {
+      const r = await apiClient.get(`/admin/schools/${id}/papers/`);
+      setPapers(r.data);
+      setPaperError(null);
+    } catch (e) {
+      console.error(e);
+      setPaperError(e.response?.data?.error || 'Failed to load papers');
+    } finally {
+      if (showLoading) setTabLoading(false);
+    }
+  }
+
+  const isStuck = (paper) => paper.status === 'generating' && paper.updated_at
+    && (Date.now() - new Date(paper.updated_at).getTime() > 15 * 60 * 1000);
+
+  async function handleDeletePaper(paperId) {
+    if (!window.confirm('Delete this paper?')) return;
+    setDeletingPaperId(paperId);
+    setPaperError(null);
+    try {
+      await apiClient.delete(`/papers/${paperId}/`);
+      setPaperSuccess('Paper deleted');
+      await fetchPapers(false);
+    } catch (e) {
+      setPaperError(e.response?.data?.error || 'Failed to delete paper');
+    } finally {
+      setDeletingPaperId(null);
+    }
+  }
+
+  async function handleRetryPaper(paperId) {
+    setRetryingId(paperId);
+    setPaperError(null);
+    try {
+      const res = await apiClient.post(`/papers/${paperId}/retry/`);
+      setPaperSuccess(res?.data?.queued
+        ? 'Queued — this paper will start when the current generation finishes'
+        : 'Generation restarted');
+      await fetchPapers(false);
+    } catch (e) {
+      setPaperError(e.response?.data?.error || 'Failed to retry paper generation');
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
+  async function handleRerenderPaper(paperId) {
+    setRerenderingId(paperId);
+    setPaperError(null);
+    try {
+      await apiClient.post(`/papers/${paperId}/rerender/`);
+      setPaperSuccess('Paper re-rendered successfully');
+      await fetchPapers(false);
+    } catch (e) {
+      setPaperError(e.response?.data?.error || 'Re-render failed');
+    } finally {
+      setRerenderingId(null);
+    }
+  }
+
+  async function handleRegeneratePaper(paperId) {
+    if (!window.confirm('Regenerate this paper from its pattern? This creates fresh questions and replaces the current content.')) {
+      return;
+    }
+    setRegeneratingId(paperId);
+    setPaperError(null);
+    try {
+      const res = await apiClient.post(`/papers/${paperId}/regenerate/`);
+      setPaperSuccess(res?.data?.queued
+        ? 'Queued — regeneration will start when the current generation finishes'
+        : 'Regenerating — refresh in a minute to see the new paper');
+      await fetchPapers(false);
+    } catch (e) {
+      setPaperError(e.response?.data?.error || 'Could not start regeneration');
+    } finally {
+      setRegeneratingId(null);
+    }
   }
 
   async function fetchVectorLinks() {
@@ -279,6 +372,9 @@ export default function SchoolDetailPage({ params }) {
         })}
       </div>
 
+      {paperError && <ErrorAlert message={paperError} onClose={() => setPaperError(null)} />}
+      {paperSuccess && <SuccessAlert message={paperSuccess} onClose={() => setPaperSuccess(null)} />}
+
       {/* Tab content */}
       {tab === 'overview' && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-5">
@@ -416,7 +512,12 @@ export default function SchoolDetailPage({ params }) {
                           <span className="font-medium text-slate-900">{s.name}</span>
                           <span className="text-[11px] text-slate-400">· {s.material_count} material(s)</span>
                         </div>
-                        <button onClick={() => handleRemoveStore(s.id)} className="text-slate-300 hover:text-red-500 transition-colors" title="Remove allocation">
+                        <button
+                          onClick={() => handleRemoveStore(s.id)}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-colors"
+                          title="Remove allocation"
+                          aria-label={`Remove ${s.name} allocation`}
+                        >
                           <X className="w-4 h-4" />
                         </button>
                       </div>
@@ -471,7 +572,12 @@ export default function SchoolDetailPage({ params }) {
                           <span className="font-medium text-slate-900">{l.source_name}</span>
                           {l.mutual && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 font-medium">Mutual</span>}
                         </div>
-                        <button onClick={() => handleRemoveLink(l.source_id, l.mutual)} className="text-slate-300 hover:text-red-500 transition-colors" title="Remove link">
+                        <button
+                          onClick={() => handleRemoveLink(l.source_id, l.mutual)}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-colors"
+                          title="Remove link"
+                          aria-label={`Remove access link to ${l.source_name}`}
+                        >
                           <X className="w-4 h-4" />
                         </button>
                       </div>
@@ -634,28 +740,31 @@ export default function SchoolDetailPage({ params }) {
                         {new Date(u.date_joined).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <div className="inline-flex items-center gap-2">
+                        <div className="inline-flex items-center gap-1 whitespace-nowrap">
                           {u.role === 'teacher' ? (
                             <button
                               onClick={() => handleChangeRole(u.id, u.username, 'school_admin')}
-                              className="text-slate-300 hover:text-violet-600 transition-colors"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-violet-600 hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 transition-colors"
                               title="Promote to School Admin"
+                              aria-label={`Promote ${u.username} to School Admin`}
                             >
                               <ShieldCheck className="w-4 h-4" />
                             </button>
                           ) : u.role === 'school_admin' ? (
                             <button
                               onClick={() => handleChangeRole(u.id, u.username, 'teacher')}
-                              className="text-slate-300 hover:text-amber-500 transition-colors"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-amber-600 hover:bg-amber-50 hover:text-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-1 transition-colors"
                               title="Demote to Teacher"
+                              aria-label={`Demote ${u.username} to Teacher`}
                             >
                               <ShieldOff className="w-4 h-4" />
                             </button>
                           ) : null}
                           <button
                             onClick={() => handleRemoveUser(u.id, u.username)}
-                            className="text-slate-300 hover:text-red-500 transition-colors"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-colors"
                             title="Remove user"
+                            aria-label={`Remove ${u.username}`}
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -729,6 +838,21 @@ export default function SchoolDetailPage({ params }) {
 
       {tab === 'papers' && (
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">School Papers</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {papers.length} recent paper{papers.length !== 1 ? 's' : ''} generated by {school.name}
+              </p>
+            </div>
+            <button
+              onClick={() => fetchPapers(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Refresh
+            </button>
+          </div>
           {tabLoading ? (
             <div className="flex justify-center py-10"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
           ) : papers.length === 0 ? (
@@ -742,6 +866,7 @@ export default function SchoolDetailPage({ params }) {
                   <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Cost</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Date</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -762,6 +887,80 @@ export default function SchoolDetailPage({ params }) {
                     </td>
                     <td className="px-4 py-3 text-right text-xs text-slate-400">
                       {new Date(p.created_at).toLocaleDateString()}
+                    </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                        {p.status === 'done' && (
+                          <Link
+                            href={`/papers/${p.id}/edit`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-blue-600 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
+                            title="Edit / AI edit"
+                            aria-label={`Edit ${p.subject} paper`}
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </Link>
+                        )}
+                        {p.file && (
+                          <a
+                            href={p.file}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-blue-600 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
+                            title="Download"
+                            aria-label={`Download ${p.subject} paper`}
+                          >
+                            <Download className="w-4 h-4" />
+                          </a>
+                        )}
+                        {p.status === 'done' && p.has_paper_data && (
+                          <button
+                            onClick={() => handleRerenderPaper(p.id)}
+                            disabled={rerenderingId === p.id}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-violet-600 hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 transition-colors disabled:opacity-40"
+                            title="Re-render DOCX"
+                            aria-label={`Re-render ${p.subject} paper`}
+                          >
+                            {rerenderingId === p.id
+                              ? <RefreshCw className="w-4 h-4 animate-spin" />
+                              : <Zap className="w-4 h-4" />
+                            }
+                          </button>
+                        )}
+                        {p.status === 'done' && (
+                          <button
+                            onClick={() => handleRegeneratePaper(p.id)}
+                            disabled={regeneratingId === p.id}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-amber-600 hover:bg-amber-50 hover:text-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-1 transition-colors disabled:opacity-40"
+                            title="Regenerate fresh questions"
+                            aria-label={`Regenerate ${p.subject} paper`}
+                          >
+                            <RotateCw className={`w-4 h-4 ${regeneratingId === p.id ? 'animate-spin' : ''}`} />
+                          </button>
+                        )}
+                        {(p.status === 'failed' || isStuck(p)) && (
+                          <button
+                            onClick={() => handleRetryPaper(p.id)}
+                            disabled={retryingId === p.id}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 transition-colors disabled:opacity-40"
+                            title="Retry generation"
+                            aria-label={`Retry ${p.subject} paper generation`}
+                          >
+                            <RefreshCw className={`w-4 h-4 ${retryingId === p.id ? 'animate-spin' : ''}`} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDeletePaper(p.id)}
+                          disabled={deletingPaperId === p.id}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-colors disabled:opacity-40"
+                          title="Delete"
+                          aria-label={`Delete ${p.subject} paper`}
+                        >
+                          {deletingPaperId === p.id
+                            ? <RefreshCw className="w-4 h-4 animate-spin" />
+                            : <Trash2 className="w-4 h-4" />
+                          }
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
