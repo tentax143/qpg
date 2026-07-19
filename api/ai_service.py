@@ -66,6 +66,80 @@ Return ONLY valid JSON.
         raise
 
 
+# Cap on the sample-paper text embedded in the extraction prompt. A 12-15 page
+# board SQP is ~25-35k chars; anything past this is almost always answer keys or
+# marking schemes appended to the same PDF, which the pattern doesn't need.
+SQP_MAX_CHARS = 60000
+
+
+def extract_pattern_from_sqp_via_api(sqp_text, class_name, subject, exam_name=""):
+    """Extract a reusable exam pattern from the full text of an uploaded sample /
+    board question paper. Unlike generate_pattern_via_api the input is a REAL paper,
+    so the model must abstract the schema — never carry the paper's content into
+    the pattern, or every paper generated from it would plagiarise the sample."""
+    if len(sqp_text) > SQP_MAX_CHARS:
+        sqp_text = sqp_text[:SQP_MAX_CHARS] + "\n[... remaining pages truncated ...]"
+
+    prompt = f"""You are an expert exam-paper analyst. Below is the FULL TEXT of a sample question paper (extracted from an uploaded PDF). Convert it into a REUSABLE exam pattern JSON — the schema future papers will be generated from.
+
+SAMPLE QUESTION PAPER TEXT:
+{sqp_text}
+
+CLASS: {class_name}
+SUBJECT: {subject}
+EXAM NAME: {exam_name}
+
+EXTRACTION RULES — ABSTRACT THE STRUCTURE, NEVER COPY THE CONTENT:
+1. NEVER copy the paper's passages, extracts, question wording, answer options or
+   proper names into the pattern. Future papers must contain NEW questions in the
+   SAME structure.
+2. DO capture, for every printed question: its number, marks, question type, choice
+   structure ("attempt any ten of twelve" -> choice "open" with parts + attempt;
+   two full alternatives joined by OR -> choice "internal"), sub-parts with their
+   per-part types and marks, and word limits.
+3. DO describe HOW each question is asked in the "format" / "condition" fields, in a
+   few generic words WITHOUT the content (e.g. "error-and-correction table",
+   "reported speech conversion", "analogy completion from passage",
+   "letter to the editor, about 120 words").
+   For literature EXTRACT questions, look at the sample extract's SOURCE TEXT itself:
+   if it is verse (short lines, stanzas) the slot's "format" MUST say "Poetry extract";
+   if it is from a play (speaker labels, stage directions) say "Drama extract";
+   otherwise say "Prose extract". This kind label is essential — it routes which
+   chapters future papers quote from.
+4. Copy the paper's General Instructions into the section "instructions" (rephrased
+   generically where they reference this paper's specific content).
+5. Use the paper's own section scheme (names, order, marks). If a section heading
+   contradicts the paper's general instructions (e.g. a lettering typo), trust the
+   general instructions.
+6. Reading passages composed for the paper (not from the textbook) are source
+   "unseen"; literature extracts/questions on named textbook chapters are source
+   "textbook". Do NOT bind slots to the specific chapter titles this paper happens
+   to use — chapter choice belongs to the teacher at generation time.
+7. Word limits ("in about 50 words", "100-120 words") go in the slot "condition"
+   or the section "constraints".
+
+{_SLOT_SCHEMA_RULES}
+
+OUTPUT FORMAT (valid JSON only — this example shows the shape, not your content):
+{_OUTPUT_EXAMPLE}
+
+Return ONLY valid JSON.
+"""
+
+    try:
+        ai_response, _, _ = mantle_client.converse(
+            model_id=MODEL_ID,
+            prompt=prompt,
+            max_tokens=8000,
+            temperature=0.1,
+        )
+        return _parse_pattern_json(ai_response)
+
+    except Exception as e:
+        print(f"Mantle API Error (SQP import): {str(e)}")
+        raise
+
+
 def repair_pattern_via_api(teacher_input, class_name, subject, exam_name,
                            previous_json, errors_text):
     """One repair round: resend the teacher's text, the failed JSON and the

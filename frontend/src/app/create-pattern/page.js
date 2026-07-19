@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import {
   ArrowLeft, Plus, Trash2, BookOpen, GraduationCap, Layers, Wand2, Info,
   AlertCircle, CheckCircle, FileText, Settings, MessageSquare, Layout, Type,
-  RefreshCw, Sparkles, Edit3,
+  RefreshCw, Sparkles, Edit3, FileUp, ShieldCheck,
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -279,6 +279,15 @@ export default function CreatePatternPage() {
   const [generating, setGenerating]   = useState(false);  // true while Celery task is running
   const [genPatternId, setGenPatternId] = useState(null); // id to poll
 
+  // PDF import tab
+  const [pdfFile, setPdfFile] = useState(null);
+
+  // Deep link: /create-pattern?tab=pdf opens the PDF import tab (used by the blueprints page)
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if (tab === 'pdf' || tab === 'ai') setActiveTab(tab);
+  }, []);
+
   // Compute the final pattern name for the payload
   const finalName = patternKey === 'custom' ? customName : (EXAM_DISPLAY_NAMES[patternKey] || '');
 
@@ -442,7 +451,7 @@ export default function CreatePatternPage() {
         }
         setSuccess('Pattern created successfully!');
         setTimeout(() => router.push('/patterns'), 1500);
-      } else {
+      } else if (activeTab === 'ai') {
         // AI tab — dispatch Celery task, then poll
         if (!aiPrompt.trim()) throw new Error('Add a pattern description before generating');
         const res = await apiClient.post('/patterns/generate_from_ai/', {
@@ -454,6 +463,21 @@ export default function CreatePatternPage() {
         setGenPatternId(res.data.id);
         setLoading(false);
         return; // don't fall through to the finally setLoading(false)
+      } else {
+        // PDF import tab — upload the sample paper, then poll the same way as the AI tab
+        if (!pdfFile) throw new Error('Choose a sample paper PDF to import');
+        const fd = new FormData();
+        fd.append('file', pdfFile);
+        fd.append('name', finalName);
+        fd.append('class_name', className);
+        fd.append('subject', subject);
+        const res = await apiClient.post('/patterns/import-from-pdf/', fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        setGenerating(true);
+        setGenPatternId(res.data.id);
+        setLoading(false);
+        return;
       }
     } catch (err) {
       setError(err.message || err.response?.data?.error || err.response?.data?.detail || 'Failed to create pattern');
@@ -493,7 +517,7 @@ export default function CreatePatternPage() {
             <h2 className="text-lg font-black text-gray-900 uppercase tracking-tight">Create New Exam Pattern</h2>
           </div>
           <div className="flex bg-gray-100 p-1 rounded-2xl">
-            {[{ key: 'manual', icon: Layout, label: 'Manual Pattern' }, { key: 'ai', icon: Wand2, label: 'AI Pattern' }].map(t => (
+            {[{ key: 'manual', icon: Layout, label: 'Manual Pattern' }, { key: 'ai', icon: Wand2, label: 'AI Pattern' }, { key: 'pdf', icon: FileUp, label: 'Import PDF' }].map(t => (
               <button
                 key={t.key}
                 onClick={() => setActiveTab(t.key)}
@@ -812,7 +836,7 @@ export default function CreatePatternPage() {
                 )}
               </div>
             </div>
-          ) : (
+          ) : activeTab === 'ai' ? (
             /* AI tab */
             <div className="mb-12">
               <div className="flex items-center justify-between mb-4">
@@ -914,6 +938,63 @@ export default function CreatePatternPage() {
                 </span>
               </div>
             </div>
+          ) : (
+            /* PDF import tab */
+            <div className="mb-12">
+              <div className="flex items-center gap-2 mb-6">
+                <FileUp size={16} className="text-blue-500" />
+                <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest">Step 2: Upload Sample Paper PDF</h3>
+              </div>
+
+              <label
+                htmlFor="pattern-pdf-input"
+                className={`flex flex-col items-center justify-center gap-4 py-16 px-8 rounded-[40px] border-2 border-dashed cursor-pointer transition-all ${
+                  pdfFile ? 'border-emerald-300 bg-emerald-50/50' : 'border-gray-200 bg-gray-50/50 hover:border-blue-300 hover:bg-blue-50/30'
+                }`}
+              >
+                <div className={`w-16 h-16 rounded-3xl shadow-sm flex items-center justify-center ${pdfFile ? 'bg-emerald-100' : 'bg-white'}`}>
+                  {pdfFile ? <CheckCircle size={32} className="text-emerald-500" /> : <FileUp size={32} className="text-gray-300" />}
+                </div>
+                {pdfFile ? (
+                  <>
+                    <p className="font-black text-emerald-700 text-sm">{pdfFile.name}</p>
+                    <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">
+                      {(pdfFile.size / (1024 * 1024)).toFixed(1)} MB — click to choose a different file
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-black text-gray-500 text-sm">Click to choose a sample question paper (PDF)</p>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                      e.g. an official CBSE SQP or any model paper — text-based PDF, max 25 MB
+                    </p>
+                  </>
+                )}
+                <input
+                  id="pattern-pdf-input"
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  className="hidden"
+                  onChange={e => setPdfFile(e.target.files?.[0] || null)}
+                />
+              </label>
+
+              <div className="mt-6 flex items-start gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest pl-2">
+                <ShieldCheck size={14} className="text-emerald-500 mt-0.5 shrink-0" />
+                <span>
+                  The AI reads the paper and extracts its <span className="text-gray-600">structure</span> — sections,
+                  marks, question types, internal choices and word limits. It never copies the paper&apos;s
+                  actual passages or questions, so papers generated from this pattern are always new.
+                </span>
+              </div>
+              <div className="mt-3 flex items-start gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest pl-2">
+                <AlertCircle size={14} className="text-amber-500 mt-0.5 shrink-0" />
+                <span>
+                  Scanned / photographed papers are not supported — the PDF must contain selectable text.
+                  Review the extracted pattern after import and adjust anything the AI misread.
+                </span>
+              </div>
+            </div>
           )}
 
           {/* Celery generation progress bar */}
@@ -922,7 +1003,7 @@ export default function CreatePatternPage() {
               <div className="flex items-center gap-3 mb-3">
                 <div className="w-5 h-5 border-2 border-blue-400/40 border-t-blue-600 rounded-full animate-spin shrink-0" />
                 <span className="text-xs font-black text-blue-700 uppercase tracking-wide">
-                  AI is parsing your pattern description…
+                  {activeTab === 'pdf' ? 'AI is reading your sample paper and extracting its structure…' : 'AI is parsing your pattern description…'}
                 </span>
               </div>
               <div className="w-full bg-blue-100 rounded-full h-1.5 overflow-hidden">
@@ -946,7 +1027,7 @@ export default function CreatePatternPage() {
             </button>
             <button
               type="submit"
-              disabled={loading || generating || (activeTab === 'manual' && sections.length === 0)}
+              disabled={loading || generating || (activeTab === 'manual' && sections.length === 0) || (activeTab === 'pdf' && !pdfFile)}
               className="w-full md:w-auto px-10 py-4 bg-emerald-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-2xl shadow-emerald-500/20 hover:bg-emerald-700 transition-all flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50"
             >
               {loading ? (
@@ -961,8 +1042,8 @@ export default function CreatePatternPage() {
                 </>
               ) : (
                 <>
-                  {activeTab === 'manual' ? <CheckCircle size={18} /> : <Wand2 size={18} />}
-                  {activeTab === 'manual' ? 'Save Pattern' : 'Generate via AI'}
+                  {activeTab === 'manual' ? <CheckCircle size={18} /> : activeTab === 'ai' ? <Wand2 size={18} /> : <FileUp size={18} />}
+                  {activeTab === 'manual' ? 'Save Pattern' : activeTab === 'ai' ? 'Generate via AI' : 'Import from PDF'}
                 </>
               )}
             </button>

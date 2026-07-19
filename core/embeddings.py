@@ -374,10 +374,13 @@ def _scoped_chunks(cls, subj, field, school_id):
     from .models import MaterialChunk, School
     from .access import visibility_q
     # kind='summary' rows (LLM chapter summaries, core/enrichment.py) are excluded from
-    # ordinary ANN retrieval for now — they get their own retrieval path when the
-    # metadata-filtered context assembly lands (docs/CHAPTER_ENRICHMENT_PLAN.md §usage).
+    # ordinary ANN retrieval — they are injected as per-chapter grounding headers by
+    # get_section_context via get_chapter_summary, never as verbatim source chunks.
+    # garbled=True rows (extraction noise flagged by enrichment) are excluded too: symbol
+    # soup in the context only wastes prompt budget and misleads the generator.
     base = (MaterialChunk.objects.filter(class_name=cls, subject=subj, **{f"{field}__isnull": False})
-            .exclude(kind='summary'))
+            .exclude(kind='summary')
+            .exclude(garbled=True))
     school = School.objects.filter(id=school_id).first() if school_id else None
     return base.filter(visibility_q(school, visibility_field="material__visibility",
                                     school_field="school", store_field="material__vector_store"))
@@ -416,7 +419,10 @@ def query(class_name, subject, unit, query_text, n_results=5, provider='local', 
         return empty
 
     ids   = [str(r.id) for r in rows]
-    docs  = [r.content for r in rows]
+    # Prefer the enrichment-cleaned copy (noise removed, kept text verbatim) for prompt
+    # context. Verbatim extract SPANS never come from here — fetch_contiguous_span reads
+    # the original content, so printed extracts still match the book exactly.
+    docs  = [(r.content_clean or r.content) for r in rows]
     dists = [float(getattr(r, "distance", 0.0) or 0.0) for r in rows]
     metas = [{"class": cls, "subject": subj, "unit": u, "title": r.title or "",
               "type": r.material_type, "material_id": r.material_id} for r in rows]
@@ -427,6 +433,30 @@ def query(class_name, subject, unit, query_text, n_results=5, provider='local', 
     embs  = [_vec(getattr(r, field)) for r in rows]
     return {"ids": [ids], "documents": [docs], "metadatas": [metas],
             "distances": [dists], "embeddings": [embs]}
+
+
+def get_chapter_summary(class_name, subject, unit, school_id=None):
+    """The LLM chapter summary (kind='summary' row written by core/enrichment.py) for one
+    chapter, respecting material visibility. Used by get_section_context as whole-chapter
+    grounding above the chapter's retrieved chunks. Returns '' when the chapter has no
+    summary yet — enrichment is optional, generation never depends on it."""
+    from .models import MaterialChunk, School
+    from .access import visibility_q
+    if not unit:
+        return ""
+    cls, subj, u = normalize_label(class_name), normalize_label(subject), normalize_label(unit)
+    school = School.objects.filter(id=school_id).first() if school_id else None
+    try:
+        rows = list(
+            MaterialChunk.objects.filter(class_name=cls, subject=subj, kind='summary',
+                                         chapter_links__unit=u)
+            .filter(visibility_q(school, visibility_field="material__visibility",
+                                 school_field="school", store_field="material__vector_store"))
+            .values_list('content', flat=True)[:3])
+    except Exception as e:
+        print(f"[Embeddings] chapter summary lookup failed for {cls}/{subj}/{u}: {e}")
+        return ""
+    return max(rows, key=len).strip() if rows else ""
 
 
 def fetch_contiguous_span(chunk_id, before=1, after=4, max_chars=3500):

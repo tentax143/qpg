@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import apiClient from '@/lib/api';
-import { Plus, Trash2, Edit2, ToggleLeft, ToggleRight, X } from 'lucide-react';
+import { Plus, Trash2, Edit2, ToggleLeft, ToggleRight, X, CreditCard } from 'lucide-react';
 
 export default function NotificationsPage() {
   const router = useRouter();
@@ -20,6 +20,7 @@ export default function NotificationsPage() {
     school_ids: [],
   });
   const [submitting, setSubmitting] = useState(false);
+  const [billingUpdatingId, setBillingUpdatingId] = useState(null);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || 'null');
@@ -102,6 +103,24 @@ export default function NotificationsPage() {
       } catch (e) {
         alert(e.response?.data?.error || 'Failed to delete notification');
       }
+    }
+  }
+
+  async function handleBillingToggle(school) {
+    const turningOn = !school.billing_period_over;
+    if (turningOn && !confirm(`Mark the billing period as OVER for "${school.name}"? All its users will see a billing notice and generation will be blocked.`)) {
+      return;
+    }
+    setBillingUpdatingId(school.id);
+    try {
+      await apiClient.patch(`/admin/schools/${school.id}/`, {
+        billing_period_over: turningOn,
+      });
+      await fetchSchools();
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to update billing status');
+    } finally {
+      setBillingUpdatingId(null);
     }
   }
 
@@ -228,6 +247,53 @@ export default function NotificationsPage() {
                     </button>
                   </div>
                 </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* School billing status */}
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+          <CreditCard className="w-4 h-4 text-slate-500" />
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900">School Billing</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Mark a school&apos;s billing period as over — its users see a billing notice on login and all generation is blocked until it is cleared.
+            </p>
+          </div>
+        </div>
+        {schools.length === 0 ? (
+          <div className="px-5 py-8 text-center text-sm text-slate-400">No schools available</div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {schools.map(school => (
+              <div key={school.id} className="px-5 py-3 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm text-slate-900 truncate">{school.name}</span>
+                  <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium flex-shrink-0 ${
+                    school.billing_period_over ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'
+                  }`}>
+                    {school.billing_period_over ? 'Billing period over' : 'Active'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleBillingToggle(school)}
+                  disabled={billingUpdatingId === school.id}
+                  className={`p-1.5 rounded-lg transition-colors disabled:opacity-50 ${
+                    school.billing_period_over
+                      ? 'text-red-600 hover:bg-red-50'
+                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                  title={school.billing_period_over ? 'Reactivate (billing period no longer over)' : 'Mark billing period as over'}
+                >
+                  {school.billing_period_over ? (
+                    <ToggleRight className="w-5 h-5" />
+                  ) : (
+                    <ToggleLeft className="w-5 h-5" />
+                  )}
+                </button>
               </div>
             ))}
           </div>

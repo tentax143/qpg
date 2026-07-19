@@ -3624,7 +3624,16 @@ def _chapter_weight(subject: str, chapter: str) -> int:
 
 
 def get_section_context(class_name: str, subject: str, chapters: list, query_hints: list, max_chars: int = 8000, school_id=None) -> str:
-    all_docs = []
+    """Assemble the section's source-material context with a PER-CHAPTER share of the
+    character window, each chapter headed by its LLM chapter summary (enrichment) when
+    one exists.
+
+    The old implementation appended docs chapter-by-chapter and then truncated the TAIL
+    (`context[:max_chars]`) — the first chapter alone usually overflowed the window, so
+    every later chapter got ZERO representation and the prompt's demanded chapter
+    distribution was unsatisfiable (the same-unit clustering defect,
+    docs/CHAPTER_ENRICHMENT_PLAN.md). Budgets are enforced BEFORE concatenation, so every
+    chapter that returned anything is guaranteed a proportional slice."""
     seen: set = set()
 
     # When no chapters specified (e.g. One Mark Test), query across all ingested content
@@ -3637,9 +3646,11 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
     # Base pool: 48 chunks across all chapters; each chapter gets a share proportional to its CBSE marks weight
     base_pool = max(48, 12 * len(query_units))
 
+    docs_by_unit: dict = {}
     for chapter in query_units:
         weight = chapter_weights[chapter]
         n_results = max(4, round(base_pool * weight / total_weight))
+        unit_docs = docs_by_unit.setdefault(chapter, [])
         for query in query_hints[:5]:
             try:
                 results = embeddings.query(
@@ -3656,12 +3667,52 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
                         for doc in docs:
                             if doc and doc not in seen:
                                 seen.add(doc)
-                                all_docs.append(doc)
+                                unit_docs.append(doc)
             except Exception as e:
                 print(f"[Section-Context] query failed chapter='{chapter}' q='{query}': {e}")
 
-    context = "\n\n".join(all_docs)
-    return context[:max_chars]
+    # Chapters that returned nothing are dropped and their budget share redistributed.
+    live_units = [ch for ch in query_units if docs_by_unit.get(ch)]
+    if not live_units:
+        return ""
+    live_weight = sum(chapter_weights[ch] for ch in live_units) or 1
+
+    blocks = []
+    for chapter in live_units:
+        if len(live_units) == 1:
+            budget = max_chars
+        else:
+            # Weight-proportional slice, floored so even the lightest chapter fits its
+            # header plus a meaningful piece of one chunk.
+            budget = max(min(900, max_chars // len(live_units) + 500),
+                         int(max_chars * chapter_weights[chapter] / live_weight))
+        parts = []
+        if chapter:
+            header = f"=== CHAPTER: {chapter} ==="
+            summary = embeddings.get_chapter_summary(class_name, subject, chapter, school_id=school_id)
+            if summary:
+                header += f"\n[About this chapter: {summary[:400]}]"
+            parts.append(header)
+        used = sum(len(p) for p in parts)
+        added = 0
+        for doc in docs_by_unit[chapter]:
+            if not added:
+                # Always represent the chapter with at least one (possibly trimmed) chunk.
+                room = max(400, budget - used)
+                parts.append(doc[:room])
+                used += min(len(doc), room)
+            elif used + len(doc) + 2 > budget:
+                break
+            else:
+                parts.append(doc)
+                used += len(doc) + 2
+            added += 1
+        blocks.append("\n\n".join(parts))
+
+    context = "\n\n".join(blocks)
+    # Budgets already keep the total ≈ max_chars; the slack tolerates header/floor
+    # overflow on many-chapter papers without re-introducing tail starvation.
+    return context[:int(max_chars * 1.25)]
 
 
 def _extract_span_chars(instruction: str) -> int:
@@ -3674,18 +3725,183 @@ def _extract_span_chars(instruction: str) -> int:
     return max(1200, min(5000, int(int(m.group(1)) * 6.5) + 600))
 
 
+# Kind signals for extract routing — matched against slot format/condition/alternatives,
+# the section name and the pattern's extract_instruction. Latin keywords use word
+# boundaries so ordinary pattern prose can't misfire ('verse' must not match 'diverse',
+# 'play' must not match 'plays with words'); \bpoem (no closing boundary) still catches
+# 'poems'. Tamil/Devanagari keep substring matching — agglutinative suffixes make word
+# boundaries useless there. Deliberately NO generic-noun signals (e.g. the NCERT reader
+# "Moments" — the bare word is far too common to mean the book).
+_EXTRACT_KIND_PATTERNS = {
+    "poem": (r"\bpoem", r"\bpoetry\b", r"\bverse\b", r"\bstanza"),
+    "prose": (r"\bprose\b",),
+    "drama": (r"\bdrama", r"\bplay\b"),
+    "supplementary": (r"\bsupplementary\b", r"\bfootprints\b", r"\bsanchayan\b"),
+}
+_EXTRACT_KIND_SUBSTRINGS = {
+    "poem": ("கவிதை", "செய்யுள்", "कविता", "पद्य"),
+    "prose": ("உரைநடை", "गद्य"),
+    "drama": ("நாடக", "नाटक"),
+    "supplementary": ("துணைப்பாட",),
+}
+
+
+def _kind_signals(blob: str) -> set:
+    """Chapter kinds explicitly signaled in a piece of pattern text."""
+    blob = (blob or "").lower()
+    found = set()
+    for kind, patterns in _EXTRACT_KIND_PATTERNS.items():
+        if any(re.search(p, blob) for p in patterns) or \
+                any(s in blob for s in _EXTRACT_KIND_SUBSTRINGS.get(kind, ())):
+            found.add(kind)
+    return found
+
+
+def _extract_kinds_wanted(sec_slots: list, sec_data: dict, sec_name: str = "") -> set:
+    """Which chapter kinds the section's extract slots explicitly ask for (e.g. the CBSE
+    English paper's separate PROSE and POETRY extract questions). Empty set = pattern
+    doesn't say — no routing."""
+    text_bits = [str(sec_name or ""), str(sec_data.get("extract_instruction") or "")]
+    for sl in sec_slots or []:
+        if str(sl.get("type") or "") != "extract":
+            continue
+        text_bits += [str(sl.get("format") or ""), str(sl.get("condition") or ""),
+                      " ".join(str(a) for a in (sl.get("alternatives") or []))]
+    return _kind_signals(" ".join(text_bits))
+
+
+def _slot_extract_kind(sl: dict) -> str:
+    """The ONE kind this extract slot asks for ('' = unconstrained/ambiguous)."""
+    sigs = _kind_signals(" ".join([str(sl.get("format") or ""), str(sl.get("condition") or ""),
+                                   " ".join(str(a) for a in (sl.get("alternatives") or []))]))
+    return next(iter(sigs)) if len(sigs) == 1 else ""
+
+
+def _extract_kind_needs(sec_slots: list) -> list:
+    """One entry per PRINTED extract passage the section needs: an internal-choice
+    extract slot prints TWO alternatives, so it needs two passages of its kind.
+    Returns e.g. ['', '', 'poem', 'poem'] for a prose-unsignaled Q6 + poetry Q7."""
+    needs = []
+    for sl in sec_slots or []:
+        if str(sl.get("type") or "") != "extract":
+            continue
+        k = _slot_extract_kind(sl)
+        needs += [k] * (2 if str(sl.get("choice") or "") == "internal" else 1)
+    return needs
+
+
+def _chapters_for_extract_needs(class_name: str, subject: str, chapters: list,
+                                kind_needs: list) -> list:
+    """Pick one chapter per needed printed extract, honoring each slot's kind signal
+    where ChapterInfo data exists. Unsignaled needs take the earliest chapter that is
+    NOT of a kind some other slot explicitly asked for (so tagging only Q7 as poetry
+    cannot starve Q6's prose alternatives). Fail-open: no classification data → the
+    original order is untouched. Leftover chapters are appended for headroom."""
+    if not chapters:
+        return []
+    if not kind_needs or not any(kind_needs):
+        return list(chapters)
+    from .models import ChapterInfo
+    from .embeddings import normalize_label
+    cls, subj = normalize_label(class_name), normalize_label(subject)
+    norm_of = {ch: normalize_label(ch) for ch in chapters}
+    try:
+        kind_of = dict(ChapterInfo.objects.filter(class_name=cls, subject=subj,
+                                                  unit__in=list(norm_of.values()))
+                       .exclude(kind='').values_list('unit', 'kind'))
+    except Exception as e:
+        print(f"[Extract-Route] ChapterInfo lookup failed: {e}")
+        return list(chapters)
+    if not kind_of:
+        return list(chapters)
+
+    remaining = list(chapters)
+    picked = []
+    for need in kind_needs:
+        cand = None
+        if need:
+            cand = next((ch for ch in remaining if kind_of.get(norm_of[ch]) == need), None)
+        if cand is None:
+            reserved = {k for k in kind_needs if k and k != need}
+            cand = next((ch for ch in remaining if kind_of.get(norm_of[ch]) not in reserved),
+                        remaining[0] if remaining else None)
+        if cand is not None:
+            picked.append(cand)
+            remaining.remove(cand)
+    if picked:
+        print(f"[Extract-Route] needs {kind_needs} → chapters {picked}")
+    return picked + remaining
+
+
+def _looks_like_verse(text: str) -> bool:
+    """Shape test for poetry: mostly short lines. PDF prose extracts with hard line
+    breaks run ~60-90 chars/line; poem lines run ~15-45."""
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    if len(lines) < 4:
+        return False
+    short = sum(1 for l in lines if len(l) <= 48)
+    return short / len(lines) >= 0.7
+
+
+def _verse_passages(class_name: str, subject: str, chapters: list, school_id,
+                    want: int, existing: list) -> list:
+    """Poem passages for poetry-extract slots when NO poem-classified chapter can supply
+    them: NCERT language readers interleave poems INSIDE prose chapters (Class 10 First
+    Flight has no separate poem chapters at all), so chapter-kind routing has nothing to
+    route to. Hunt verse-SHAPED chunks by similarity across the section's chapters
+    instead — a single ~1000-char chunk holds a complete short poem or stanza, which is
+    exactly what a CBSE poetry extract quotes."""
+    out = []
+    for chapter in (chapters or [None]):
+        if len(out) >= want:
+            break
+        try:
+            res = embeddings.query(class_name=class_name, subject=subject, unit=chapter,
+                                   query_text=f"{subject} poem stanza verse rhyme lines",
+                                   n_results=3, school_id=school_id)
+        except Exception as e:
+            print(f"[Verse-Hunt] query failed chapter='{chapter}': {e}")
+            continue
+        for doc in (res.get("documents") or [[]])[0]:
+            if len(out) >= want:
+                break
+            if doc and _looks_like_verse(doc) and \
+                    not any(doc in e or e in doc
+                            for e in existing + [o["text"] for o in out]):
+                out.append({"chapter": chapter or "", "kind": "poem", "text": doc.strip()})
+    if out:
+        print(f"[Verse-Hunt] found {len(out)} verse passage(s) inside prose chapters")
+    return out
+
+
 def get_extract_spans(class_name: str, subject: str, chapters: list, school_id=None,
                       span_chars: int = 3500, max_spans: int = 3) -> list:
-    """Continuous narrative passages for literature-extract slots.
+    """Continuous narrative passages for literature-extract slots, each labeled with its
+    chapter and kind: [{'chapter', 'kind', 'text'}].
 
     Retrieval returns isolated ~1000-char chunks in similarity order, so the section
     context never contains an unbroken passage longer than ~170 words — an extract slot
     whose pattern demands "approximately 500 words" could not be quoted verbatim at all
     (the stitched-extract validator rightly rejects quotes spliced across fragments).
     Seed one narrative chunk per chapter and extend it with its physical neighbours
-    (embeddings.fetch_contiguous_span) into one printed-order span each."""
+    (embeddings.fetch_contiguous_span) into one printed-order span each. The chapter/
+    kind labels let the prompt bind a poetry-extract slot to a POEM passage."""
     spans = []
     hint = f"{subject} story prose poem narrative dialogue lines"
+
+    kind_of, norm_of = {}, {}
+    try:
+        from .models import ChapterInfo
+        from .embeddings import normalize_label
+        norm_of = {ch: normalize_label(ch) for ch in (chapters or []) if ch}
+        if norm_of:
+            kind_of = dict(ChapterInfo.objects.filter(class_name=normalize_label(class_name),
+                                                      subject=normalize_label(subject),
+                                                      unit__in=list(norm_of.values()))
+                           .exclude(kind='').values_list('unit', 'kind'))
+    except Exception:
+        pass   # labels are best-effort — spans work fine without them
+
     for chapter in (chapters or [None])[:max_spans]:
         try:
             res = embeddings.query(class_name=class_name, subject=subject, unit=chapter,
@@ -3700,8 +3916,10 @@ def get_extract_spans(class_name: str, subject: str, chapters: list, school_id=N
             except Exception as e:
                 print(f"[Extract-Spans] span fetch failed id={cid}: {e}")
                 continue
-            if span and not any(span in s or s in span for s in spans):
-                spans.append(span)
+            if span and not any(span in s["text"] or s["text"] in span for s in spans):
+                spans.append({"chapter": chapter or "",
+                              "kind": kind_of.get(norm_of.get(chapter, ""), "") if chapter else "",
+                              "text": span})
     return spans[:max_spans]
 
 
@@ -4002,17 +4220,53 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
         # longer that the model improvises.
         if any(str(sl.get("type") or "") == "extract" for sl in _sec_slots):
             _span_chars = _extract_span_chars(sec_data.get("extract_instruction"))
-            spans = get_extract_spans(class_name, effective_subject, sec_chapters,
-                                      school_id=school_id, span_chars=_span_chars)
+            # Kind-aware routing (ChapterInfo): one passage per PRINTED alternative (an
+            # internal-choice extract slot prints two), each slot's kind honored — a
+            # poetry-extract slot draws from poem chapters, prose from prose, and
+            # unsignaled slots keep non-reserved chapters. Fail open throughout.
+            _kind_needs = _extract_kind_needs(_sec_slots)
+            _span_chapters = _chapters_for_extract_needs(
+                class_name, effective_subject, sec_chapters, _kind_needs)
+            spans = get_extract_spans(class_name, effective_subject, _span_chapters,
+                                      school_id=school_id, span_chars=_span_chars,
+                                      max_spans=max(3, min(6, len(_kind_needs) or 3)))
+            # Poetry shortfall: when poem passages are demanded but no poem CHAPTER could
+            # supply them (poems live inside prose chapters in most NCERT readers), hunt
+            # verse-shaped chunks directly.
+            _poem_short = (sum(1 for k in _kind_needs if k == "poem")
+                           - sum(1 for sp in spans if sp.get("kind") == "poem"))
+            if _poem_short > 0:
+                spans += _verse_passages(class_name, effective_subject, sec_chapters,
+                                         school_id, _poem_short,
+                                         [sp["text"] for sp in spans])
             if spans:
-                block = "\n\n".join(
-                    f"[CONTINUOUS PASSAGE {i} — one unbroken excerpt exactly as printed; "
-                    f"quote each extract from inside a single block]\n{sp}\n[END OF PASSAGE {i}]"
-                    for i, sp in enumerate(spans, 1)
-                )
+                def _passage_label(i, sp):
+                    kind_tag = f" — {sp['kind'].upper()}" if sp.get("kind") else ""
+                    ch = sp.get("chapter") or ""
+                    ch_tag = f" from chapter '{ch}'" if ch else ""
+                    return (f"[CONTINUOUS PASSAGE {i}{kind_tag}{ch_tag} — one unbroken "
+                            f"excerpt exactly as printed; quote each extract from inside "
+                            f"a single block]\n{sp['text']}\n[END OF PASSAGE {i}]")
+                block = "\n\n".join(_passage_label(i, sp) for i, sp in enumerate(spans, 1))
+                rules = []
+                if any(_kind_needs):
+                    rules.append("EXTRACT KIND RULE — MANDATORY: a slot whose format/condition "
+                                 "asks for a POETRY extract must quote ONLY from a passage "
+                                 "marked POEM (both OR alternatives); a PROSE extract only from "
+                                 "PROSE/SUPPLEMENTARY passages; a DRAMA extract only from DRAMA "
+                                 "passages. Never quote the SAME passage in two different "
+                                 "questions or alternatives.")
+                if any(sp.get("kind") == "poem" for sp in spans):
+                    rules.append("POEM FORMATTING — MANDATORY: when quoting a poem into "
+                                 "source_text, copy its LINE BREAKS exactly as printed — one "
+                                 "verse line per line (use \\n between lines). Never join "
+                                 "verse lines into one running paragraph.")
+                if rules:
+                    block = "\n".join(rules) + "\n\n" + block
                 ctx = f"{block}\n\n{ctx}"
                 print(f"[Extract-Spans] '{sec_name}': +{len(spans)} contiguous spans "
-                      f"({len(block)} chars, target {_span_chars}/span)")
+                      f"(kinds {[sp.get('kind') or '?' for sp in spans]}, "
+                      f"{len(block)} chars, target {_span_chars}/span)")
 
         context_map[sec_name] = ctx
         print(f"[Section-Context] '{sec_name}' (subject={effective_subject}): {len(ctx)} chars")

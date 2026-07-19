@@ -9,6 +9,8 @@ Key rotation: two keys from .env are round-robined automatically.
 import os
 import time
 import random
+import threading
+
 import requests
 
 
@@ -20,6 +22,7 @@ GEN_MODEL = "deepseek.v3.2"           # primary — large, instruction-following
 VAL_MODEL = "qwen.qwen3-32b"          # secondary — fast, accurate
 
 _key_index = 0
+_key_lock = threading.Lock()   # converse() is now called from thread pools — keep rotation atomic
 
 
 def _get_keys():
@@ -34,6 +37,12 @@ def _get_keys():
     return keys
 
 
+def num_keys():
+    """How many Mantle API keys are configured — used to size parallel call pools
+    (e.g. chunk enrichment runs N threads per key)."""
+    return len(_get_keys())
+
+
 def _next_key():
     global _key_index
     keys = _get_keys()
@@ -42,8 +51,9 @@ def _next_key():
             "No Mantle API keys found. Set MANTLE_API_KEYS or "
             "LLM_API_1_MANTLE_KEY / LLM_API_2_MANTLE_KEY in .env"
         )
-    key = keys[_key_index % len(keys)]
-    _key_index += 1
+    with _key_lock:
+        key = keys[_key_index % len(keys)]
+        _key_index += 1
     return key
 
 

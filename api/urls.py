@@ -38,6 +38,8 @@ from .admin_views import (
     cbse_patterns_list,
     enrichment_stats,
     enrichment_run,
+    enrichment_stop,
+    enrichment_classify,
     enrichment_coverage,
     enrichment_unit_detail,
     notifications_manage,
@@ -101,6 +103,8 @@ urlpatterns = [
     # SuperAdmin — chunk enrichment (LLM metadata labeling)
     path('admin/enrichment/stats/', enrichment_stats, name='api_enrichment_stats'),
     path('admin/enrichment/run/', enrichment_run, name='api_enrichment_run'),
+    path('admin/enrichment/stop/', enrichment_stop, name='api_enrichment_stop'),
+    path('admin/enrichment/classify/', enrichment_classify, name='api_enrichment_classify'),
     path('admin/enrichment/coverage/', enrichment_coverage, name='api_enrichment_coverage'),
     path('admin/enrichment/unit/', enrichment_unit_detail, name='api_enrichment_unit_detail'),
 

@@ -130,9 +130,14 @@ labels, and turn retrieval steering into hard DB filters.**
   questions removed, kept text verbatim, original `content` never mutated; empty =
   already clean). New `EnrichmentRun` model = durable backfill progress row
   (status/counters/tokens/cost/error_samples). `UsageEvent` gained kind `enrichment`.
-- **Taxonomy widened for all subjects (2026-07-15, user request):** prose | poem |
-  grammar (languages) + concept | example | activity (science/maths/social) +
-  exercise | supplementary | intro | other. Still a CLOSED enum.
+- **Taxonomy REMOVED (2026-07-15, user decision after seeing first results):** the
+  content-kind classification (prose/poem/…/exercise) is NOT what the user wanted the
+  pipeline to do. Enrichment now stores ONLY: chapter attribution (unit link) + class +
+  subject (already on the row) + chapter summary + actual content (`content_clean` for
+  noisy chunks) + `garbled` flag. `content_kinds`/`language` columns remain as legacy
+  (summary rows still use content_kinds=["summary"]); re-runs wipe old taxonomy values.
+  Retrieval phase should NOT plan on kind filters — use chapter links, summaries and
+  content_clean instead.
 - **`core/enrichment.py`:** `enrich_material(material_id, force)` — batches a
   material's body chunks (≤24k chars/call), one GEN_MODEL call per batch at temp 0.0,
   ids `c0..cN` validated against input (hallucinated ids/enums dropped, fail open),

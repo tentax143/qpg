@@ -3,6 +3,7 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly, AllowAny
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import MultiPartParser, FormParser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -105,6 +106,20 @@ def _budget_blocked(user):
     return None
 
 
+def _billing_blocked(user):
+    """Hard guard on every AI-generation action: when the superadmin has marked the user's
+    school's billing period as over, return a refusal Response (402 — deliberately NOT 403,
+    which the frontend interceptor treats as an auth failure and logs the user out), else None."""
+    school = _get_school(user)
+    if school and school.billing_period_over:
+        return Response(
+            {'error': 'The billing period of your school is over. Please contact the admin.',
+             'billing_over': True},
+            status=status.HTTP_402_PAYMENT_REQUIRED,
+        )
+    return None
+
+
 def _has_active_generation(user, exclude_id=None):
     """True if the user already has a paper occupying (or about to occupy) a Celery worker: status
     'generating', or 'queued' with a task_id already dispatched. A 'queued' paper WITHOUT a task_id is
@@ -112,6 +127,8 @@ def _has_active_generation(user, exclude_id=None):
     as 'queued') rather than dispatched; the per-user serial queue promotes it when the active one ends.
     `exclude_id` skips the paper being retried/regenerated so it doesn't see itself as active."""
     from django.db.models import Q
+    from core.tasks import reap_stale_papers
+    reap_stale_papers(user.id)   # a dead generation must not hold the slot forever
     qs = QuestionPaper.objects.filter(created_by=user).filter(
         Q(status='generating') | (Q(status='queued') & ~(Q(task_id__isnull=True) | Q(task_id='')))
     )
@@ -435,6 +452,10 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         """Queue AI pattern generation as a Celery task. Returns 202 immediately."""
         from core.tasks import generate_pattern_task
 
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
+
         class_name    = request.data.get("class_name", "")
         subject       = request.data.get("subject", "")
         pattern_name  = request.data.get("name", "")
@@ -454,6 +475,80 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
             total_questions=0,
             pattern_source='ai_generated',
             ai_prompt=teacher_input,
+            status='queued',
+            created_by=request.user,
+        )
+
+        task = generate_pattern_task.delay(pattern.id)
+        pattern.task_id = task.id
+        pattern.save(update_fields=['task_id'])
+
+        return Response(
+            {'id': pattern.id, 'task_id': task.id, 'status': 'queued'},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=False, methods=['post'], url_path='import-from-pdf',
+            parser_classes=[MultiPartParser, FormParser])
+    def import_from_pdf(self, request):
+        """Create a pattern from an uploaded sample-paper PDF (e.g. a CBSE SQP): extract
+        the PDF's text here (so scanned PDFs fail fast with a clear error), then queue
+        the LLM schema extraction as a Celery task. Returns 202 with the pattern id —
+        same polling contract as generate_from_ai."""
+        from core.tasks import generate_pattern_task
+        from core.material_intel import extract_pages_text
+        from api.ai_service import SQP_MAX_CHARS
+
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
+
+        upload = request.FILES.get('file')
+        class_name   = request.data.get('class_name', '')
+        subject      = request.data.get('subject', '')
+        pattern_name = request.data.get('name', '')
+
+        if not upload:
+            return Response({"error": "Upload a PDF file in the 'file' field."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if os.path.splitext(upload.name or '')[1].lower() != '.pdf':
+            return Response({"error": "Only PDF files are supported for pattern import."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if upload.size > 25 * 1024 * 1024:
+            return Response({"error": "PDF too large (max 25 MB)."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # extract_pages_text needs a filesystem path — stage the upload in a temp file.
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                for chunk in upload.chunks():
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+            sqp_text = extract_pages_text(tmp_path, max_chars=SQP_MAX_CHARS)
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        if len((sqp_text or '').strip()) < 200:
+            return Response(
+                {"error": "No readable text found in this PDF — it looks like a scanned or "
+                          "image-based paper. Upload a text-based PDF."},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        pattern = ExamPattern.objects.create(
+            name=pattern_name or f"Imported Pattern — {subject} {class_name}".strip(),
+            description=f"Structure extracted from uploaded paper: {upload.name}",
+            subject=subject,
+            class_name=class_name,
+            sections=[],
+            total_marks=0,
+            total_questions=0,
+            pattern_source='imported',
+            ai_prompt=sqp_text,   # generate_pattern_task reads the SQP text from here
             status='queued',
             created_by=request.user,
         )
@@ -487,9 +582,13 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         """Re-queue AI generation from an updated prompt. Returns 202."""
         from core.tasks import generate_pattern_task
 
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
+
         pattern = self.get_object()
-        if pattern.pattern_source != 'ai_generated':
-            return Response({"error": "Only AI-generated patterns can be regenerated"}, status=status.HTTP_400_BAD_REQUEST)
+        if pattern.pattern_source not in ('ai_generated', 'imported'):
+            return Response({"error": "Only AI-generated or PDF-imported patterns can be regenerated"}, status=status.HTTP_400_BAD_REQUEST)
 
         new_prompt = request.data.get("ai_prompt")
         if not new_prompt:
@@ -517,6 +616,10 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         queued/generating. Returns 202 with per-bucket counts."""
         from django.db.models import Q
         from core.tasks import generate_pattern_task
+
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
 
         qs = self.get_queryset()
         ids = request.data.get('ids')
@@ -614,6 +717,10 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         Handles both logic and legacy core processing flow via API.
         """
         try:
+            billing = _billing_blocked(request.user)
+            if billing:
+                return billing
+
             # Budget guard — refuse before creating the paper or queuing work. (Concurrency is no
             # longer refused: a second request is queued behind the active one — see below.)
             blocked = _budget_blocked(request.user)
@@ -747,6 +854,31 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             'cost': str(paper.cost) if paper.cost else None,
         })
 
+    def destroy(self, request, *args, **kwargs):
+        """Deleting a queued/generating paper must behave like a cancel first: revoke its
+        Celery task and free the owner's serial slot by promoting their next waiting
+        paper. Without this, deleting an active paper left its slot occupied forever and
+        every later paper sat 'queued' with no task (production defect, 2026-07-16)."""
+        paper = self.get_object()
+        owner_id = paper.created_by_id
+        was_active = paper.status in ('queued', 'generating')
+        task_id = paper.task_id
+
+        response = super().destroy(request, *args, **kwargs)
+
+        if was_active:
+            if task_id:
+                try:
+                    from celery import current_app
+                    current_app.control.revoke(task_id, terminate=True, signal='SIGTERM')
+                except Exception as _e:
+                    print(f"[Delete] revoke failed for task {task_id}: {_e}")
+            try:
+                dispatch_next_queued_paper(owner_id)
+            except Exception as _dq:
+                print(f"[Delete] dispatch_next_queued failed: {_dq}")
+        return response
+
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
         """Cancel a question paper generation task"""
@@ -793,6 +925,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                         current_app.control.revoke(paper.task_id, terminate=True, signal='SIGTERM')
                     except Exception as _e:
                         print(f"[Retry] revoke of stale task {paper.task_id} failed: {_e}")
+                billing = _billing_blocked(request.user)
+                if billing:
+                    return billing
                 blocked = _budget_blocked(request.user)
                 if blocked:
                     return Response({'error': blocked}, status=status.HTTP_429_TOO_MANY_REQUESTS)
@@ -822,6 +957,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         paper = self.get_object()
         if not _can_modify_paper(request.user, paper):
             return Response({'error': 'Not authorized to regenerate this paper'}, status=status.HTTP_403_FORBIDDEN)
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
         if paper.status == 'generating':
             return Response({'error': 'Generation already in progress for this paper'}, status=status.HTTP_400_BAD_REQUEST)
         if not paper.pattern:
@@ -1021,6 +1159,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         paper = self.get_object()
         if not _can_modify_paper(request.user, paper):
             return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
 
         content     = request.data.get('content', '').strip()
         instruction = request.data.get('instruction', '').strip()
@@ -1128,6 +1269,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         paper = self.get_object()
         if not _can_modify_paper(request.user, paper):
             return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
         instruction = (request.data.get('instruction') or '').strip()
         if not instruction:
             return Response({'error': 'No instruction provided'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1284,6 +1428,9 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
 
         if not _can_modify_paper(request.user, paper):
             return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
         if paper.status != 'done':
             return Response({'error': 'The paper is still generating — try again once it is done.'},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -1490,6 +1637,13 @@ class MaterialViewSet(viewsets.ModelViewSet):
             from core.access import visibility_q
             return base.filter(visibility_q(school))   # own ∪ shared(if granted) ∪ institutional
         return base.filter(uploaded_by=user)
+
+    def create(self, request, *args, **kwargs):
+        # Uploads queue embedding/enrichment work, so they count as generation for billing.
+        billing = _billing_blocked(request.user)
+        if billing:
+            return billing
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         # Superadmin uploads populate the global shared store (school=None, visibility=shared);

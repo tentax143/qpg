@@ -4,6 +4,7 @@ from . import generator, embeddings
 from django.conf import settings
 from django.db.models import F
 import os
+import threading as _threading
 
 
 def _fill_section_counts(sections):
@@ -52,8 +53,10 @@ def _fill_section_counts(sections):
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=60)
 def generate_pattern_task(self, pattern_id):
-    """Parse teacher's text prompt into structured pattern sections via AI. Runs in Celery worker."""
-    from api.ai_service import generate_pattern_via_api
+    """Parse the pattern's ai_prompt into structured sections via AI. For 'ai_generated'
+    patterns the prompt is the teacher's description; for 'imported' ones it is the full
+    text of an uploaded sample paper PDF. Runs in Celery worker."""
+    from api.ai_service import generate_pattern_via_api, extract_pattern_from_sqp_via_api
 
     try:
         pattern = ExamPattern.objects.get(id=pattern_id)
@@ -69,12 +72,20 @@ def generate_pattern_task(self, pattern_id):
     try:
         from . import pattern_structure
 
-        pattern_data = generate_pattern_via_api(
-            teacher_input=pattern.ai_prompt,
-            class_name=pattern.class_name,
-            subject=pattern.subject,
-            exam_name=pattern.name,
-        )
+        if pattern.pattern_source == 'imported':
+            pattern_data = extract_pattern_from_sqp_via_api(
+                sqp_text=pattern.ai_prompt,
+                class_name=pattern.class_name,
+                subject=pattern.subject,
+                exam_name=pattern.name,
+            )
+        else:
+            pattern_data = generate_pattern_via_api(
+                teacher_input=pattern.ai_prompt,
+                class_name=pattern.class_name,
+                subject=pattern.subject,
+                exam_name=pattern.name,
+            )
         sections = pattern_structure.normalize_slots(pattern_data.get('sections', []))
         errors = pattern_structure.validate_pattern_structure(
             sections, declared_total=pattern_data.get('total_marks'))
@@ -315,32 +326,56 @@ def ingest_url_task(self, class_name, subject, url, material_type="textbook",
 
 def _enqueue_enrichment(material_ids):
     """Fire-and-forget: push freshly ingested materials through the LLM chunk-enrichment
-    pipeline (core/enrichment.py). One small task per material so the solo worker stays
-    responsive; enrichment problems must never break ingestion."""
-    for mid in {m for m in (material_ids or []) if m}:
+    pipeline (core/enrichment.py). Materials are grouped to the parallel pool size so a
+    book upload's chapters enrich concurrently; enrichment problems must never break
+    ingestion."""
+    from . import enrichment
+    ids = sorted({m for m in (material_ids or []) if m})
+    size = max(1, enrichment.enrich_concurrency())
+    for i in range(0, len(ids), size):
+        group = ids[i:i + size]
         try:
-            enrich_material_task.delay(mid)
+            enrich_materials_group_task.delay(group)
         except Exception as e:
-            print(f"[Enrich] could not enqueue material {mid}: {e}")
+            print(f"[Enrich] could not enqueue materials {group}: {e}")
 
 
-@shared_task(bind=True)
-def enrich_material_task(self, material_id, run_id=None, force=False):
-    """LLM-label one material's chunks (content kind / language / per-chunk chapter /
-    garbled flag + chapter summary chunks — see core/enrichment.py). Deliberately small:
-    one material per task so a corpus backfill interleaves with paper generation on the
-    solo worker and stays far under the Celery hard time limit. Idempotent — already
-    enriched chunks are skipped unless force=True, so retries never re-bill the LLM.
+_run_error_lock = _threading.Lock()   # error_samples is read-modify-write — atomic per process
 
-    `run_id` ties the task to an EnrichmentRun row (superadmin backfill); counters are
-    updated there so the frontend polls durable DB state, not Celery's result backend."""
+
+def _enrich_one_and_record(material_id, run_id=None, force=False):
+    """Enrich ONE material and do all its bookkeeping (run gate + counters, school
+    cumulative stats, usage event, run finalization). Shared by the single-material
+    task and by each thread of the parallel group task, so stop/resume semantics and
+    progress math are identical however the material was scheduled.
+
+    Idempotent — already enriched chunks are skipped unless force=True, so retries
+    never re-bill the LLM.
+
+    Work only happens while the run is 'running'. Any other status means the run was
+    stopped, auto-failed (stale) or closed — this drains as a no-op so a zombie queue
+    (e.g. tasks that survived a Redis outage) can never race a newer run on the same
+    material and double-bill the LLM. Draining under 'stopping' is counted in
+    drained_groups; once every queued task is accounted for the run flips 'stopped'."""
     from django.utils import timezone
     from .models import EnrichmentRun, UsageEvent, Material
     from . import enrichment
 
+    run = EnrichmentRun.objects.filter(id=run_id).first() if run_id else None
+    if run and run.status != 'running':
+        if run.status == 'stopping':
+            # Count the drain so the run can flip to 'stopped' when fully accounted.
+            EnrichmentRun.objects.filter(id=run.id).update(
+                drained_groups=F('drained_groups') + 1, updated_at=timezone.now())
+            run.refresh_from_db()
+            _finalize_enrichment_run(run)
+        # Terminal statuses (stopped/done/failed): pure no-op — never touch a closed run's
+        # counters (redelivered tasks after a broker restart land here).
+        return {"material_id": material_id, "ok": True, "skipped": True, "stopped": True}
+
     ok, stats, err = True, None, None
     try:
-        stats = enrichment.enrich_material(material_id, force=force)
+        stats = enrichment.enrich_material(material_id, force=force, run_id=run_id)
     except Exception as e:
         ok = False
         err = str(e)[:300]
@@ -352,7 +387,6 @@ def enrich_material_task(self, material_id, run_id=None, force=False):
     cost = enrichment.calculate_cost(input_tokens, output_tokens) if (input_tokens or output_tokens) else 0
 
     mat = Material.objects.filter(id=material_id).first()
-    run = EnrichmentRun.objects.filter(id=run_id).first() if run_id else None
 
     if input_tokens or output_tokens:
         try:
@@ -373,9 +407,13 @@ def enrich_material_task(self, material_id, run_id=None, force=False):
 
     if run:
         try:
+            # A mid-material stop returns ok=True with stats['stopped']: the material was
+            # NOT completed (its copy stayed pending) — count it drained, not done.
+            stopped_early = bool(stats.get('stopped'))
             EnrichmentRun.objects.filter(id=run.id).update(
-                done_groups=F('done_groups') + (1 if ok else 0),
+                done_groups=F('done_groups') + (1 if ok and not stopped_early else 0),
                 failed_groups=F('failed_groups') + (0 if ok else 1),
+                drained_groups=F('drained_groups') + (1 if ok and stopped_early else 0),
                 chunks_labeled=F('chunks_labeled') + int(stats.get('chunks_labeled') or 0),
                 summaries_created=F('summaries_created') + int(stats.get('summaries_created') or 0),
                 garbled_found=F('garbled_found') + int(stats.get('garbled') or 0),
@@ -388,20 +426,169 @@ def enrich_material_task(self, material_id, run_id=None, force=False):
             errs = [str(e) for e in (stats.get('errors') or [])]
             if err:
                 errs.append(err)
-            if errs and len(run.error_samples or []) < 20:
-                run.error_samples = ((run.error_samples or []) +
-                                     [f"material {material_id}: {e}" for e in errs])[:20]
-                run.save(update_fields=['error_samples', 'updated_at'])
-            if run.status == 'running' and run.done_groups + run.failed_groups >= run.total_groups:
-                run.status = 'failed' if (run.failed_groups and not run.done_groups) else 'done'
-                run.save(update_fields=['status', 'updated_at'])
+            if errs:
+                with _run_error_lock:   # parallel group threads append concurrently
+                    run.refresh_from_db()
+                    if len(run.error_samples or []) < 20:
+                        run.error_samples = ((run.error_samples or []) +
+                                             [f"material {material_id}: {e}" for e in errs])[:20]
+                        run.save(update_fields=['error_samples', 'updated_at'])
+            _finalize_enrichment_run(run)
         except Exception as e:
             print(f"[enrich_material_task] run bookkeeping failed: {e}")
 
     return {"material_id": material_id, "ok": ok,
             "chunks_labeled": stats.get("chunks_labeled", 0),
             "summaries_created": stats.get("summaries_created", 0),
-            "skipped": stats.get("skipped", False)}
+            "skipped": stats.get("skipped", False),
+            "stopped": bool(stats.get("stopped"))}
+
+
+@shared_task(bind=True)
+def enrich_material_task(self, material_id, run_id=None, force=False):
+    """LLM-label one material's chunks (see _enrich_one_and_record). Kept as a task in
+    its own right so messages queued before a deploy (which reference this task name)
+    still execute."""
+    return _enrich_one_and_record(material_id, run_id=run_id, force=force)
+
+
+@shared_task(bind=True)
+def enrich_materials_group_task(self, material_ids, run_id=None, force=False):
+    """Enrich a small GROUP of materials concurrently — one thread per material, pool
+    sized enrichment.enrich_concurrency() (= 3 per configured Mantle API key; the
+    round-robin key rotation in mantle_client keeps ≈3 in-flight calls per key).
+
+    All bookkeeping stays PER MATERIAL via _enrich_one_and_record, so run progress,
+    billing and stop draining are identical to single-material scheduling. Groups are
+    sized to the pool, so the wall time per task ≈ the slowest single material —
+    comfortably under the Celery time limits, and paper-generation tasks still
+    interleave between groups on the solo worker."""
+    from concurrent.futures import ThreadPoolExecutor
+    from django.db import connections
+    from . import enrichment
+
+    ids = [m for m in (material_ids or []) if m]
+    if not ids:
+        return {"materials": 0}
+
+    def _one(mid):
+        try:
+            return _enrich_one_and_record(mid, run_id=run_id, force=force)
+        except Exception as e:   # a broken material must not sink its group-mates
+            print(f"[enrich_group] material {mid} crashed: {e}")
+            return {"material_id": mid, "ok": False, "stopped": False}
+        finally:
+            # Each pool thread opened its own DB connection — release it, or a long
+            # backfill leaks one connection per thread per task.
+            for conn in connections.all():
+                conn.close()
+
+    workers = min(len(ids), max(1, enrichment.enrich_concurrency()))
+    if workers == 1:
+        results = [_enrich_one_and_record(ids[0], run_id=run_id, force=force)]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_one, ids))
+
+    return {"materials": len(ids),
+            "ok": sum(1 for r in results if r.get("ok")),
+            "stopped": sum(1 for r in results if r.get("stopped"))}
+
+
+def _finalize_enrichment_run(run):
+    """Flip a run to its terminal status once every queued task has reported in
+    (done + failed + drained >= total). 'stopping' with real drains ends 'stopped';
+    'stopping' where nothing actually drained (stop clicked as the last task finished)
+    ends like a normal completion. Concurrent tasks may both call this — the flip is
+    idempotent (same terminal value)."""
+    if run.status not in ('running', 'stopping'):
+        return
+    if run.done_groups + run.failed_groups + run.drained_groups < run.total_groups:
+        return
+    if run.status == 'stopping' and run.drained_groups:
+        run.status = 'stopped'
+    else:
+        run.status = 'failed' if (run.failed_groups and not run.done_groups) else 'done'
+    run.save(update_fields=['status', 'updated_at'])
+
+
+@shared_task(bind=True)
+def classify_all_chapters_task(self, force=False, user_id=None):
+    """Backfill chapter-kind classification (ChapterInfo — ONE kind per chapter) across
+    the whole store WITHOUT re-reading chunks through the LLM: each chapter is judged
+    from its name + stored enrichment summary + one sample chunk, batched ~30 chapters
+    per call and parallelized over the enrichment call gate. Idempotent — already
+    classified chapters are skipped unless force=True. New uploads classify themselves
+    inside enrich_material; this task exists for the corpus enriched before the feature."""
+    from concurrent.futures import ThreadPoolExecutor
+    from django.contrib.auth.models import User
+    from .models import MaterialChunk, ChapterInfo, UsageEvent
+    from . import enrichment
+
+    keys = list(
+        MaterialChunk.objects.filter(kind='body', chapter_links__isnull=False)
+        .values_list('class_name', 'subject', 'chapter_links__unit').distinct())
+    done = set() if force else {
+        (c, s, u) for c, s, u in
+        ChapterInfo.objects.exclude(kind='').values_list('class_name', 'subject', 'unit')}
+
+    entries = []
+    for cls, subj, unit in keys:
+        # Kinds only exist for language subjects — Maths/Science chapters stay unbadged.
+        if not unit or (cls, subj, unit) in done or not enrichment.is_language_subject(subj):
+            continue
+        seed = (MaterialChunk.objects
+                .filter(class_name=cls, subject=subj, kind='body',
+                        chapter_links__unit=unit, garbled=False)
+                .order_by('material_id', 'chunk_index').first())
+        summary = (MaterialChunk.objects
+                   .filter(class_name=cls, subject=subj, kind='summary',
+                           chapter_links__unit=unit)
+                   .values_list('content', flat=True).first()) or ''
+        entries.append({
+            'class_name': cls, 'subject': subj, 'unit': unit, 'display': unit,
+            'material_title': (seed.title if seed else '') or '',
+            'summary': summary,
+            'sample': ((seed.content_clean or seed.content) if seed else '') or '',
+        })
+    if not entries:
+        print("[classify_chapters] nothing to classify")
+        return {'classified': 0, 'chapters': 0}
+
+    # Parallelize across batches; classify_chapter_kinds itself does no DB work, so the
+    # threads need no connection management. The enrichment call gate caps total
+    # concurrent LLM calls process-wide.
+    sublists = [entries[i:i + enrichment.CLASSIFY_BATCH]
+                for i in range(0, len(entries), enrichment.CLASSIFY_BATCH)]
+    workers = min(len(sublists), max(1, enrichment.enrich_concurrency()))
+    total_in = total_out = 0
+    kind_map = {}
+    if workers == 1:
+        results = [enrichment.classify_chapter_kinds(sl) for sl in sublists]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(enrichment.classify_chapter_kinds, sublists))
+    for km, tin, tout in results:
+        kind_map.update(km)
+        total_in += tin
+        total_out += tout
+
+    enrichment.upsert_chapter_kinds(kind_map)
+
+    if total_in or total_out:
+        cost = enrichment.calculate_cost(total_in, total_out)
+        user = User.objects.filter(id=user_id).first() if user_id else None
+        if user:
+            try:
+                UsageEvent.record(user=user, school=None, kind='enrichment',
+                                  input_tokens=total_in, output_tokens=total_out, cost=cost or 0)
+            except Exception as e:
+                print(f"[classify_chapters] usage event failed: {e}")
+
+    print(f"[classify_chapters] classified {len(kind_map)}/{len(entries)} chapters "
+          f"({total_in + total_out} tokens)")
+    return {'classified': len(kind_map), 'chapters': len(entries),
+            'input_tokens': total_in, 'output_tokens': total_out}
 
 
 @shared_task(bind=True)
@@ -418,6 +605,38 @@ def copy_shared_vectorstore_task(self, school_id):
 # A user runs ONE paper generation at a time. A request made while another is active
 # is stored as 'queued' *without* a task_id (waiting in line) instead of being refused;
 # when the active generation finishes it is promoted into a real Celery task here.
+
+# 'generating' silent past this is dead — the Celery hard time limit is 25 min, so a
+# live task cannot go 30 min without finishing (every status change bumps updated_at).
+STALE_GENERATING_SECONDS = 30 * 60
+# 'queued' + dispatched whose task never started within the broker's redelivery window
+# (Redis visibility timeout, 1 h) — the message is gone (broker restart, queue wipe).
+STALE_DISPATCHED_SECONDS = 65 * 60
+
+
+def reap_stale_papers(user_id):
+    """Auto-fail this user's DEAD generations so a ghost row can never hold the per-user
+    serial slot forever (a 'queued'+dispatched paper whose Celery task evaporated in a
+    worker/Redis restart used to wedge every later paper as eternally 'waiting').
+    A 'queued' paper without a task_id is only waiting in line — never reaped."""
+    from django.utils import timezone
+    now = timezone.now()
+    reaped = []
+    for p in QuestionPaper.objects.filter(created_by_id=user_id,
+                                          status__in=['queued', 'generating']):
+        if p.status == 'queued' and not p.task_id:
+            continue
+        window = STALE_GENERATING_SECONDS if p.status == 'generating' else STALE_DISPATCHED_SECONDS
+        if (now - p.updated_at).total_seconds() > window:
+            p.status = 'failed'
+            p.status_detail = ('Generation was lost in a worker/broker restart — auto-failed '
+                               'to free your queue slot. Use Retry to run it again.')
+            p.save(update_fields=['status', 'status_detail', 'updated_at'])
+            reaped.append(p.id)
+    if reaped:
+        print(f"[reap_stale_papers] auto-failed stale paper(s) {reaped} for user {user_id}")
+    return reaped
+
 
 def dispatch_paper(paper):
     """Enqueue the generation Celery task for `paper` using its stored gen_params, and record the
@@ -439,6 +658,7 @@ def dispatch_next_queued_paper(user_id):
     No-op if the user still has an active generation. Row-locks the user's non-terminal papers so a
     completion and a cancel racing on the same user can't both dispatch — only one wins per call."""
     from django.db import transaction
+    reap_stale_papers(user_id)   # a dead generation must not block the promotion forever
     with transaction.atomic():
         rows = list(QuestionPaper.objects
                     .select_for_update()
@@ -455,7 +675,16 @@ def dispatch_next_queued_paper(user_id):
 
 @shared_task(bind=True)
 def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local', additional_context=""):
-    paper = QuestionPaper.objects.get(id=paper_id)
+    # Ghost-message guard: with acks_late, a task can be redelivered long after its paper
+    # was deleted, cancelled or auto-failed (reap_stale_papers). Never resurrect those —
+    # only 'queued' (fresh dispatch/retry) and 'generating' (worker died mid-run) may run.
+    paper = QuestionPaper.objects.filter(id=paper_id).first()
+    if paper is None:
+        print(f"[generate_paper_task] paper {paper_id} no longer exists — skipping")
+        return {"paper_id": paper_id, "skipped": True}
+    if paper.status not in ('queued', 'generating'):
+        print(f"[generate_paper_task] paper {paper_id} is '{paper.status}' — not resurrecting a closed paper")
+        return {"paper_id": paper_id, "skipped": True}
     paper.status = "generating"
     paper.task_id = self.request.id  # Store the actual task ID
     paper.status_detail = ""         # clear any prior failure reason / warning

@@ -12,7 +12,7 @@ These lock in two production bugs so they can't silently return:
 Run with:  python manage.py test core
 """
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 
 from django.contrib.auth.models import User
 
@@ -2057,14 +2057,12 @@ class EnrichmentTest(TestCase):
         return json.dumps({
             "chunks": {
                 # over-long "clean" (way beyond 2x the original) is a hallucination — dropped
-                "c0": {"kinds": ["prose"], "unit": "Light", "lang": "english", "garbled": False,
-                       "clean": "X" * 3000},
+                "c0": {"unit": "Light", "garbled": False, "clean": "X" * 3000},
                 # legitimate selective cleanup — stored on content_clean, content untouched
-                "c1": {"kinds": ["concept", "exercise"], "unit": "Electricity", "lang": "english",
-                       "garbled": False, "clean": "circuits concept text only"},
-                # bogus kind dropped, unknown unit dropped, language lowercased, garbled kept
-                "c2": {"kinds": ["bogus", "poem"], "unit": "Nonexistent", "lang": "ENGLISH", "garbled": True},
-                "c99": {"kinds": ["prose"]},   # hallucinated id — must be ignored
+                "c1": {"unit": "Electricity", "garbled": False, "clean": "circuits concept text only"},
+                # unknown unit dropped (keeps original links), garbled kept
+                "c2": {"unit": "Nonexistent", "garbled": True},
+                "c99": {"unit": "Light"},      # hallucinated id — must be ignored
             },
             "summaries": {"Light": "L" * 300, "Electricity": "E" * 300, "Hallucinated": "H" * 300},
         })
@@ -2082,16 +2080,13 @@ class EnrichmentTest(TestCase):
     def test_labels_relinks_and_summaries(self):
         from core.models import MaterialChunk, ChunkChapter
         stats, conv = self._enrich()
-        self.assertEqual(conv.call_count, 1)                      # one batch, one call
+        # one batch, one call — Physics is not a language subject, so no chapter-kind call
+        self.assertEqual(conv.call_count, 1)
         self.assertEqual(stats["chunks_labeled"], 3)
         self.assertEqual(stats["garbled"], 1)
         self.assertFalse(stats["skipped"])
 
         c0, c1, c2 = [MaterialChunk.objects.get(pk=c.pk) for c in self.chunks]
-        self.assertEqual(c0.content_kinds, ["prose"])
-        self.assertEqual(c1.content_kinds, ["concept", "exercise"])
-        self.assertEqual(c2.content_kinds, ["poem"])              # "bogus" dropped by closed enum
-        self.assertEqual(c2.language, "english")                  # lowercased
         self.assertTrue(c2.garbled and not c0.garbled)
         self.assertTrue(all(c.enriched_at for c in (c0, c1, c2)))
         # Selective clean copy: stored for c1, hallucinated over-long clean on c0 dropped,
@@ -2123,7 +2118,7 @@ class EnrichmentTest(TestCase):
     def test_force_reprocesses(self):
         self._enrich()
         stats, conv = self._enrich(force=True)
-        self.assertEqual(conv.call_count, 1)
+        self.assertEqual(conv.call_count, 1)   # non-language subject: labels only
         self.assertEqual(stats["chunks_labeled"], 3)
 
     def test_mirrors_labels_to_school_copy_without_second_llm_call(self):
@@ -2134,7 +2129,7 @@ class EnrichmentTest(TestCase):
                                          subject="physics", content=c.content,
                                          chunk_index=c.chunk_index, provider="local")
         stats, conv = self._enrich()
-        self.assertEqual(conv.call_count, 1)                      # mirror is free — no second LLM pass
+        self.assertEqual(conv.call_count, 1)   # mirror is free — no second LLM pass
         self.assertEqual(stats["chunks_labeled"], 6)
         school_rows = MaterialChunk.objects.filter(school=school, kind="body")
         self.assertTrue(all(r.enriched_at for r in school_rows))
@@ -2153,6 +2148,107 @@ class EnrichmentTest(TestCase):
         self.assertTrue(all(c.enriched_at is None
                             for c in MaterialChunk.objects.filter(kind="body")))
 
+    def test_terminal_run_tasks_are_pure_noops(self):
+        # A task whose run is already CLOSED (stopped/failed/done — e.g. redelivered after
+        # a Redis restart) must do no LLM work AND leave the closed run's counters alone.
+        from unittest import mock
+        from core.models import EnrichmentRun
+        from core import tasks as t, enrichment
+        for terminal in ('stopped', 'failed', 'done'):
+            run = EnrichmentRun.objects.create(status=terminal, total_groups=1, drained_groups=0)
+            with mock.patch.object(enrichment, "enrich_material",
+                                   side_effect=AssertionError("must not be called")):
+                res = t.enrich_material_task.apply(args=(self.mat.id,), kwargs={"run_id": run.id}).result
+            self.assertTrue(res.get("stopped"))
+            run.refresh_from_db()
+            self.assertEqual((run.done_groups, run.drained_groups), (0, 0))
+            self.assertEqual(run.status, terminal)
+
+    def test_stopping_run_drains_queued_tasks_and_flips_to_stopped(self):
+        from unittest import mock
+        from core.models import EnrichmentRun
+        from core import tasks as t, enrichment
+        run = EnrichmentRun.objects.create(status='stopping', total_groups=2)
+        with mock.patch.object(enrichment, "enrich_material",
+                               side_effect=AssertionError("must not be called")):
+            t.enrich_material_task.apply(args=(self.mat.id,), kwargs={"run_id": run.id})
+            run.refresh_from_db()
+            self.assertEqual((run.status, run.drained_groups), ('stopping', 1))
+            t.enrich_material_task.apply(args=(self.mat.id,), kwargs={"run_id": run.id})
+        run.refresh_from_db()
+        self.assertEqual(run.drained_groups, 2)
+        self.assertEqual(run.status, 'stopped')       # fully drained → terminal
+
+    def test_mid_material_stop_is_atomic_and_resumable(self):
+        # Stop lands between LLM batches: nothing partial is persisted (the copy stays
+        # fully pending), the spent tokens are still reported, and a later resume run
+        # enriches the material completely.
+        from unittest import mock
+        from core.models import EnrichmentRun, MaterialChunk
+        from core import enrichment
+
+        run = EnrichmentRun.objects.create(status='running', total_groups=1)
+
+        def reply_then_stop(**kwargs):
+            EnrichmentRun.objects.filter(id=run.id).update(status='stopping')
+            return (self._reply(), 100, 50)
+
+        with mock.patch.object(enrichment.mantle_client, "converse",
+                               side_effect=reply_then_stop) as conv, \
+             mock.patch("core.enrichment._make_batches",
+                        side_effect=lambda rows: [rows[:1], rows[1:]]), \
+             mock.patch("core.enrichment.get_embeddings_batch",
+                        side_effect=lambda texts, provider: [[0.0] * 768 for _ in texts]):
+            stats = enrichment.enrich_material(self.mat.id, run_id=run.id)
+
+        self.assertTrue(stats["stopped"])
+        self.assertEqual(conv.call_count, 1)          # second batch never sent
+        self.assertEqual(stats["input_tokens"], 100)  # first batch still billed
+        self.assertEqual(stats["chunks_labeled"], 0)  # per-copy atomic: nothing persisted
+        self.assertTrue(all(c.enriched_at is None
+                            for c in MaterialChunk.objects.filter(kind="body")))
+        self.assertEqual(MaterialChunk.objects.filter(kind="summary").count(), 0)
+
+        # Resume (fresh run) processes the whole material cleanly.
+        stats2, conv2 = self._enrich()
+        self.assertFalse(stats2["stopped"])
+        self.assertEqual(stats2["chunks_labeled"], 3)
+
+    def test_heartbeat_bumps_updated_at_during_work(self):
+        # Long single-material runs must not trip the 15-min staleness auto-fail: every
+        # batch check doubles as a heartbeat on the run row.
+        from datetime import timedelta
+        from django.utils import timezone as tz
+        from core.models import EnrichmentRun
+        run = EnrichmentRun.objects.create(status='running', total_groups=1)
+        stale = tz.now() - timedelta(seconds=1200)
+        EnrichmentRun.objects.filter(id=run.id).update(updated_at=stale)
+        self._enrich(run_id=run.id)
+        run.refresh_from_db()
+        self.assertGreater(run.updated_at, stale + timedelta(seconds=1100))
+
+    def test_task_counts_mid_material_stop_as_drained(self):
+        # Stop pressed while a material is in flight: the task reports the pause as a
+        # drain (not done), and — being the only task — closes the run as 'stopped'.
+        from unittest import mock
+        from core.models import EnrichmentRun
+        from core import tasks as t, enrichment
+        run = EnrichmentRun.objects.create(status='running', total_groups=1)
+
+        def enrich_paused(material_id, force=False, run_id=None):
+            EnrichmentRun.objects.filter(id=run_id).update(status='stopping')
+            return {"material_id": material_id, "chunks_labeled": 0, "summaries_created": 0,
+                    "garbled": 0, "input_tokens": 80, "output_tokens": 20, "skipped": False,
+                    "stopped": True, "errors": []}
+
+        with mock.patch.object(enrichment, "enrich_material", side_effect=enrich_paused):
+            res = t.enrich_material_task.apply(args=(self.mat.id,), kwargs={"run_id": run.id}).result
+        self.assertTrue(res["stopped"])
+        run.refresh_from_db()
+        self.assertEqual((run.done_groups, run.drained_groups), (0, 1))
+        self.assertEqual(run.status, 'stopped')
+        self.assertEqual(run.input_tokens, 80)        # aborted work is still billed
+
     def test_summary_chunks_excluded_from_span_and_query_scope(self):
         from core.models import MaterialChunk
         from core import embeddings as emb
@@ -2163,6 +2259,542 @@ class EnrichmentTest(TestCase):
         # And a body seed's span never absorbs summary rows (negative index + kind filter).
         body_span = emb.fetch_contiguous_span(self.chunks[0].id, before=2000, after=2000)
         self.assertNotIn(summary.content[:50], body_span)
+
+
+class ChapterKindTest(TestCase):
+    """Chapter-LEVEL kind classification (ChapterInfo): ONE kind per chapter judged from
+    name + summary + content sample — the redesign of the rejected per-chunk taxonomy
+    (a prose lesson with back-exercises must be 'prose', not a bag of chunk kinds)."""
+
+    def setUp(self):
+        from core.models import Material, MaterialChunk, ChunkChapter
+        self.mat = Material.objects.create(
+            class_name="10", subject="English", title="First Flight combo", type="textbook",
+            file="", metadata={"chapters": ["Dust of Snow", "A Letter to God"]})
+        self.chunks = []
+        for i, (text, unit) in enumerate([
+                ("The way a crow\nShook down on me\nThe dust of snow", "dust_of_snow"),
+                ("Lencho wrote a letter to God asking for a hundred pesos.", "a_letter_to_god")]):
+            c = MaterialChunk.objects.create(material=self.mat, class_name="10",
+                                             subject="english", content=text,
+                                             chunk_index=i, provider="local")
+            ChunkChapter.objects.create(chunk=c, unit=unit)
+            self.chunks.append(c)
+
+    def _label_reply(self):
+        import json
+        return json.dumps({
+            "chunks": {"c0": {"unit": "Dust of Snow", "garbled": False},
+                       "c1": {"unit": "A Letter to God", "garbled": False}},
+            "summaries": {"Dust of Snow": "P" * 300, "A Letter to God": "L" * 300},
+        })
+
+    def _kinds_reply(self, mapping):
+        import json
+        return json.dumps({"kinds": mapping})
+
+    def test_classifier_validates_enum_and_prompt_carries_evidence(self):
+        from unittest import mock
+        from core import enrichment
+        entries = [
+            {"class_name": "10", "subject": "english", "unit": "dust_of_snow",
+             "display": "Dust of Snow", "material_title": "First Flight",
+             "summary": "A short poem about a crow and snow.", "sample": "The way a crow\nShook down"},
+            {"class_name": "10", "subject": "english", "unit": "a_letter_to_god",
+             "display": "A Letter to God", "material_title": "First Flight",
+             "summary": "Lencho's faith.", "sample": "Lencho wrote"},
+        ]
+        with mock.patch.object(enrichment.mantle_client, "converse",
+                               return_value=(self._kinds_reply({"c0": "poem", "c1": "banana"}), 10, 5)) as conv:
+            kinds, tin, tout = enrichment.classify_chapter_kinds(entries)
+        self.assertEqual(kinds, {("10", "english", "dust_of_snow"): "poem"})   # bad enum dropped
+        prompt = conv.call_args.kwargs["prompt"]
+        self.assertIn("Dust of Snow", prompt)                     # chapter name
+        self.assertIn("First Flight", prompt)                     # book title (supplementary signal)
+        self.assertIn("A short poem about a crow", prompt)        # summary
+        self.assertIn("Shook down", prompt)                       # content sample (verse shape)
+
+    def test_enrich_material_classifies_its_chapters(self):
+        from unittest import mock
+        from core.models import ChapterInfo
+        from core import enrichment
+        # todo is sorted(declared_norm): c0 = "a_letter_to_god", c1 = "dust_of_snow"
+        replies = [(self._label_reply(), 100, 50),
+                   (self._kinds_reply({"c0": "prose", "c1": "poem"}), 20, 10)]
+        with mock.patch.object(enrichment.mantle_client, "converse", side_effect=replies) as conv, \
+             mock.patch("core.enrichment.get_embeddings_batch",
+                        side_effect=lambda texts, provider: [[0.0] * 768 for _ in texts]):
+            stats = enrichment.enrich_material(self.mat.id)
+        self.assertEqual(conv.call_count, 2)
+        self.assertEqual(stats["chapters_classified"], 2)
+        self.assertEqual(ChapterInfo.objects.get(unit="dust_of_snow").kind, "poem")
+        self.assertEqual(ChapterInfo.objects.get(unit="a_letter_to_god").kind, "prose")
+        self.assertEqual(stats["input_tokens"], 120)              # classify tokens billed too
+
+    def test_already_classified_chapters_skip_the_call(self):
+        from unittest import mock
+        from django.utils import timezone as tz
+        from core.models import ChapterInfo
+        from core import enrichment
+        for unit, kind in [("dust_of_snow", "poem"), ("a_letter_to_god", "prose")]:
+            ChapterInfo.objects.create(class_name="10", subject="english", unit=unit,
+                                       kind=kind, classified_at=tz.now())
+        with mock.patch.object(enrichment.mantle_client, "converse",
+                               return_value=(self._label_reply(), 100, 50)) as conv, \
+             mock.patch("core.enrichment.get_embeddings_batch",
+                        side_effect=lambda texts, provider: [[0.0] * 768 for _ in texts]):
+            enrichment.enrich_material(self.mat.id)
+        self.assertEqual(conv.call_count, 1)                      # labels only — no classify call
+
+    def test_backfill_task_classifies_from_store(self):
+        from unittest import mock
+        from core.models import ChapterInfo, MaterialChunk, ChunkChapter
+        from core import tasks as t, enrichment
+        # A stored summary row gives the backfill its evidence without re-reading chunks.
+        s = MaterialChunk.objects.create(material=self.mat, class_name="10", subject="english",
+                                         kind="summary", content="A poem about a crow.",
+                                         chunk_index=-1000, provider="local")
+        ChunkChapter.objects.create(chunk=s, unit="dust_of_snow")
+        ChapterInfo.objects.create(class_name="10", subject="english", unit="a_letter_to_god",
+                                   kind="prose")                  # already done → skipped
+        def fake_classify(entries):
+            self.assertEqual(len(entries), 1)                     # only the pending chapter
+            e = entries[0]
+            self.assertEqual(e["unit"], "dust_of_snow")
+            self.assertEqual(e["summary"], "A poem about a crow.")
+            self.assertIn("crow", e["sample"])                    # sample chunk found
+            return {("10", "english", "dust_of_snow"): "poem"}, 15, 5
+        with mock.patch.object(enrichment, "classify_chapter_kinds", side_effect=fake_classify):
+            res = t.classify_all_chapters_task.apply(kwargs={"force": False}).result
+        self.assertEqual(res["classified"], 1)
+        self.assertEqual(ChapterInfo.objects.get(unit="dust_of_snow").kind, "poem")
+
+    def test_extract_kind_detection_and_routing(self):
+        from core.models import ChapterInfo
+        from core import section_generator as secgen
+        ChapterInfo.objects.create(class_name="10", subject="english",
+                                   unit="dust_of_snow", kind="poem")
+        ChapterInfo.objects.create(class_name="10", subject="english",
+                                   unit="a_letter_to_god", kind="prose")
+        slots = [{"type": "extract", "format": "Poetry extract", "marks": 5},
+                 {"type": "sa", "format": "prose question", "marks": 3}]   # non-extract ignored
+        wanted = secgen._extract_kinds_wanted(slots, {"extract_instruction": ""})
+        self.assertEqual(wanted, {"poem"})
+        self.assertEqual(secgen._extract_kind_needs(slots), ["poem"])
+        ordered = secgen._chapters_for_extract_needs(
+            "10", "English", ["A Letter to God", "Dust of Snow"], ["poem"])
+        self.assertEqual(ordered[0], "Dust of Snow")              # poem chapter leads
+        self.assertEqual(len(ordered), 2)                         # nothing dropped
+        # Fail-open: no kind data for this subject → original order untouched.
+        same = secgen._chapters_for_extract_needs(
+            "10", "Tamil", ["Ch A", "Ch B"], ["poem"])
+        self.assertEqual(same, ["Ch A", "Ch B"])
+        # No explicit kind in the pattern → no reordering at all.
+        self.assertEqual(secgen._extract_kinds_wanted(
+            [{"type": "extract", "format": "", "marks": 5}], {}), set())
+
+    def test_mixed_extract_needs_cover_every_alternative(self):
+        # The SQP shape: Q6 = internal-choice extract with NO kind signal, Q7 = poetry
+        # extract with internal choice. Four printed passages are needed; the poem slots
+        # must get poem chapters and the unsignaled slots must NOT be starved onto poems.
+        from core.models import ChapterInfo
+        from core import section_generator as secgen
+        for unit, kind in [("poem_one", "poem"), ("poem_two", "poem"),
+                           ("prose_one", "prose"), ("prose_two", "prose")]:
+            ChapterInfo.objects.create(class_name="10", subject="english_core",
+                                       unit=unit, kind=kind)
+        slots = [
+            {"type": "extract", "marks": 5, "choice": "internal",
+             "format": "Best explanation selection"},              # unsignaled (Q6)
+            {"type": "extract", "marks": 5, "choice": "internal",
+             "format": "Poetry extract"},                          # poem (Q7)
+        ]
+        needs = secgen._extract_kind_needs(slots)
+        self.assertEqual(needs, ["", "", "poem", "poem"])
+        picked = secgen._chapters_for_extract_needs(
+            "10", "English Core",
+            ["prose_one", "poem_one", "prose_two", "poem_two"], needs)
+        # First two picks (Q6's alternatives) avoid the poem chapters reserved for Q7;
+        # picks three and four are the poems.
+        self.assertEqual(picked[:4], ["prose_one", "prose_two", "poem_one", "poem_two"])
+
+    def test_kind_keywords_do_not_misfire_on_ordinary_pattern_prose(self):
+        from core import section_generator as secgen
+        def wanted(text):
+            return secgen._extract_kinds_wanted(
+                [{"type": "extract", "condition": text, "marks": 5}], {})
+        # Substring traps (confirmed review findings): common words must not route.
+        self.assertEqual(wanted("Questions should cover diverse themes"), set())      # not 'verse'
+        self.assertEqual(wanted("explain how the writer plays with words"), set())    # not 'play'
+        self.assertEqual(wanted("describe the key moments in the passage"), set())    # not the Moments reader
+        self.assertEqual(wanted("display the universe of ideas"), set())
+        # ...while genuine signals still fire, including plurals.
+        self.assertEqual(wanted("Extract from the poems prescribed"), {"poem"})
+        self.assertEqual(wanted("A verse from the poetry section"), {"poem"})
+        self.assertEqual(wanted("prose extract of 100 words"), {"prose"})
+        self.assertEqual(wanted("an extract from the play"), {"drama"})
+        self.assertEqual(wanted("from the supplementary reader Footprints"), {"supplementary"})
+
+    def test_classify_endpoint_pending_ignores_stale_rows(self):
+        # ChapterInfo rows for chapters whose materials were deleted must not mask the
+        # live corpus's unclassified chapters (confirmed review finding).
+        from unittest import mock
+        from django.utils import timezone as tz
+        from rest_framework.test import APIClient
+        from core.models import ChapterInfo
+        for i in range(5):   # stale: no corresponding chunks exist
+            ChapterInfo.objects.create(class_name="9", subject="tamil", unit=f"gone_{i}",
+                                       kind="prose", classified_at=tz.now())
+        admin = User.objects.create_user("kind_admin2", "ka2@x.com", "pw")
+        p = admin.profile
+        p.role = "superadmin"
+        p.save()
+        api = APIClient()
+        api.force_authenticate(admin)
+        with mock.patch("core.tasks.classify_all_chapters_task") as mtask:
+            r = api.post("/api/admin/enrichment/classify/", {}, format="json")
+        self.assertEqual(r.status_code, 202)
+        self.assertEqual(r.json()["queued"], 2)      # the two LIVE chapters, stale rows ignored
+        mtask.delay.assert_called_once()
+
+    def test_kinds_are_language_subject_only(self):
+        # The user's original objection: a Mathematics chapter must NEVER be "prose".
+        from unittest import mock
+        from core.models import Material, MaterialChunk, ChunkChapter, ChapterInfo
+        from core import enrichment, tasks as t
+        self.assertTrue(enrichment.is_language_subject("English Core"))
+        self.assertTrue(enrichment.is_language_subject("hindi_course_b"))
+        self.assertTrue(enrichment.is_language_subject("Tamil"))
+        self.assertFalse(enrichment.is_language_subject("Mathematics"))
+        self.assertFalse(enrichment.is_language_subject("Science"))
+        self.assertFalse(enrichment.is_language_subject("Social Science"))
+        # Backfill skips non-language chapters entirely — no LLM call, no rows.
+        mat = Material.objects.create(class_name="6", subject="Mathematics", title="Ganita",
+                                      type="textbook", file="", metadata={"chapters": ["Fractions"]})
+        c = MaterialChunk.objects.create(material=mat, class_name="6", subject="mathematics",
+                                         content="a half plus a quarter", chunk_index=0,
+                                         provider="local")
+        ChunkChapter.objects.create(chunk=c, unit="fractions")
+        with mock.patch.object(enrichment, "classify_chapter_kinds",
+                               side_effect=lambda entries: (
+                                   {(e['class_name'], e['subject'], e['unit']): "poem"
+                                    for e in entries}, 1, 1)):
+            t.classify_all_chapters_task.apply(kwargs={"force": True})
+        self.assertFalse(ChapterInfo.objects.filter(subject="mathematics").exists())
+
+    DUST_OF_SNOW = ("The way a crow\nShook down on me\nThe dust of snow\n"
+                    "From a hemlock tree\nHas given my heart\nA change of mood\n"
+                    "And saved some part\nOf a day I had rued.")
+    PROSE_CHUNK = ("Lencho was an ox of a man, working like an animal in the fields, "
+                   "but still he knew how to write. The following Sunday, at daybreak, "
+                   "he began to write a letter which he himself would carry to town and "
+                   "place in the mail.\nAll through the years the rain had been kind.")
+
+    def test_verse_shape_detection(self):
+        from core import section_generator as secgen
+        self.assertTrue(secgen._looks_like_verse(self.DUST_OF_SNOW))
+        self.assertFalse(secgen._looks_like_verse(self.PROSE_CHUNK))
+        self.assertFalse(secgen._looks_like_verse("One short line"))
+
+    def test_verse_hunter_finds_poems_inside_prose_chapters(self):
+        # Class 10 First Flight has NO poem chapters — the poems live inside the prose
+        # chapters' chunks. The hunter must pull verse-shaped chunks out by similarity.
+        from unittest import mock
+        from core import section_generator as secgen
+        def fake_query(**kw):
+            docs = [self.PROSE_CHUNK, self.DUST_OF_SNOW] if kw.get("unit") == "A Letter to God" else []
+            return {"ids": [[str(i) for i in range(len(docs))]], "documents": [docs],
+                    "metadatas": [[{} for _ in docs]], "distances": [[0.0] * len(docs)]}
+        with mock.patch.object(secgen.embeddings, "query", side_effect=fake_query):
+            out = secgen._verse_passages("10", "English Core",
+                                         ["A Letter to God", "Bholi"], None, 1, [])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["kind"], "poem")
+        self.assertIn("dust of snow", out[0]["text"].lower())     # the verse chunk, not the prose
+
+    def test_classify_endpoint_queues_task(self):
+        from unittest import mock
+        from rest_framework.test import APIClient
+        admin = User.objects.create_user("kind_admin", "ka@x.com", "pw")
+        p = admin.profile
+        p.role = "superadmin"
+        p.save()
+        api = APIClient()
+        api.force_authenticate(admin)
+        with mock.patch("core.tasks.classify_all_chapters_task") as mtask:
+            r = api.post("/api/admin/enrichment/classify/", {}, format="json")
+        self.assertEqual(r.status_code, 202)
+        self.assertGreater(r.json()["queued"], 0)
+        mtask.delay.assert_called_once_with(force=False, user_id=admin.id)
+
+
+class EnrichmentParallelGroupTest(TransactionTestCase):
+    """enrich_materials_group_task runs its materials CONCURRENTLY (one thread per
+    material, ENRICH_PARALLEL_PER_KEY per API key) while keeping all bookkeeping per
+    material. TransactionTestCase: the pool threads open their own DB connections, so
+    the test data must be really committed, not held in a test transaction."""
+
+    def _mk_material(self, title):
+        from core.models import Material, MaterialChunk
+        mat = Material.objects.create(class_name="10", subject="Physics", title=title,
+                                      type="notes", file="", metadata={"chapters": ["Light"]})
+        for i, text in enumerate(["light refraction text", "light reflection text"]):
+            MaterialChunk.objects.create(material=mat, class_name="10", subject="physics",
+                                         content=text, chunk_index=i, provider="local")
+        return mat
+
+    def test_group_enriches_concurrently_with_per_material_bookkeeping(self):
+        import json
+        import threading
+        from unittest import mock
+        from core.models import EnrichmentRun, MaterialChunk
+        from core import tasks as t, enrichment
+
+        m1, m2 = self._mk_material("A"), self._mk_material("B")
+        run = EnrichmentRun.objects.create(status="running", total_groups=2)
+
+        reply = json.dumps({
+            "chunks": {"c0": {"unit": "Light", "garbled": False},
+                       "c1": {"unit": "Light", "garbled": False}},
+            "summaries": {"Light": "L" * 300},
+        })
+        # Both materials' LLM calls must be IN FLIGHT at the same time to pass this
+        # barrier — a serial implementation times out here and fails loudly.
+        rendezvous = threading.Barrier(2, timeout=15)
+
+        def concurrent_converse(**kwargs):
+            rendezvous.wait()
+            return (reply, 10, 5)
+
+        with mock.patch.object(enrichment.mantle_client, "converse",
+                               side_effect=concurrent_converse), \
+             mock.patch("core.enrichment.get_embeddings_batch",
+                        side_effect=lambda texts, provider: [[0.0] * 768 for _ in texts]), \
+             mock.patch.object(enrichment.mantle_client, "num_keys", return_value=2):
+            res = t.enrich_materials_group_task.apply(
+                args=([m1.id, m2.id],), kwargs={"run_id": run.id}).result
+
+        self.assertEqual(res["ok"], 2)
+        run.refresh_from_db()
+        self.assertEqual(run.done_groups, 2)              # bookkeeping stayed per material
+        self.assertEqual(run.chunks_labeled, 4)
+        self.assertEqual(run.status, "done")
+        self.assertEqual(MaterialChunk.objects.filter(
+            kind="body", enriched_at__isnull=True).count(), 0)
+
+
+class EnrichmentConcurrencyConfigTest(TestCase):
+    """Pool sizing (3 per Mantle key) and material grouping at the enqueue points."""
+
+    def test_pool_size_scales_with_keys(self):
+        from unittest import mock
+        from core import enrichment
+        with mock.patch.object(enrichment, "ENRICH_PARALLEL_PER_KEY", 3):
+            with mock.patch.object(enrichment.mantle_client, "num_keys", return_value=2):
+                self.assertEqual(enrichment.enrich_concurrency(), 6)
+            with mock.patch.object(enrichment.mantle_client, "num_keys", return_value=0):
+                self.assertEqual(enrichment.enrich_concurrency(), 3)   # keyless env: assume 1
+
+    def test_ingest_enqueue_groups_materials_to_pool_size(self):
+        from unittest import mock
+        from core import tasks as t, enrichment
+        with mock.patch.object(enrichment, "ENRICH_PARALLEL_PER_KEY", 3), \
+             mock.patch.object(enrichment.mantle_client, "num_keys", return_value=2), \
+             mock.patch.object(t, "enrich_materials_group_task") as mtask:
+            t._enqueue_enrichment(list(range(1, 15)))              # 14 materials, pool 6
+        groups = [c.args[0] for c in mtask.delay.call_args_list]
+        self.assertEqual([len(g) for g in groups], [6, 6, 2])
+        self.assertEqual(sorted(sum(groups, [])), list(range(1, 15)))
+
+
+class EnrichmentControlEndpointTest(TestCase):
+    """Run/stop lifecycle endpoints: two-phase stop (running → stopping → stopped),
+    idempotent stop, no concurrent runs while draining, broker-failure safety, and
+    staleness auto-close for both live statuses."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        from core.models import Material, MaterialChunk
+        self.user = User.objects.create_user("enr_admin", "ea@x.com", "pw")
+        p = self.user.profile
+        p.role = "superadmin"
+        p.save()
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+        mat = Material.objects.create(class_name="10", subject="Physics", title="notes",
+                                      type="notes", file="")
+        MaterialChunk.objects.create(material=mat, class_name="10", subject="physics",
+                                     content="pending chunk", chunk_index=0, provider="local")
+
+    def _mk_run(self, **kw):
+        from core.models import EnrichmentRun
+        return EnrichmentRun.objects.create(**{"status": "running", "total_groups": 3, **kw})
+
+    def _backdate(self, run, seconds):
+        from datetime import timedelta
+        from django.utils import timezone as tz
+        from core.models import EnrichmentRun
+        EnrichmentRun.objects.filter(id=run.id).update(
+            updated_at=tz.now() - timedelta(seconds=seconds))
+
+    def test_stop_is_two_phase_and_idempotent(self):
+        run = self._mk_run()
+        r = self.api.post("/api/admin/enrichment/stop/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["run"]["status"], "stopping")   # drains async, not instant
+        r = self.api.post("/api/admin/enrichment/stop/")          # second click: no error
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["run"]["status"], "stopping")
+
+    def test_stop_without_live_run_is_400(self):
+        r = self.api.post("/api/admin/enrichment/stop/")
+        self.assertEqual(r.status_code, 400)
+        self._mk_run(status="done")
+        r = self.api.post("/api/admin/enrichment/stop/")
+        self.assertEqual(r.status_code, 400)
+
+    def test_stop_on_stale_run_closes_immediately(self):
+        # Worker dead → nothing will ever drain; the stop must not hang in 'stopping'.
+        run = self._mk_run()
+        self._backdate(run, 1000)
+        r = self.api.post("/api/admin/enrichment/stop/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["run"]["status"], "stopped")
+
+    def test_no_new_run_while_draining(self):
+        from unittest import mock
+        self._mk_run(status="stopping")
+        with mock.patch("core.tasks.enrich_materials_group_task") as mtask:
+            r = self.api.post("/api/admin/enrichment/run/", {}, format="json")
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("stopping", r.json()["error"])
+        mtask.delay.assert_not_called()
+
+    def test_stale_run_does_not_block_new_run(self):
+        from unittest import mock
+        old = self._mk_run()
+        self._backdate(old, 1000)
+        with mock.patch("core.tasks.enrich_materials_group_task") as mtask:
+            mtask.delay.return_value = None
+            r = self.api.post("/api/admin/enrichment/run/", {}, format="json")
+        self.assertEqual(r.status_code, 202)
+        old.refresh_from_db()
+        self.assertEqual(old.status, "failed")
+
+    def test_dead_broker_leaves_no_zombie_run(self):
+        from unittest import mock
+        from core.models import EnrichmentRun
+        with mock.patch("core.tasks.enrich_materials_group_task") as mtask:
+            mtask.delay.side_effect = OSError("connection refused")
+            r = self.api.post("/api/admin/enrichment/run/", {}, format="json")
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("Redis", r.json()["error"])
+        self.assertEqual(EnrichmentRun.objects.count(), 0)   # no stuck 'running' row
+
+    def test_stats_auto_closes_stale_runs(self):
+        stopping = self._mk_run(status="stopping")
+        self._backdate(stopping, 1000)
+        r = self.api.get("/api/admin/enrichment/stats/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["latest_run"]["status"], "stopped")
+        stopping.refresh_from_db()
+        self.assertEqual(stopping.status, "stopped")
+
+
+class SerialQueueSlotRecoveryTest(TestCase):
+    """Per-user serial generation queue self-healing: a ghost 'active' paper (Celery task
+    lost in a worker/broker restart) must be auto-failed so it can't hold the user's slot
+    forever; deleting an active paper must free the slot like cancel does; and a ghost
+    task redelivery must never resurrect a closed paper. (Production defect 2026-07-16:
+    a 6-day-old queued+dispatched paper wedged every later paper as eternally waiting.)"""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.user = User.objects.create_user("slot_t", "st@x.com", "pw")
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+        self.pattern = ExamPattern.objects.create(
+            name="PT-1", sections=[{"name": "A", "marks": 2, "questions_count": 1}])
+
+    def _paper(self, status="queued", task_id=None, age_seconds=0):
+        from datetime import timedelta
+        from django.utils import timezone as tz
+        p = QuestionPaper.objects.create(
+            class_name="10", subject="English", pattern=self.pattern, chapters=["1"],
+            status=status, task_id=task_id, created_by=self.user, paper_data={})
+        if age_seconds:
+            QuestionPaper.objects.filter(id=p.id).update(
+                updated_at=tz.now() - timedelta(seconds=age_seconds))
+            p.refresh_from_db()
+        return p
+
+    def test_ghost_dispatched_paper_is_reaped_and_next_promoted(self):
+        from unittest import mock
+        from core import tasks as t
+        ghost = self._paper(task_id="dead-task", age_seconds=6 * 24 * 3600)   # 6 days silent
+        waiting = self._paper()
+        with mock.patch("core.tasks.generate_paper_task") as mtask:
+            mtask.delay.return_value = mock.Mock(id="task-new-1")
+            t.dispatch_next_queued_paper(self.user.id)
+        ghost.refresh_from_db(); waiting.refresh_from_db()
+        self.assertEqual(ghost.status, "failed")
+        self.assertIn("auto-failed", ghost.status_detail)
+        self.assertEqual(waiting.task_id, "task-new-1")      # slot freed → promoted
+
+    def test_fresh_dispatched_paper_keeps_the_slot(self):
+        from unittest import mock
+        from core import tasks as t
+        active = self._paper(task_id="live-task")            # fresh — legitimately active
+        waiting = self._paper()
+        with mock.patch("core.tasks.generate_paper_task") as mtask:
+            self.assertIsNone(t.dispatch_next_queued_paper(self.user.id))
+        mtask.delay.assert_not_called()
+        active.refresh_from_db(); waiting.refresh_from_db()
+        self.assertEqual(active.status, "queued")            # not reaped
+        self.assertIsNone(waiting.task_id)                   # still waiting its turn
+
+    def test_reap_windows_and_waiting_papers(self):
+        from core.tasks import reap_stale_papers
+        stale_gen = self._paper(status="generating", task_id="t1", age_seconds=31 * 60)
+        fresh_gen = self._paper(status="generating", task_id="t2", age_seconds=10 * 60)
+        old_waiting = self._paper(age_seconds=10 * 24 * 3600)   # no task_id → just in line
+        reaped = reap_stale_papers(self.user.id)
+        self.assertEqual(reaped, [stale_gen.id])
+        fresh_gen.refresh_from_db(); old_waiting.refresh_from_db()
+        self.assertEqual(fresh_gen.status, "generating")
+        self.assertEqual(old_waiting.status, "queued")       # waiting papers are never reaped
+
+    def test_delete_active_paper_frees_slot(self):
+        from unittest import mock
+        active = self._paper(task_id="live-task")
+        waiting = self._paper()
+        with mock.patch("core.tasks.generate_paper_task") as mtask:
+            mtask.delay.return_value = mock.Mock(id="task-new-2")
+            r = self.api.delete(f"/api/papers/{active.id}/")
+        self.assertEqual(r.status_code, 204)
+        self.assertFalse(QuestionPaper.objects.filter(id=active.id).exists())
+        waiting.refresh_from_db()
+        self.assertEqual(waiting.task_id, "task-new-2")      # delete promotes like cancel
+
+    def test_delete_finished_paper_does_not_dispatch(self):
+        from unittest import mock
+        done = self._paper(status="done", task_id="old")
+        waiting = self._paper()
+        with mock.patch("core.tasks.generate_paper_task") as mtask:
+            r = self.api.delete(f"/api/papers/{done.id}/")
+        self.assertEqual(r.status_code, 204)
+        mtask.delay.assert_not_called()                      # no slot was held — nothing to free
+
+    def test_ghost_task_never_resurrects_closed_paper(self):
+        from core import tasks as t
+        for closed_status in ("failed", "cancelled", "done"):
+            closed = self._paper(status=closed_status, task_id="old")
+            res = t.generate_paper_task.apply(args=(closed.id,)).result
+            self.assertTrue(res.get("skipped"))
+            closed.refresh_from_db()
+            self.assertEqual(closed.status, closed_status)   # untouched
+        res = t.generate_paper_task.apply(args=(999999,)).result
+        self.assertTrue(res.get("skipped"))                  # deleted paper → quiet no-op
 
 
 class ChunkingTest(TestCase):
@@ -2220,11 +2852,11 @@ class PgvectorQueryTest(TestCase):
         self.mat = Material.objects.create(class_name="10", subject="Physics", title="t",
                                            type="notes", file="", school=None, visibility="shared")
 
-    def _chunk(self, content, vec, unit="light"):
+    def _chunk(self, content, vec, unit="light", **kw):
         from core.models import MaterialChunk, ChunkChapter
         c = MaterialChunk.objects.create(material=self.mat, class_name="10", subject="physics",
                                          content=content, chunk_index=0, provider="local",
-                                         embedding_local=vec)
+                                         embedding_local=vec, **kw)
         ChunkChapter.objects.create(chunk=c, unit=unit)
         return c
 
@@ -2249,6 +2881,84 @@ class PgvectorQueryTest(TestCase):
         with mock.patch.object(emb, "get_embedding", return_value=[1.0] + [0.0] * 767):
             res = emb.query("10", "Physics", "Sound", "q", n_results=5)
         self.assertEqual(res["documents"][0], ["sound-doc"])
+
+    def test_garbled_chunks_excluded_from_retrieval(self):
+        from unittest import mock
+        from core import embeddings as emb
+        near = [1.0] + [0.0] * 767
+        self._chunk("clean-doc", near)
+        self._chunk("garbled-doc", near, garbled=True)   # enrichment-flagged extraction noise
+        with mock.patch.object(emb, "get_embedding", return_value=near):
+            res = emb.query("10", "Physics", "Light", "q", n_results=5)
+        self.assertEqual(res["documents"][0], ["clean-doc"])
+
+    def test_cleaned_copy_preferred_in_documents(self):
+        from unittest import mock
+        from core import embeddings as emb
+        near = [1.0] + [0.0] * 767
+        self._chunk("actual content 42 RUNNING-HEADER page noise", near,
+                    content_clean="actual content")
+        with mock.patch.object(emb, "get_embedding", return_value=near):
+            res = emb.query("10", "Physics", "Light", "q", n_results=5)
+        self.assertEqual(res["documents"][0], ["actual content"])
+
+    def test_chapter_summary_lookup(self):
+        from core.models import MaterialChunk, ChunkChapter
+        from core import embeddings as emb
+        row = MaterialChunk.objects.create(
+            material=self.mat, class_name="10", subject="physics", kind="summary",
+            content="Light covers reflection and refraction.", chunk_index=-1000,
+            provider="local")
+        ChunkChapter.objects.create(chunk=row, unit="light")
+        self.assertEqual(emb.get_chapter_summary("10", "Physics", "Light"),
+                         "Light covers reflection and refraction.")
+        self.assertEqual(emb.get_chapter_summary("10", "Physics", "Sound"), "")
+        self.assertEqual(emb.get_chapter_summary("10", "Physics", None), "")
+
+
+class SectionContextInterleaveTest(TestCase):
+    """get_section_context must give EVERY chapter a proportional slice of the window,
+    headed by its enrichment chapter summary — instead of appending chapter-by-chapter
+    and truncating the tail, which made the context ~100% the FIRST chapter (the
+    same-unit clustering defect)."""
+
+    def _fake_query(self, docs_by_unit):
+        def q(**kwargs):
+            docs = list(docs_by_unit.get(kwargs.get("unit"), []))[:kwargs.get("n_results", 5)]
+            return {"ids": [[str(i) for i in range(len(docs))]], "documents": [docs],
+                    "metadatas": [[{} for _ in docs]], "distances": [[0.0] * len(docs)]}
+        return q
+
+    def test_every_chapter_represented_with_summary_header(self):
+        from unittest import mock
+        docs = {
+            "Alpha": [f"alpha passage {i} " + "a" * 580 for i in range(20)],   # ~12k chars alone
+            "Beta":  [f"beta passage {i} " + "b" * 580 for i in range(5)],
+        }
+        with mock.patch.object(sg.embeddings, "query", side_effect=self._fake_query(docs)), \
+             mock.patch.object(sg.embeddings, "get_chapter_summary",
+                               side_effect=lambda c, s, u, school_id=None: f"All about {u}."):
+            ctx = sg.get_section_context("10", "Physics", ["Alpha", "Beta"],
+                                         ["waves"], max_chars=4000)
+        self.assertIn("=== CHAPTER: Alpha ===", ctx)
+        self.assertIn("=== CHAPTER: Beta ===", ctx)                # tail chapter SURVIVES
+        self.assertIn("[About this chapter: All about Alpha.]", ctx)
+        self.assertIn("alpha passage 0", ctx)
+        self.assertIn("beta passage 0", ctx)                       # real content, not just header
+        self.assertLessEqual(len(ctx), 5000)                       # 1.25 x max_chars ceiling
+
+    def test_empty_retrieval_returns_empty_string(self):
+        from unittest import mock
+        with mock.patch.object(sg.embeddings, "query", side_effect=self._fake_query({})):
+            self.assertEqual(sg.get_section_context("10", "Physics", ["Alpha"], ["q"]), "")
+
+    def test_no_chapter_mode_has_no_headers(self):
+        from unittest import mock
+        docs = {None: ["general doc one", "general doc two"]}
+        with mock.patch.object(sg.embeddings, "query", side_effect=self._fake_query(docs)):
+            ctx = sg.get_section_context("10", "Physics", [], ["q"], max_chars=4000)
+        self.assertIn("general doc one", ctx)
+        self.assertNotIn("=== CHAPTER", ctx)
 
 
 class MaterialVisibilityScopeTest(TestCase):
@@ -3332,6 +4042,128 @@ class RegenerateAllPatternsTest(TestCase):
         self.assertEqual(r.json()["queued_ids"], [self.p_ai.id])
         foreign.refresh_from_db()
         self.assertEqual(foreign.status, "done")           # out of scope → untouched
+
+
+class PatternPdfImportTest(TestCase):
+    """Import-a-sample-paper-PDF flow: the view stages the upload, extracts its text,
+    rejects scanned/non-PDF uploads with a clear 400, and queues generate_pattern_task
+    on an 'imported' pattern; the task routes imported patterns to the SQP schema
+    extractor (never the teacher-text parser); the extraction prompt forbids copying
+    the paper's content into the pattern."""
+
+    # Long enough to pass the ≥200-char scanned-PDF guard.
+    SQP_TEXT = ("SAMPLE QUESTION PAPER — CLASS X ENGLISH\n"
+                "Section A Reading 20 marks. Section B Grammar and Writing 20 marks.\n"
+                "Section C Literature 40 marks.\n") * 5
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.user = User.objects.create_user("pdf_t", "pdf@x.com", "pw")
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+
+    def _upload(self, filename="EnglishL-SQP.pdf", extracted=None):
+        from unittest import mock
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        f = SimpleUploadedFile(filename, b"%PDF-1.4 fake body", content_type="application/pdf")
+        with mock.patch("core.material_intel.extract_pages_text",
+                        return_value=self.SQP_TEXT if extracted is None else extracted) as mex, \
+             mock.patch("core.tasks.generate_pattern_task") as mtask:
+            mtask.delay.return_value = mock.Mock(id="task-pdf-1")
+            r = self.api.post(
+                "/api/patterns/import-from-pdf/",
+                {"file": f, "class_name": "10", "subject": "English", "name": "SQP 2025-26"},
+                format="multipart")
+        return r, mex, mtask
+
+    def test_import_creates_queued_imported_pattern(self):
+        r, mex, mtask = self._upload()
+        self.assertEqual(r.status_code, 202)
+        pattern = ExamPattern.objects.get(id=r.json()["id"])
+        self.assertEqual(pattern.pattern_source, "imported")
+        self.assertEqual(pattern.status, "queued")
+        self.assertEqual(pattern.ai_prompt, self.SQP_TEXT)   # task reads the SQP text from here
+        self.assertEqual(pattern.name, "SQP 2025-26")
+        self.assertEqual(pattern.task_id, "task-pdf-1")
+        mex.assert_called_once()
+        mtask.delay.assert_called_once_with(pattern.id)
+
+    def test_scanned_pdf_rejected(self):
+        r, _, mtask = self._upload(extracted="")   # image-based PDF → no text layer
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("scanned", r.json()["error"])
+        self.assertEqual(ExamPattern.objects.count(), 0)
+        mtask.delay.assert_not_called()
+
+    def test_non_pdf_rejected(self):
+        r, _, mtask = self._upload(filename="paper.docx")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(ExamPattern.objects.count(), 0)
+        mtask.delay.assert_not_called()
+
+    def test_missing_file_rejected(self):
+        r = self.api.post("/api/patterns/import-from-pdf/",
+                          {"class_name": "10", "subject": "English"}, format="multipart")
+        self.assertEqual(r.status_code, 400)
+
+    def test_task_routes_imported_pattern_to_sqp_extractor(self):
+        from unittest import mock
+        pattern = ExamPattern.objects.create(
+            name="SQP 2025-26", subject="English", class_name="10", sections=[],
+            total_marks=0, total_questions=0, pattern_source="imported",
+            ai_prompt=self.SQP_TEXT, status="queued", created_by=self.user)
+        extracted = {
+            "sections": [{"id": "SEC_A", "name": "Reading", "marks": 2,
+                          "question_slots": [{"qnum": 1, "type": "mcq", "marks": 1},
+                                             {"qnum": 2, "type": "mcq", "marks": 1}]}],
+            "total_marks": 2, "total_questions": 2,
+        }
+        with mock.patch("api.ai_service.extract_pattern_from_sqp_via_api",
+                        return_value=extracted) as mextract, \
+             mock.patch("api.ai_service.generate_pattern_via_api") as mgen:
+            from core.tasks import generate_pattern_task
+            generate_pattern_task.apply(args=[pattern.id])
+        mextract.assert_called_once()
+        self.assertEqual(mextract.call_args.kwargs["sqp_text"], self.SQP_TEXT)
+        mgen.assert_not_called()
+        pattern.refresh_from_db()
+        self.assertEqual(pattern.status, "done")
+        self.assertEqual(pattern.total_marks, 2)
+        self.assertEqual(len(pattern.sections), 1)
+
+    def test_extraction_prompt_forbids_copying_content(self):
+        from unittest import mock
+        from api import ai_service
+        reply = '{"sections": [], "total_marks": 80, "total_questions": 11}'
+        with mock.patch.object(ai_service.mantle_client, "converse",
+                               return_value=(reply, 10, 10)) as mconv:
+            data = ai_service.extract_pattern_from_sqp_via_api(
+                self.SQP_TEXT, "10", "English", "SQP 2025-26")
+        prompt = mconv.call_args.kwargs["prompt"]
+        self.assertIn("NEVER copy", prompt)                       # abstraction rule present
+        self.assertIn("SAMPLE QUESTION PAPER — CLASS X", prompt)  # paper text embedded
+        self.assertIn("QUESTION SLOT RULES", prompt)              # shared slot schema included
+        self.assertEqual(data["total_marks"], 80)
+
+
+class PoemPassageRenderTest(TestCase):
+    """A poem quoted WITH its line breaks must PRINT as verse: the DOCX passage box
+    must turn every "\\n" in source_text into a real <w:br/> (python-docx does this in
+    its run-text setter — this test pins that guarantee so a renderer change can never
+    silently flatten poems again). The breaks being PRESENT in source_text is the
+    generation prompt's job (POEM FORMATTING rule in section_generator)."""
+
+    POEM = ("He should be lurking in shadow,\nSliding through long grass\n"
+            "Near the water hole\nWhere plump deer pass.")
+
+    def test_poem_line_breaks_survive_docx_rendering(self):
+        from docx import Document
+        doc = Document()
+        sg_gen._add_passage_box(doc, self.POEM)
+        xml = doc.tables[-1].rows[0].cells[0]._tc.xml
+        self.assertEqual(xml.count("<w:br/>"), 3)               # one per verse line break
+        for line in self.POEM.split("\n"):
+            self.assertIn(line, xml)                            # every line's text intact
 
 
 class MarkdownTableRenderTest(TestCase):

@@ -13,6 +13,9 @@ class School(models.Model):
     email = models.EmailField(blank=True)
     monthly_token_budget = models.BigIntegerField(default=0)  # 0 = unlimited
     is_active = models.BooleanField(default=True)
+    # Set by the superadmin when the school's billing lapses: users still log in (with a
+    # dismissible notice) but every AI-generation action is refused until it is cleared.
+    billing_period_over = models.BooleanField(default=False)
     access_shared_vector_store = models.BooleanField(default=False)
     # Cumulative usage — persists even after papers are deleted
     total_papers_generated = models.BigIntegerField(default=0)
@@ -452,9 +455,11 @@ class MaterialChunk(models.Model):
     # 'body' = ordinary ingested chunk; 'summary' = LLM-written whole-chapter summary stored
     # as an extra chunk (negative chunk_index so it can never splice into a verbatim span).
     kind = models.CharField(max_length=16, default='body', db_index=True)
-    # 1-2 dominant labels per chunk from the CLOSED enum in core.enrichment.CONTENT_KINDS
-    # (prose|poem|grammar|concept|example|activity|exercise|supplementary|intro|other).
-    # JSONField, not ArrayField, to keep the SQLite dev fallback working.
+    # LEGACY (2026-07-15): the content-kind taxonomy and per-chunk language were dropped
+    # from the enrichment prompt at the user's request — enrichment now stores only
+    # chapter attribution + cleaned actual content + garbled flag + chapter summaries.
+    # Kept as columns (summary rows still use content_kinds=["summary"]); re-runs wipe
+    # old taxonomy values.
     content_kinds = models.JSONField(default=list, blank=True)
     language = models.CharField(max_length=32, blank=True, default='')
     garbled = models.BooleanField(default=False)     # legacy-font/mojibake extraction noise
@@ -493,6 +498,41 @@ class ChunkChapter(models.Model):
         return f"{self.chunk_id} → {self.unit}"
 
 
+class ChapterInfo(models.Model):
+    """Chapter-LEVEL metadata: ONE kind per (class, subject, chapter). Replaces the
+    rejected per-chunk content-kind taxonomy — a prose lesson whose chunks include
+    back-exercises and a grammar box is still, as a whole, prose. Written by the
+    enrichment pipeline's chapter classifier (core/enrichment.py) from the chapter's
+    NAME + summary + a content sample; kind='' means unclassified (fail-open: retrieval
+    treats unclassified chapters as matching everything)."""
+    KIND_CHOICES = [
+        ('prose', 'Prose'),
+        ('poem', 'Poem'),
+        ('drama', 'Drama'),
+        ('supplementary', 'Supplementary'),
+        ('grammar', 'Grammar'),
+    ]
+    class_name = models.CharField(max_length=50)    # normalized, matches MaterialChunk
+    subject = models.CharField(max_length=100)      # normalized, matches MaterialChunk
+    unit = models.CharField(max_length=255)         # normalized, matches ChunkChapter.unit
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES, blank=True, default='')
+    classified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['class_name', 'subject', 'unit'],
+                                    name='uniq_chapterinfo_key'),
+        ]
+        indexes = [
+            models.Index(fields=['class_name', 'subject'], name='chapterinfo_cls_subj_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.class_name}/{self.subject}/{self.unit} → {self.kind or '?'}"
+
+
 class EnrichmentRun(models.Model):
     """One chunk-enrichment sweep over the stored corpus (superadmin button / backfill).
 
@@ -502,8 +542,15 @@ class EnrichmentRun(models.Model):
     progress survives page refreshes and worker restarts."""
     STATUS_CHOICES = [
         ('running', 'Running'),
+        # Stop button pressed: in-flight work pauses at the next batch boundary and every
+        # queued task drains as a no-op (counted in drained_groups). Once all queued tasks
+        # are accounted for, the run flips to 'stopped'.
+        ('stopping', 'Stopping'),
         ('done', 'Done'),
         ('failed', 'Failed'),
+        # Fully drained. Work already done is kept (idempotent), so "resume" = simply
+        # start a new run — it re-processes only what is still pending.
+        ('stopped', 'Stopped'),
     ]
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='running')
@@ -511,6 +558,7 @@ class EnrichmentRun(models.Model):
     total_groups = models.IntegerField(default=0)     # materials queued
     done_groups = models.IntegerField(default=0)
     failed_groups = models.IntegerField(default=0)
+    drained_groups = models.IntegerField(default=0)   # tasks that no-op'd/aborted due to stop
     chunks_labeled = models.IntegerField(default=0)
     summaries_created = models.IntegerField(default=0)
     garbled_found = models.IntegerField(default=0)

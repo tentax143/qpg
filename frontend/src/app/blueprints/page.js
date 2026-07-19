@@ -7,7 +7,7 @@ import {
   Layers, Settings, Wand2, Calculator, Info,
   Search, Filter, RefreshCw, ChevronRight, BookOpen, 
   Layout, Bookmark, User, Clock, CheckCircle, Hash,
-  Hammer, MoreVertical, Copy, Activity, Zap, ClipboardList
+  Hammer, MoreVertical, Copy, Activity, Zap, ClipboardList, FileUp
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -86,6 +86,10 @@ export default function BlueprintsPage() {
         </div>
         
         <div className="flex flex-wrap items-center gap-3">
+          <Link href="/create-pattern?tab=pdf" className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg shadow-emerald-200 hover:bg-emerald-700 hover:shadow-xl hover:shadow-emerald-300 transition-all hover:-translate-y-1 active:scale-95 duration-300">
+            <FileUp size={16} />
+            Import Paper PDF
+          </Link>
           <Link href="/blueprints/detailed-builder" className="flex items-center gap-2 bg-cyan-500 text-white px-5 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg shadow-cyan-200 hover:bg-cyan-600 hover:shadow-xl hover:shadow-cyan-300 transition-all hover:-translate-y-1 active:scale-95 duration-300">
             <Hammer size={16} />
             Detailed Builder

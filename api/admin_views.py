@@ -21,6 +21,7 @@ def _school_to_dict(school, include_stats=False):
         'email': school.email,
         'monthly_token_budget': school.monthly_token_budget,
         'is_active': school.is_active,
+        'billing_period_over': school.billing_period_over,
         'access_shared_vector_store': school.access_shared_vector_store,
         'created_at': school.created_at,
         'updated_at': school.updated_at,
@@ -125,12 +126,13 @@ def school_detail(request, pk):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     prev_shared = school.access_shared_vector_store
-    for field in ('name', 'address', 'phone', 'email', 'monthly_token_budget', 'is_active', 'access_shared_vector_store'):
+    for field in ('name', 'address', 'phone', 'email', 'monthly_token_budget', 'is_active',
+                  'billing_period_over', 'access_shared_vector_store'):
         if field in request.data:
             val = request.data[field]
             if field == 'monthly_token_budget':
                 val = int(val)
-            elif field in ('is_active', 'access_shared_vector_store'):
+            elif field in ('is_active', 'billing_period_over', 'access_shared_vector_store'):
                 val = bool(val)
             setattr(school, field, val)
     school.save()
@@ -637,6 +639,20 @@ def cbse_update_status(request, task_id):
 
 # ── Chunk enrichment (LLM metadata labeling — core/enrichment.py) ─────────────
 
+def _fail_if_stale(run, window=900):
+    """Auto-close a run whose heartbeat (updated_at, bumped per LLM batch and per task)
+    has been silent for `window` seconds — the worker died or the broker lost the queue.
+    'running' → 'failed'; 'stopping' → 'stopped' (the stop, in effect, completed).
+    Returns the (possibly updated) run."""
+    from django.utils import timezone
+    if run and run.status in ('running', 'stopping') and \
+            (timezone.now() - run.updated_at).total_seconds() > window:
+        run.status = 'stopped' if run.status == 'stopping' else 'failed'
+        run.error_samples = (run.error_samples or []) + ['run went stale (worker restart?)']
+        run.save(update_fields=['status', 'error_samples', 'updated_at'])
+    return run
+
+
 def _enrichment_run_to_dict(run):
     if run is None:
         return None
@@ -647,6 +663,7 @@ def _enrichment_run_to_dict(run):
         'total_groups': run.total_groups,
         'done_groups': run.done_groups,
         'failed_groups': run.failed_groups,
+        'drained_groups': run.drained_groups,
         'chunks_labeled': run.chunks_labeled,
         'summaries_created': run.summaries_created,
         'garbled_found': run.garbled_found,
@@ -668,14 +685,11 @@ def enrichment_stats(request):
     from django.utils import timezone
     from core.models import MaterialChunk, EnrichmentRun
 
-    # A run whose counters haven't moved in 15 min is dead (worker restarted mid-run) —
-    # flip it here, where the UI polls, or the page would show "running" forever.
+    # A run with no heartbeat for 15 min is dead (worker restarted mid-run) — flip it
+    # here, where the UI polls, or the page would show "running"/"stopping" forever.
+    # Live work heartbeats per LLM batch (enrichment._run_is_live), so staleness is real.
     latest = EnrichmentRun.objects.order_by('-created_at').first()
-    if latest and latest.status == 'running' and \
-            (timezone.now() - latest.updated_at).total_seconds() > 900:
-        latest.status = 'failed'
-        latest.error_samples = (latest.error_samples or []) + ['run went stale (worker restart?)']
-        latest.save(update_fields=['status', 'error_samples', 'updated_at'])
+    latest = _fail_if_stale(latest)
 
     body = MaterialChunk.objects.filter(kind='body')
     total = body.count()
@@ -703,21 +717,21 @@ def enrichment_run(request):
     the frontend polls. 409 if a run is already making progress."""
     from django.utils import timezone
     from core.models import MaterialChunk, EnrichmentRun
-    from core.tasks import enrich_material_task
+    from core.tasks import enrich_materials_group_task
+    from core import enrichment as enrichment_mod
 
     force = bool(request.data.get('force'))
 
-    latest = EnrichmentRun.objects.order_by('-created_at').first()
-    if latest and latest.status == 'running':
-        # A run whose counters haven't moved in 15 min is presumed dead (worker restart) —
-        # same staleness convention the dashboard uses for stuck generations.
-        if (timezone.now() - latest.updated_at).total_seconds() < 900:
-            return Response({'error': 'An enrichment run is already in progress',
-                             'run': _enrichment_run_to_dict(latest)},
-                            status=status.HTTP_409_CONFLICT)
-        latest.status = 'failed'
-        latest.error_samples = (latest.error_samples or []) + ['run went stale (worker restart?)']
-        latest.save(update_fields=['status', 'error_samples', 'updated_at'])
+    # Refuse while a run is active ('running' OR draining after a stop) — two live runs
+    # could process the same material concurrently and double-bill the LLM. A stale run
+    # (no heartbeat for 15 min) is auto-closed first so a dead worker can't block forever.
+    latest = _fail_if_stale(EnrichmentRun.objects.order_by('-created_at').first())
+    if latest and latest.status in ('running', 'stopping'):
+        msg = ('An enrichment run is already in progress'
+               if latest.status == 'running'
+               else 'The previous run is still stopping — wait for it to finish draining')
+        return Response({'error': msg, 'run': _enrichment_run_to_dict(latest)},
+                        status=status.HTTP_409_CONFLICT)
 
     qs = MaterialChunk.objects.filter(kind='body', material__isnull=False)
     if not force:
@@ -730,10 +744,111 @@ def enrichment_run(request):
 
     run = EnrichmentRun.objects.create(status='running', force=force,
                                        total_groups=len(material_ids), created_by=request.user)
-    for mid in material_ids:
-        enrich_material_task.delay(mid, run_id=run.id, force=force)
+    # Enqueue in GROUPS of the parallel pool size (3 per Mantle API key): each group task
+    # enriches its materials concurrently, so throughput ≈ pool size instead of 1.
+    # Defensively: a dead broker (Redis down) must not leave a zombie 'running' row that
+    # blocks the page for 15 minutes.
+    size = max(1, enrichment_mod.enrich_concurrency())
+    queued, enqueue_error = 0, None
+    for i in range(0, len(material_ids), size):
+        group = material_ids[i:i + size]
+        try:
+            enrich_materials_group_task.delay(group, run_id=run.id, force=force)
+            queued += len(group)
+        except Exception as e:
+            enqueue_error = str(e)[:200]
+            break
+    if queued == 0:
+        run.delete()
+        return Response(
+            {'error': f'Could not queue enrichment tasks — is Redis running? ({enqueue_error})'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    if queued < len(material_ids):
+        # Partial enqueue: shrink the run to what actually made it onto the queue so the
+        # completion math still closes; the rest is picked up by the next (resume) run.
+        run.total_groups = queued
+        run.error_samples = [f'broker error after queuing {queued}/{len(material_ids)} '
+                             f'materials: {enqueue_error}']
+        run.save(update_fields=['total_groups', 'error_samples', 'updated_at'])
 
     return Response({'run': _enrichment_run_to_dict(run)}, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperAdmin])
+def enrichment_stop(request):
+    """Request a stop: the run flips to 'stopping', the material currently in an LLM
+    call pauses at its next batch boundary (nothing partial is persisted — that copy
+    stays pending), and every queued task drains as a counted no-op. When all tasks are
+    accounted for, the run flips to 'stopped'. Finished work is kept — pressing the run
+    button again later resumes exactly what is still pending. Idempotent: pressing Stop
+    again while stopping just reports the current state."""
+    from django.utils import timezone
+    from core.models import EnrichmentRun
+
+    run = EnrichmentRun.objects.order_by('-created_at').first()
+    if not run or run.status not in ('running', 'stopping'):
+        return Response({'error': 'No enrichment run is in progress'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # Dead worker / lost queue: no heartbeat for 15 min means nothing will ever drain —
+    # close the stop immediately instead of hanging in 'stopping'. Must be judged BEFORE
+    # the flip below, which refreshes updated_at.
+    stale = (timezone.now() - run.updated_at).total_seconds() > 900
+
+    if run.status == 'running':
+        # Race-safe: only flip if it is still running (a finishing task may have just
+        # closed the run).
+        EnrichmentRun.objects.filter(id=run.id, status='running').update(
+            status='stopped' if stale else 'stopping', updated_at=timezone.now())
+        run.refresh_from_db()
+    elif stale:  # 'stopping' but the drain died — close it out
+        run.status = 'stopped'
+        run.error_samples = (run.error_samples or []) + ['run went stale (worker restart?)']
+        run.save(update_fields=['status', 'error_samples', 'updated_at'])
+
+    return Response({'run': _enrichment_run_to_dict(run)})
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperAdmin])
+def enrichment_classify(request):
+    """Queue the chapter-kind backfill (ChapterInfo — one kind per chapter, judged from
+    name + summary + sample). Cheap and independent of chunk-enrichment runs: it never
+    re-reads the corpus through the LLM. force=true re-classifies everything."""
+    from django.db.models import Count
+    from core.models import MaterialChunk, ChapterInfo
+    from core.tasks import classify_all_chapters_task
+
+    from core.enrichment import is_language_subject
+
+    force = bool(request.data.get('force'))
+    # Pending must be judged against the LIVE corpus, exactly like the task does —
+    # a global ChapterInfo count would let stale rows (chapters whose materials were
+    # deleted) mask genuinely unclassified chapters and refuse the backfill forever.
+    # Only language subjects count: kinds don't exist for Maths/Science chapters.
+    live = {(c, s, u) for c, s, u in
+            MaterialChunk.objects.filter(kind='body', chapter_links__isnull=False)
+            .values_list('class_name', 'subject', 'chapter_links__unit').distinct()
+            if is_language_subject(s)}
+    classified_keys = set(ChapterInfo.objects.exclude(kind='')
+                          .values_list('class_name', 'subject', 'unit'))
+    total = len(live)
+    classified = len(live & classified_keys)
+    pending = total if force else len(live - classified_keys)
+    if pending == 0:
+        return Response({'detail': 'All chapters are already classified.',
+                         'total': total, 'classified': classified, 'queued': 0})
+    try:
+        classify_all_chapters_task.delay(force=force, user_id=request.user.id)
+    except Exception as e:
+        return Response({'error': f'Could not queue the classification task — is Redis '
+                                  f'running? ({str(e)[:120]})'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return Response({'detail': f'Classifying ~{pending} chapters in the background — '
+                               'refresh the corpus browser in a couple of minutes.',
+                     'total': total, 'classified': classified, 'queued': pending},
+                    status=status.HTTP_202_ACCEPTED)
 
 
 @api_view(['GET'])
@@ -764,6 +879,13 @@ def enrichment_coverage(request):
                   .annotate(n=Count('id')))
     }
 
+    from core.models import ChapterInfo
+    chapter_kinds = {
+        (c, s, u): k
+        for c, s, u, k in ChapterInfo.objects.exclude(kind='')
+                                             .values_list('class_name', 'subject', 'unit', 'kind')
+    }
+
     data = [{
         'class_name': r['class_name'],
         'subject': r['subject'],
@@ -774,6 +896,7 @@ def enrichment_coverage(request):
         'garbled': r['garbled'],
         'cleaned': r['cleaned'],
         'summaries': summary_counts.get((r['class_name'], r['subject'], r['chapter_links__unit']), 0),
+        'kind': chapter_kinds.get((r['class_name'], r['subject'], r['chapter_links__unit']), ''),
     } for r in rows]
     return Response({'rows': data, 'count': len(data)})
 
@@ -781,9 +904,9 @@ def enrichment_coverage(request):
 @api_view(['GET'])
 @permission_classes([IsSuperAdmin])
 def enrichment_unit_detail(request):
-    """Drill-down for one (class, subject, unit): content-kind and language histograms,
-    the chapter summary text, and previews of garbled chunks. Query params because unit
-    labels are free text in any script."""
+    """Drill-down for one (class, subject, unit): the chapter summary plus the actual
+    stored content, chunk by chunk in document order (cleaned copy where one exists).
+    Query params because unit labels are free text in any script."""
     from core.models import MaterialChunk
 
     cls = (request.query_params.get('class') or '').strip()
@@ -794,34 +917,39 @@ def enrichment_unit_detail(request):
 
     qs = MaterialChunk.objects.filter(kind='body', class_name=cls, subject=subj)
     qs = qs.filter(chapter_links__unit=unit) if unit else qs.filter(chapter_links__isnull=True)
+    # Textbook double-storage keeps identical shared + school copies — show one copy only.
+    if qs.filter(school__isnull=True).exists():
+        qs = qs.filter(school__isnull=True)
 
-    kinds, languages = {}, {}
-    garbled_samples, cleaned_count, enriched_count, total = [], 0, 0, 0
-    for content_kinds, language, garbled, has_clean, content in (
-            qs.values_list('content_kinds', 'language', 'garbled', 'content_clean', 'content')[:3000]):
-        total += 1
-        for k in (content_kinds or []):
-            kinds[k] = kinds.get(k, 0) + 1
-        if language:
-            languages[language] = languages.get(language, 0) + 1
-        if content_kinds or language:
-            enriched_count += 1
-        if has_clean:
+    chunks, cleaned_count, garbled_count = [], 0, 0
+    # Order by material first: a unit can span several materials, and each material's
+    # chunk_index restarts at 0 — the row id is the only unique key.
+    rows = qs.order_by('material_id', 'chunk_index').values_list(
+        'id', 'chunk_index', 'content', 'content_clean', 'garbled', 'enriched_at')[:300]
+    for pk, idx, content, clean, garbled, enriched_at in rows:
+        if clean:
             cleaned_count += 1
-        if garbled and len(garbled_samples) < 3:
-            garbled_samples.append((content or '')[:180])
+        if garbled:
+            garbled_count += 1
+        chunks.append({
+            'id': pk,
+            'index': idx,
+            'text': (clean or content or '')[:1500],
+            'cleaned': bool(clean),
+            'garbled': garbled,
+            'enriched': enriched_at is not None,
+        })
 
     summary_qs = MaterialChunk.objects.filter(kind='summary', class_name=cls, subject=subj)
     summary_qs = summary_qs.filter(chapter_links__unit=unit) if unit else summary_qs
     summary = summary_qs.values_list('content', flat=True).first()
 
     return Response({
-        'total': total,
-        'kinds': dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
-        'languages': dict(sorted(languages.items(), key=lambda kv: -kv[1])),
+        'total': len(chunks),
         'cleaned': cleaned_count,
-        'garbled_samples': garbled_samples,
+        'garbled': garbled_count,
         'summary': summary,
+        'chunks': chunks,
     })
 
 
@@ -954,12 +1082,13 @@ def notifications_public(request):
     from django.db.models import Q
 
     # Get user's school if they belong to one
-    user_school_id = None
+    user_school = None
     if request.user.is_authenticated:
         try:
-            user_school_id = request.user.profile.school_id
+            user_school = request.user.profile.school
         except Exception:
             pass
+    user_school_id = user_school.id if user_school else None
 
     # Get notifications: global (no schools) OR targeted to user's school
     if user_school_id:
@@ -982,4 +1111,15 @@ def notifications_public(request):
         'severity': n.severity,
         'animation_interval': n.animation_interval,
     } for n in notifications]
+
+    # Synthetic banner while the school's billing period is over — dismissible client-side
+    # (per page load) like any other notification, but not stored in SystemNotification.
+    if user_school and user_school.billing_period_over:
+        data.insert(0, {
+            'id': f'billing-{user_school.id}',
+            'title': 'Billing period over',
+            'message': 'The billing period of your school is over. Please contact the admin.',
+            'severity': 'error',
+            'animation_interval': 10,
+        })
     return Response({'notifications': data})

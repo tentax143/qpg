@@ -2445,7 +2445,10 @@ def _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, 
 
 def _add_passage_box(doc, text, script_font=None):
     """Render a passage in a bordered, shaded single-cell table. Markdown pipe tables
-    inside the passage become real nested tables instead of raw "| … |" lines."""
+    inside the passage become real nested tables instead of raw "| … |" lines.
+    Line breaks in the text are preserved (python-docx renders "\\n" as <w:br/>), so a
+    poem quoted with its line breaks PRINTS as verse — the generation prompt's POEM
+    FORMATTING rule is what guarantees the breaks are present in source_text."""
     tbl = doc.add_table(rows=1, cols=1)
     tbl.style = 'Table Grid'
     cell = tbl.rows[0].cells[0]

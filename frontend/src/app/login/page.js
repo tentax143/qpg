@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { Eye, EyeOff, GraduationCap } from 'lucide-react';
+import { Eye, EyeOff, GraduationCap, AlertCircle, X } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
@@ -15,6 +15,9 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  // When set (to the post-login destination), shows the dismissible billing-over notice
+  // instead of redirecting immediately; dismissing it continues to that destination.
+  const [billingDest, setBillingDest] = useState(null);
 
   useEffect(() => {
     if (searchParams.get('expired') === 'true') {
@@ -47,12 +50,17 @@ function LoginForm() {
       localStorage.setItem('authToken', response.data.token);
       localStorage.setItem('user', JSON.stringify(userData));
       localStorage.setItem('loginTimestamp', Date.now().toString());
-      setSuccess('Login successful! Redirecting...');
       // First-login users (created by an admin) are prompted to change their password.
       const dest = userData?.require_password_change
         ? '/change-password'
         : (userData?.role === 'superadmin' ? '/superadmin' : '/dashboard');
-      setTimeout(() => { window.location.href = dest; }, 1000);
+      if (userData?.billing_period_over && !userData?.require_password_change) {
+        // Billing lapsed for this school — show the dismissible notice, then continue.
+        setBillingDest(dest);
+      } else {
+        setSuccess('Login successful! Redirecting...');
+        setTimeout(() => { window.location.href = dest; }, 1000);
+      }
     } catch (err) {
       const errorMsg = err.response?.data?.detail ||
         err.response?.data?.non_field_errors?.[0] ||
@@ -63,8 +71,43 @@ function LoginForm() {
     }
   };
 
+  const continueToApp = () => { window.location.href = billingDest; };
+
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      {billingDest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="flex items-start gap-3 px-6 py-5">
+              <div className="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                <AlertCircle className="w-5 h-5 text-red-600" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-slate-900">Billing Period Over</h3>
+                <p className="text-sm text-slate-600 mt-1.5 leading-relaxed">
+                  The billing period of your school is over. Please contact the admin.
+                  You can still view your account, but generation is disabled.
+                </p>
+              </div>
+              <button
+                onClick={continueToApp}
+                className="flex-shrink-0 text-slate-400 hover:text-slate-600 transition-colors"
+                aria-label="Dismiss"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                onClick={continueToApp}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                Continue to Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">

@@ -9,12 +9,13 @@ class UserSerializer(serializers.ModelSerializer):
     school_name = serializers.SerializerMethodField()
     allowed_subject = serializers.SerializerMethodField()
     require_password_change = serializers.SerializerMethodField()
+    billing_period_over = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser',
                   'last_login', 'date_joined', 'role', 'school_id', 'school_name', 'allowed_subject',
-                  'require_password_change')
+                  'require_password_change', 'billing_period_over')
         read_only_fields = ('id', 'last_login', 'date_joined')
 
     def get_require_password_change(self, obj):
@@ -44,6 +45,13 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_allowed_subject(self, obj):
         return getattr(obj.profile, 'allowed_subject', None) if hasattr(obj, 'profile') else None
+
+    def get_billing_period_over(self, obj):
+        try:
+            school = obj.profile.school
+            return bool(school.billing_period_over) if school else False
+        except Exception:
+            return False
 
 class CreateUserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
