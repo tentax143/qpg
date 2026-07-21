@@ -21,6 +21,35 @@ const parseWarnings = (detail) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+// Teacher-facing explanations for the Status column badges.
+const STATUS_GUIDE = [
+  {
+    label: 'Completed', icon: CheckCircle, spin: false,
+    badge: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    text: 'The paper is ready — you can download, edit or print it. A ⚠ on the badge means it finished with warnings; click the badge to see what to double-check.',
+  },
+  {
+    label: 'Generating', icon: RefreshCw, spin: true,
+    badge: 'text-blue-700 bg-blue-50 border-blue-200',
+    text: 'Questions are being created right now. This takes a few minutes and the list updates by itself — no need to refresh the page.',
+  },
+  {
+    label: 'Queued', icon: Clock, spin: false,
+    badge: 'text-amber-700 bg-amber-50 border-amber-200',
+    text: 'Waiting in line behind another paper that is generating. It starts automatically — nothing to do.',
+  },
+  {
+    label: 'Stalled', icon: null, spin: false,
+    badge: 'text-amber-700 bg-amber-50 border-amber-200',
+    text: 'Generation is taking a bit longer than usual. Please wait — it will continue on its own and finish shortly.',
+  },
+  {
+    label: 'Failed', icon: null, spin: false,
+    badge: 'text-red-700 bg-red-50 border-red-200',
+    text: 'Generation could not finish. Click the badge to read the reason, then use the retry button to try again.',
+  },
+];
+
 export default function DashboardPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -280,7 +309,7 @@ export default function DashboardPage() {
       {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} />}
       {error && <ErrorAlert message={error} onClose={() => setError(null)} />}
 
-      <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] gap-6 items-start">
         {/* Papers table */}
         <div className="space-y-6">
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -371,7 +400,7 @@ export default function DashboardPage() {
                             Failed
                           </button>
                         ) : isStuck(paper) ? (
-                          <span title="Generation looks stalled — you can retry." className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                          <span title="Taking a bit longer than usual — please wait." className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
                             Stalled
                           </span>
                         ) : paper.status === 'queued' ? (
@@ -507,6 +536,25 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+
+        {/* Status guide */}
+        <aside className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 lg:sticky lg:top-6">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">What the statuses mean</h3>
+            <p className="text-xs text-slate-400 mt-0.5">A quick guide to the Status column</p>
+          </div>
+          <ul className="space-y-4">
+            {STATUS_GUIDE.map(({ label, icon: Icon, spin, badge, text }) => (
+              <li key={label}>
+                <span className={`inline-flex items-center gap-1.5 text-xs font-medium border px-2.5 py-1 rounded-full ${badge}`}>
+                  {Icon && <Icon className={`w-3.5 h-3.5 ${spin ? 'animate-spin' : ''}`} />}
+                  {label}
+                </span>
+                <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{text}</p>
+              </li>
+            ))}
+          </ul>
+        </aside>
 
       </div>
 

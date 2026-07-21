@@ -265,11 +265,15 @@ def _ar_hint() -> str:
 
 
 def _needs_image(wo: SectionWorkOrder) -> bool:
-    """Return True if any instruction mentions image-based questions."""
+    """Return True if any instruction, or the section name/title, mentions image-based questions."""
     keywords = ("image", "picture", "diagram", "figure", "visual")
     for instr in wo.instructions:
         if any(k in instr.lower() for k in keywords):
             return True
+    if any(k in (wo.section_name or "").lower() for k in keywords):
+        return True
+    if any(k in (wo.title or "").lower() for k in keywords):
+        return True
     return False
 
 
