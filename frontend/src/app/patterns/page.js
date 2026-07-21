@@ -1,13 +1,11 @@
-﻿'use client';
+'use client';
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
-  ChevronDown, ChevronUp, BookOpen, Layers, Clock,
-  Settings2, Plus, Info, Eye, Edit2, Trash2,
-  Settings, CheckCircle, HelpCircle, FileText,
-  Lightbulb, PenTool, MessageSquare, Files, Calculator,
-  CheckSquare, Square
+  BookOpen, Layers, Settings2, Plus, Info, Eye, Edit2, Trash2,
+  CheckCircle, FileText, Lightbulb, PenTool, MessageSquare, Files, Calculator,
+  CheckSquare, Square, Sparkles, ArrowRight, LayoutGrid, Check, Settings
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -87,259 +85,259 @@ export default function PatternsPage() {
   };
 
   if (loading) return (
-    <div className="min-h-screen mesh-gradient flex items-center justify-center">
-      <div className="w-12 h-12 border-4 border-blue-600/30 border-t-blue-600 rounded-full animate-spin"></div>
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="w-8 h-8 border-2 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div>
     </div>
   );
 
   return (
-    <div className="w-full relative py-2">
+    <div className="w-full pb-12 relative">
+      {/* Decorative background blobs */}
+      <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-indigo-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+      <div className="absolute top-40 right-1/4 w-[400px] h-[400px] bg-purple-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-8 mb-12">
+      <div className="mb-10 max-w-7xl mx-auto flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-black uppercase tracking-wider rounded-full">Management</span>
-            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200/60 shadow-sm rounded-full mb-3">
+            <Sparkles size={14} className="text-indigo-500" strokeWidth={2} />
+            <span className="text-[11px] font-bold text-slate-700 uppercase tracking-widest">Management</span>
           </div>
-          <h1 className="text-4xl font-black text-gray-900 leading-tight">Exam Patterns</h1>
-          <p className="text-gray-600 font-medium text-lg mt-1 tracking-tight">Define and manage question distribution structures.</p>
+          <h1 className="text-[32px] font-extrabold text-slate-900 tracking-tight leading-tight mb-2">Exam Patterns</h1>
+          <p className="text-[15px] text-slate-500 leading-relaxed">Define and manage question distribution structures.</p>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          <Link href="/create-pattern" className="px-6 py-3.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-2xl font-semibold text-[13px] shadow-lg shadow-indigo-200/50 transition-all duration-300 flex items-center gap-2 hover:shadow-indigo-300/50 hover:scale-[1.02] active:scale-[0.98]">
+            <Plus size={16} strokeWidth={2.5} />
+            Add New Pattern
+          </Link>
         </div>
       </div>
 
-      {error && <ErrorAlert message={error} onClose={() => setError(null)} className="mb-8" />}
-      {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} className="mb-8" />}
+      <div className="max-w-7xl mx-auto">
+        {error && <ErrorAlert message={error} onClose={() => setError(null)} className="mb-6" />}
+        {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} className="mb-6" />}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-8">
-          <div className="glass-card overflow-hidden hover:shadow-2xl transition-shadow duration-500">
-            <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-white/50">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-bold shadow-lg shadow-blue-100">
-                  <Layers size={18} />
-                </div>
-                <h2 className="text-xl font-black text-gray-900">Available Patterns</h2>
-              </div>
-              <div className="flex items-center gap-2">
-                {patterns.length > 0 && (
-                  <button
-                    onClick={toggleSelectAll}
-                    className="px-3 py-2.5 bg-white border border-gray-200 text-gray-600 rounded-xl text-[10px] font-black uppercase tracking-[0.15em] hover:bg-gray-50 transition-all flex items-center gap-2"
-                  >
-                    {allSelected ? <CheckSquare size={14} className="text-blue-600" /> : <Square size={14} />}
-                    {allSelected ? 'Clear' : 'Select all'}
-                  </button>
-                )}
-                {selected.size > 0 && (
-                  <button
-                    onClick={handleBulkDelete}
-                    disabled={bulkBusy}
-                    className="px-4 py-2.5 bg-red-600 text-white rounded-xl text-[10px] font-black uppercase tracking-[0.15em] hover:bg-red-700 transition-all flex items-center gap-2 shadow-lg shadow-red-200 disabled:opacity-60"
-                  >
-                    <Trash2 size={14} />
-                    {bulkBusy ? 'Deleting…' : `Delete (${selected.size})`}
-                  </button>
-                )}
-                <Link href="/create-pattern" className="bg-[#1e293b] text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-slate-800 transition-all duration-300 hover:-translate-y-0.5 active:scale-95 flex items-center gap-2 shadow-xl shadow-slate-200">
-                  <Plus size={14} />
-                  <span>Add Pattern</span>
-                </Link>
-              </div>
-            </div>
-            
-            <div className="p-8">
-              {patterns.length === 0 ? (
-                <div className="text-center py-20 bg-gray-50/50 rounded-[40px] border-2 border-dashed border-gray-100">
-                  <div className="w-20 h-20 bg-white rounded-3xl shadow-sm flex items-center justify-center mx-auto mb-6">
-                    <BookOpen size={40} className="text-gray-300" />
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          
+          {/* Main Content Area */}
+          <div className="lg:col-span-2 space-y-8">
+            <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-indigo-600 text-white rounded-xl flex items-center justify-center shadow-sm shadow-indigo-200/50">
+                    <Layers size={18} strokeWidth={2} />
                   </div>
-                  <h3 className="text-xl font-black text-gray-900 mb-2">No patterns defined yet</h3>
-                  <p className="text-gray-600 font-medium mb-8">Create your first exam pattern to get started!</p>
-                  <Link href="/create-pattern" className="inline-flex items-center gap-3 bg-blue-600 text-white px-10 py-4 rounded-2xl font-black shadow-xl shadow-blue-200 hover:bg-blue-700 transition-all duration-300 hover:-translate-y-1 active:scale-95 text-xs uppercase tracking-[0.2em]">
-                    <Plus size={20} />
-                    <span>Create First Pattern</span>
+                  <div>
+                    <h2 className="text-[16px] font-bold text-slate-900 tracking-tight">Available Patterns</h2>
+                    <p className="text-[12px] text-slate-400">Select patterns to delete or modify.</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {patterns.length > 0 && (
+                    <button
+                      onClick={toggleSelectAll}
+                      className="px-4 py-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl text-[11px] font-bold uppercase tracking-wider hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center gap-2"
+                    >
+                      {allSelected ? <CheckSquare size={14} className="text-indigo-600" /> : <Square size={14} />}
+                      {allSelected ? 'Clear All' : 'Select All'}
+                    </button>
+                  )}
+                  {selected.size > 0 && (
+                    <button
+                      onClick={handleBulkDelete}
+                      disabled={bulkBusy}
+                      className="px-4 py-2.5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[11px] font-bold uppercase tracking-wider hover:bg-red-100 transition-all flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <Trash2 size={14} />
+                      {bulkBusy ? 'Deleting…' : `Delete (${selected.size})`}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {patterns.length === 0 ? (
+                <div className="text-center py-16 bg-slate-50/50 rounded-2xl border-2 border-dashed border-slate-200">
+                  <div className="w-16 h-16 bg-white rounded-2xl shadow-sm border border-slate-100 flex items-center justify-center mx-auto mb-4">
+                    <BookOpen size={24} className="text-slate-300" strokeWidth={1.5} />
+                  </div>
+                  <h3 className="text-[16px] font-bold text-slate-900 mb-1">No patterns defined yet</h3>
+                  <p className="text-[13px] text-slate-500 mb-6">Create your first exam pattern to get started!</p>
+                  <Link href="/create-pattern" className="inline-flex items-center gap-2 bg-slate-900 text-white px-6 py-3 rounded-xl font-semibold text-[13px] hover:bg-slate-800 transition-all shadow-md">
+                    <Plus size={16} />
+                    Create First Pattern
                   </Link>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {patterns.map((pattern, index) => (
-                    <div key={pattern.id} className={`p-6 bg-white border rounded-[30px] hover:shadow-xl hover:shadow-blue-500/5 transition-all group relative ${selected.has(pattern.id) ? 'border-blue-400 ring-2 ring-blue-100' : 'border-gray-100 hover:border-blue-200'}`}>
-                      <div className="absolute top-6 right-6 w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center text-[10px] font-black italic">
-                        {index + 1}
-                      </div>
-
+                    <div 
+                      key={pattern.id} 
+                      className={`relative p-5 bg-white border rounded-2xl transition-all duration-200 group ${
+                        selected.has(pattern.id) 
+                          ? 'border-indigo-400 ring-2 ring-indigo-500/10 shadow-sm' 
+                          : 'border-slate-200 hover:border-slate-300 hover:shadow-sm'
+                      }`}
+                    >
                       <button
                         onClick={() => toggleSelect(pattern.id)}
                         title="Select for bulk delete"
-                        className="absolute top-6 left-6 text-gray-300 hover:text-blue-600 transition-colors"
+                        className="absolute top-5 right-5 text-slate-300 hover:text-indigo-600 transition-colors z-10"
                       >
                         {selected.has(pattern.id)
-                          ? <CheckSquare size={20} className="text-blue-600" />
-                          : <Square size={20} />}
+                          ? <CheckSquare size={18} className="text-indigo-600" />
+                          : <Square size={18} />}
                       </button>
 
-                      <div className="flex items-start gap-3 mb-6 pl-9">
-                        <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0">
-                          <FileText size={20} />
+                      <div className="flex items-start gap-3 mb-4 pr-8">
+                        <div className="w-10 h-10 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-xl flex items-center justify-center shrink-0">
+                          <FileText size={18} strokeWidth={2} />
                         </div>
-                        <div className="pr-10">
-                          <h3 className="text-lg font-black text-gray-900 leading-tight mb-1">{pattern.name}</h3>
-                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">— Class {pattern.class_name} • {pattern.subject}</p>
+                        <div className="min-w-0">
+                          <h3 className="text-[15px] font-bold text-slate-900 truncate">{pattern.name}</h3>
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mt-0.5 truncate">
+                            Class {pattern.class_name} • {pattern.subject}
+                          </p>
                         </div>
                       </div>
 
-                      <div className="mb-6">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Layers size={14} className="text-blue-500" />
-                          <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Pattern Structure:</span>
+                      <div className="mb-4">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <LayoutGrid size={12} className="text-indigo-500" strokeWidth={2} />
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Pattern Structure:</span>
                         </div>
-                        <div className="bg-[#0f172a] rounded-2xl p-4 overflow-hidden relative">
-                          <pre className="text-blue-400 font-mono text-[10px] leading-relaxed max-h-[100px] overflow-y-auto custom-scrollbar">
+                        <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 overflow-hidden relative">
+                          <pre className="text-slate-600 font-mono text-[10px] leading-relaxed max-h-[80px] overflow-y-auto custom-scrollbar">
                             <code>{JSON.stringify(pattern.sections, null, 2)}</code>
                           </pre>
-                          <div className="absolute bottom-0 left-0 right-0 h-4 bg-gradient-to-t from-[#0f172a] to-transparent pointer-events-none"></div>
+                          <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-slate-50 to-transparent pointer-events-none"></div>
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="grid grid-cols-4 gap-2">
                         <Link 
                           href={`/pattern/${pattern.id}`} 
-                          className="flex-1 min-w-[80px] px-3 py-3 bg-[#1e293b] text-white rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-slate-800 transition-all duration-300 flex items-center justify-center gap-2 hover:-translate-y-0.5"
+                          className="col-span-1 py-2 bg-slate-50 text-slate-600 border border-slate-200 rounded-xl font-bold text-[11px] uppercase tracking-wider text-center hover:bg-slate-100 hover:text-slate-900 transition-colors flex items-center justify-center gap-1.5"
                         >
-                          <Eye size={12} />
-                          View
+                          <Eye size={14} />
                         </Link>
                         <Link 
                           href={`/pattern/${pattern.id}/edit`} 
-                          className="flex-1 min-w-[80px] px-3 py-3 bg-blue-50 text-blue-600 rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-blue-600 hover:text-white transition-all duration-300 flex items-center justify-center gap-2 border border-blue-100 hover:-translate-y-0.5"
+                          className="col-span-1 py-2 bg-slate-50 text-slate-600 border border-slate-200 rounded-xl font-bold text-[11px] uppercase tracking-wider text-center hover:bg-slate-100 hover:text-slate-900 transition-colors flex items-center justify-center gap-1.5"
                         >
-                          <Edit2 size={12} />
-                          Edit
+                          <Edit2 size={14} />
                         </Link>
                         <Link 
                           href={`/generator?pattern=${pattern.id}`} 
-                          className="flex-1 min-w-[120px] px-3 py-3 bg-emerald-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-emerald-700 transition-all duration-300 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10 hover:-translate-y-0.5"
+                          className="col-span-2 py-2 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-xl font-bold text-[11px] uppercase tracking-wider text-center hover:bg-indigo-100 hover:text-indigo-800 transition-colors flex items-center justify-center gap-1.5"
                         >
-                          <PenTool size={12} />
+                          <PenTool size={14} />
                           Generate
                         </Link>
-                        <button 
-                          onClick={() => handleDelete(pattern.id)}
-                          className="px-3 py-3 bg-red-50 text-red-600 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all duration-300 flex items-center justify-center hover:-translate-y-0.5"
-                        >
-                          <Trash2 size={12} />
-                        </button>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          </div>
 
-          {/* Creation Guide */}
-          <div className="glass-card p-8">
-            <h3 className="text-xl font-black text-gray-900 mb-8 flex items-center gap-3">
-              <Lightbulb className="text-amber-500" size={24} />
-              Creating Effective Patterns
-            </h3>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-8">
-              {[
-                { icon: PenTool, label: 'Objective', sub: 'MCQs, T/F, Blanks', color: 'text-blue-500', bg: 'bg-blue-50' },
-                { icon: MessageSquare, label: 'Short Answer', sub: '2-3 mark brief answers', color: 'text-emerald-500', bg: 'bg-emerald-50' },
-                { icon: Files, label: 'Long Answer', sub: '5-10 mark descriptive', color: 'text-amber-500', bg: 'bg-amber-50' },
-                { icon: Calculator, label: 'Numerical', sub: 'Problem-solving', color: 'text-indigo-500', bg: 'bg-indigo-50' },
-              ].map((item, i) => (
-                <div key={i} className="flex flex-col items-center text-center group">
-                  <div className={`w-16 h-16 ${item.bg} ${item.color} rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-500`}>
-                    <item.icon size={28} />
-                  </div>
-                  <h4 className="font-extrabold text-gray-900 text-sm mb-1">{item.label}</h4>
-                  <p className="text-[10px] font-bold text-gray-500 uppercase leading-tight">{item.sub}</p>
+            {/* Creation Guide */}
+            <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+              <div className="flex items-center gap-3 mb-8">
+                <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center">
+                  <Lightbulb size={20} className="text-amber-500" strokeWidth={2} />
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-8">
-          {/* Quick Actions */}
-          <div className="glass-card overflow-hidden hover:shadow-2xl transition-shadow duration-500">
-            <div className="p-6 border-b border-gray-100 flex items-center gap-3 bg-white/50">
-              <Plus size={18} className="text-blue-600" />
-              <h3 className="text-lg font-black text-gray-900">Quick Actions</h3>
-            </div>
-            <div className="p-6 space-y-3">
-              <Link href="/create-pattern" className="w-full py-4 bg-[#1e293b] text-white rounded-2xl font-black text-xs uppercase tracking-[0.2em] flex items-center justify-center gap-3 hover:bg-slate-800 transition-all duration-300 shadow-xl shadow-slate-200 hover:-translate-y-1 active:scale-95">
-                <Plus size={18} />
-                Add New Pattern
-              </Link>
-              <Link href="/patterns/all" className="w-full py-4 bg-white border border-gray-100 text-gray-700 rounded-2xl font-black text-xs uppercase tracking-[0.2em] flex items-center justify-center gap-3 hover:bg-gray-50 transition-all duration-300 hover:border-blue-200 hover:-translate-y-1 active:scale-95">
-                <Settings size={18} />
-                Manage All Patterns
-              </Link>
-            </div>
-          </div>
-
-          {/* About Section */}
-          <div className="glass-card p-8">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center">
-                <Info size={20} />
+                <h3 className="text-xl font-bold text-slate-900">Creating Effective Patterns</h3>
               </div>
-              <h3 className="text-lg font-black text-gray-900">About Patterns</h3>
+              
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {[
+                  { icon: PenTool, label: 'Objective', sub: 'MCQs, T/F', color: 'text-indigo-500', bg: 'bg-indigo-50', border: 'border-indigo-100' },
+                  { icon: MessageSquare, label: 'Short Answer', sub: 'Brief concepts', color: 'text-emerald-500', bg: 'bg-emerald-50', border: 'border-emerald-100' },
+                  { icon: Files, label: 'Long Answer', sub: 'Descriptive', color: 'text-amber-500', bg: 'bg-amber-50', border: 'border-amber-100' },
+                  { icon: Calculator, label: 'Numerical', sub: 'Problems', color: 'text-purple-500', bg: 'bg-purple-50', border: 'border-purple-100' },
+                ].map((item, i) => (
+                  <div key={i} className={`flex flex-col p-5 rounded-2xl border ${item.border} ${item.bg} group hover:-translate-y-0.5 transition-all duration-300`}>
+                    <div className={`w-10 h-10 bg-white rounded-xl flex items-center justify-center mb-3 shadow-sm`}>
+                      <item.icon size={18} className={item.color} strokeWidth={2} />
+                    </div>
+                    <h4 className="font-bold text-slate-900 text-[14px] mb-1">{item.label}</h4>
+                    <p className="text-[11px] font-semibold text-slate-500">{item.sub}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="text-sm font-medium text-gray-500 leading-relaxed mb-8">
-              Exam patterns define the structure and sections of your question papers. They help maintain consistency across different exams.
-            </p>
-            <ul className="space-y-4">
-              {[
-                'Define question types',
-                'Set marks distribution',
-                'Configure time limits',
-                'Standardize format'
-              ].map((text, i) => (
-                <li key={i} className="flex items-center gap-3 group">
-                  <div className="w-1.5 h-1.5 bg-blue-500 rounded-full group-hover:scale-150 transition-transform"></div>
-                  <span className="text-xs font-bold text-gray-600 uppercase tracking-wide">{text}</span>
-                </li>
-              ))}
-            </ul>
           </div>
 
-          {/* Upgrade Card */}
-          <div className="glass-card p-8 bg-[#0f172a] text-white relative overflow-hidden group">
-            <div className="absolute -right-10 -bottom-10 w-40 h-40 bg-blue-600/20 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-1000"></div>
-            <div className="relative z-10">
-              <h3 className="text-2xl font-black mb-4">Standardize Exams</h3>
-              <p className="text-slate-400 font-medium mb-8 leading-relaxed text-sm">Use globally defined patterns to ensure your AI generates consistent difficulty across departments.</p>
-              <Link href="/generator" className="flex items-center gap-2 text-blue-400 font-black text-xs uppercase tracking-widest group-hover:gap-4 transition-all">
-                Create Paper 
-                <ArrowRight size={16} />
-              </Link>
+          {/* Right Sidebar */}
+          <div className="space-y-6">
+            
+            {/* Quick Actions */}
+            <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+              <div className="flex items-center gap-2.5 mb-5">
+                <Settings2 size={18} className="text-indigo-500" strokeWidth={2} />
+                <h3 className="text-[15px] font-bold text-slate-900">Quick Actions</h3>
+              </div>
+              <div className="space-y-3">
+                <Link href="/create-pattern" className="w-full py-3.5 bg-slate-50 border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl font-bold text-[12px] uppercase tracking-wider flex items-center justify-center gap-2 transition-all">
+                  <Plus size={16} />
+                  Add New Pattern
+                </Link>
+                <Link href="/patterns/all" className="w-full py-3.5 bg-white border border-slate-200 text-slate-700 hover:border-indigo-300 hover:text-indigo-700 rounded-xl font-bold text-[12px] uppercase tracking-wider flex items-center justify-center gap-2 transition-all">
+                  <Settings size={16} />
+                  Manage All Patterns
+                </Link>
+              </div>
             </div>
+
+            {/* About Section */}
+            <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+              <div className="flex items-center gap-2.5 mb-4">
+                <Info size={18} className="text-indigo-500" strokeWidth={2} />
+                <h3 className="text-[15px] font-bold text-slate-900">About Patterns</h3>
+              </div>
+              <p className="text-[13px] font-medium text-slate-500 leading-relaxed mb-5">
+                Exam patterns define the structure and sections of your question papers. They help maintain consistency across different exams.
+              </p>
+              <div className="space-y-3">
+                {[
+                  'Define question types',
+                  'Set marks distribution',
+                  'Configure time limits',
+                  'Standardize format'
+                ].map((text, i) => (
+                  <div key={i} className="flex items-center gap-2.5">
+                    <div className="w-5 h-5 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                      <Check size={12} strokeWidth={3} />
+                    </div>
+                    <span className="text-[12px] font-bold text-slate-600">{text}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Upsell/Pro Tip Card */}
+            <div className="bg-slate-900 rounded-[28px] p-6 shadow-xl relative overflow-hidden group">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/30 blur-2xl rounded-full group-hover:scale-110 transition-transform duration-700" />
+              <div className="absolute bottom-0 left-0 w-32 h-32 bg-purple-500/30 blur-2xl rounded-full" />
+              
+              <div className="relative z-10 text-white">
+                <h3 className="text-lg font-bold mb-2">Standardize Exams</h3>
+                <p className="text-slate-400 font-medium text-[13px] mb-6 leading-relaxed">
+                  Use globally defined patterns to ensure your AI generates consistent difficulty across departments.
+                </p>
+                <Link href="/generator" className="inline-flex items-center gap-2 px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold text-[12px] uppercase tracking-wider transition-colors">
+                  Create Paper 
+                  <ArrowRight size={14} />
+                </Link>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
     </div>
   );
 }
-
-// Dummy ArrowRight for the last card
-function ArrowRight({ size, className }) {
-  return (
-    <svg 
-      width={size} 
-      height={size} 
-      viewBox="0 0 24 24" 
-      fill="none" 
-      stroke="currentColor" 
-      strokeWidth="3" 
-      strokeLinecap="round" 
-      strokeLinejoin="round" 
-      className={className}
-    >
-      <path d="M5 12h14M12 5l7 7-7 7" />
-    </svg>
-  );
-}
-
