@@ -2517,8 +2517,8 @@ def _set_cell_margins(table, top=0, bottom=0, left=108, right=108):
 def _build_header(section, subject_val, class_val, time_val, marks_val,
                   test_type_val, school_name_val="", script_font=None):
     """Build the paper header into `section`'s header: a single bordered box.
-    The top centres the school name (bold 13pt) and the exam-name/period line
-    (bold 11pt); beneath it is a 3-column grid — CLASS / TIME on the first line
+    The top centres the school name (bold 11pt) and the exam-name/period line
+    (bold 10pt); beneath it is a 3-column grid — CLASS / TIME on the first line
     and EXAM NO (left, blank for the student to fill) / SUBJECT (centred, bold)
     / MARKS on the second.
     Replaces the former base.docx template + _fill_header_placeholders
@@ -2555,8 +2555,8 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     # Title block — school name + exam-name/period line, centred. No internal
     # divider: the top cell's bottom border is off so it merges with the grid below.
     top = outer.rows[0].cells[0]
-    title_lines = [(school_name_val or "", 13, True),
-                   (test_type_val or "", 11, True)]
+    title_lines = [(school_name_val or "", 11, True),
+                   (test_type_val or "", 10, True)]
     for idx, (txt, size, bold) in enumerate(title_lines):
         para = top.paragraphs[0] if idx == 0 else top.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -2570,12 +2570,12 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     #     EXAM NO :               <SUBJECT>                MARKS : <marks>
     bot = outer.rows[1].cells[0]
     _tight(bot.paragraphs[0])
-    _style_run(bot.paragraphs[0].add_run(""), 3)   # small gap between the title and the grid
+    _style_run(bot.paragraphs[0].add_run(""), 1)   # minimal gap between the title and the grid
     grid = bot.add_table(rows=2, cols=3)   # _Cell.add_table takes no width; pinned below
     _fix_table_width(grid, [3120, 3120, 3120])
     _set_cell_margins(grid, top=0, bottom=0)
 
-    def _detail(cell, text, align="left", bold=False, size=11):
+    def _detail(cell, text, align="left", bold=False, size=10):
         para = cell.paragraphs[0]
         _tight(para)
         if align == "right":
@@ -2592,13 +2592,13 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     _detail(grid.rows[0].cells[2], f"TIME        :  {time_val}" if time_val else "TIME        :", align="right")
     # Row 2: EXAM NO | SUBJECT (centred, bold) | MARKS
     _detail(grid.rows[1].cells[0], "EXAM NO  :")
-    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=11)
+    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=10)
     _detail(grid.rows[1].cells[2], f"MARKS    :  {marks_val}" if marks_val else "MARKS    :", align="right")
 
     # A table cell may not end on a nested table — close the detail cell with a spacer.
     tail = bot.add_paragraph()
     _tight(tail)
-    _style_run(tail.add_run(""), 1)   # minimal closing spacer (a cell can't end on a table)
+    _style_run(tail.add_run(""), 0.5)   # minimal closing spacer (a cell can't end on a table)
     _set_cell_border(bot, top='none', left=_HDR_BORDER, right=_HDR_BORDER, bottom=_HDR_BORDER)
 
 
