@@ -386,6 +386,18 @@ def _scoped_chunks(cls, subj, field, school_id):
                                     school_field="school", store_field="material__vector_store"))
 
 
+def _unit_variants(u, candidate_units):
+    """Stored unit labels that FUZZILY match `u` — bidirectional containment, the SAME
+    predicate the coverage audit uses (paper_audit._chapter_matches_tag). Used only as a
+    fallback when the exact normalized label matched no chunk: a label variant
+    ('13_the_sermon_at_benares' or 'sermon_at_benares' vs 'the_sermon_at_benares') must not
+    starve the chapter to zero questions (docs/CHAPTER_ENRICHMENT_PLAN.md). Both sides are
+    already normalize_label()-ed, so this compares normalized fragments."""
+    if not u:
+        return []
+    return sorted({su for su in candidate_units if su and (u in su or su in u)})
+
+
 def query(class_name, subject, unit, query_text, n_results=5, provider='local', school_id=None):
     """ANN retrieval over the pgvector store. Returns the SAME shape the ChromaDB layer did
     (list-of-one-list per key) so existing consumers in generator/section_generator are unchanged.
@@ -404,13 +416,28 @@ def query(class_name, subject, unit, query_text, n_results=5, provider='local', 
         return empty
 
     try:
-        qs = _scoped_chunks(cls, subj, field, school_id)
-        if u:
-            qs = qs.filter(chapter_links__unit=u)
+        scoped = _scoped_chunks(cls, subj, field, school_id)
+        qs = scoped.filter(chapter_links__unit=u) if u else scoped
         rows = list(
             qs.annotate(distance=CosineDistance(field, vec))
               .order_by("distance")[:max(1, int(n_results))]
         )
+        # Exact normalized label matched no chunk — the stored label probably drifted from
+        # the planned chapter name (a chapter-number prefix, a "(First Flight)" suffix, a
+        # shortened title). Retry with the same fuzzy containment the audit uses so a label
+        # variant no longer drops the chapter to zero. Fires ONLY on an empty exact match,
+        # so retrievals that already work are untouched.
+        if u and not rows:
+            stored_units = (scoped.exclude(chapter_links__unit__isnull=True)
+                                  .values_list("chapter_links__unit", flat=True).distinct())
+            variants = _unit_variants(u, list(stored_units))
+            if variants:
+                print(f"[Embeddings] unit '{u}' had no exact chunk; fuzzy-matched to {variants}")
+                rows = list(
+                    scoped.filter(chapter_links__unit__in=variants)
+                          .annotate(distance=CosineDistance(field, vec))
+                          .order_by("distance")[:max(1, int(n_results))]
+                )
     except Exception as e:
         print(f"[Embeddings] query failed for {cls}/{subj} unit='{u}': {e}")
         return empty
