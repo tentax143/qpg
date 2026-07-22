@@ -5173,7 +5173,8 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
     Generate all sections in parallel using ThreadPoolExecutor.
 
     Returns (paper_data, total_input_tokens, total_output_tokens).
-    Raises RuntimeError if ≥2 sections fail hard (caller falls back to single-prompt path).
+    Raises RuntimeError if any section is still entirely missing after the serial retry
+    (caller falls back to the whole-paper single-prompt path).
     """
     work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters)
     if not work_orders:
@@ -5217,12 +5218,19 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
             except Exception as e:
                 print(f"[Parallel-Gen] serial retry FAILED '{wo.section_name}': {e}")
 
-    if len(failed) >= 2:
-        raise RuntimeError(
-            f"{len(failed)} sections failed ({', '.join(failed)}) — triggering single-prompt fallback"
-        )
+    # Any section still failed here is ENTIRELY ABSENT from paper_data (paper_data.update only
+    # runs on success) — it never generated even a truncated base to top up. Shipping the paper
+    # anyway renders the literal line "No questions found for section X" and knocks the total
+    # (e.g. 40/80 marks), and every later question is renumbered off-by-N because the missing
+    # section's slots leave no gap. So a missing section is NOT acceptable output: raise to
+    # trigger the single-prompt fallback, which regenerates the WHOLE paper in one pass. Sections
+    # that merely came back SHORT (present but under-count) are not in `failed` — they are handled
+    # by [Refill] below and never reach this gate.
     if failed:
-        print(f"[Parallel-Gen] ⚠️  {len(failed)} section(s) partial/failed: {failed}")
+        raise RuntimeError(
+            f"{len(failed)} section(s) missing after serial retry "
+            f"({', '.join(failed)}) — triggering single-prompt fallback"
+        )
 
     # Final guarantee: strip any wrong-type questions before numbering/render (covers the
     # partial-emit path where a section shipped foreign types after exhausting retries).
