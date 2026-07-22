@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { Eye, EyeOff, GraduationCap, AlertCircle, X } from 'lucide-react';
+import { Eye, EyeOff, GraduationCap, AlertCircle, X, CheckCircle2, Wrench, Sparkles } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
@@ -108,7 +108,54 @@ function LoginForm() {
           </div>
         </div>
       )}
-      <div className="w-full max-w-sm">
+      <div className="flex flex-col lg:flex-row items-center lg:items-stretch justify-center gap-6 lg:gap-10 w-full max-w-4xl">
+        {/* Dev Notes — recent fixes shipped */}
+        <aside className="w-full max-w-sm lg:w-72 lg:flex-shrink-0 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm order-2 lg:order-1">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="inline-flex items-center justify-center w-8 h-8 bg-slate-100 rounded-lg">
+              <Wrench className="w-4 h-4 text-slate-600" />
+            </div>
+            <h2 className="text-sm font-semibold text-slate-900">Dev Notes</h2>
+          </div>
+          <ol className="relative space-y-5">
+            <li className="flex gap-3">
+              <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-slate-900">Paper header fixed</p>
+                <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  The exam-paper header (school name, subject, class, marks) was rebuilt with a
+                  corrected, compact layout.
+                </p>
+              </div>
+            </li>
+            <li className="flex gap-3">
+              <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-slate-900">Chapter inconsistency fixed</p>
+                <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  Chapters are no longer silently dropped from papers — every planned chapter now
+                  gets its questions.
+                </p>
+              </div>
+            </li>
+            <li className="flex gap-3">
+              <Sparkles className="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-medium text-slate-900">Report an Issue</p>
+                  <span className="inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-indigo-50 text-indigo-700">New</span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  You can now report problems from the sidebar and track their status
+                  (investigating → fixing → fixed).
+                </p>
+              </div>
+            </li>
+          </ol>
+        </aside>
+
+        {/* Login column */}
+        <div className="w-full max-w-sm order-1 lg:order-2">
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-12 h-12 bg-blue-600 rounded-xl mb-4">
@@ -169,6 +216,7 @@ function LoginForm() {
               ) : 'Sign in'}
             </button>
           </form>
+        </div>
         </div>
 
       </div>

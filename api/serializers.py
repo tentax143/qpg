@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint
+from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Issue
 from core.media_access import signed_file_url
 from django.contrib.auth.models import User
 
@@ -10,6 +10,21 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'first_name', 'last_name', 'email']
         read_only_fields = ['id']
+
+
+class IssueSerializer(serializers.ModelSerializer):
+    """User-reported issue. Reporters supply title + description; status and admin_note are
+    managed by superadmin (the view forces safe defaults on create and gates edits)."""
+    created_by = UserSerializer(read_only=True)
+    school_name = serializers.CharField(source='school.name', read_only=True)
+
+    class Meta:
+        model = Issue
+        fields = [
+            'id', 'title', 'description', 'status', 'admin_note',
+            'created_by', 'school_name', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_by', 'school_name', 'created_at', 'updated_at']
 
 
 class ExamPatternSerializer(serializers.ModelSerializer):

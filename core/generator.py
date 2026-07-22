@@ -15,7 +15,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import simpleSplit
 from docx import Document
 from docx.shared import Pt, Inches, Twips
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.enum.table import WD_ROW_HEIGHT_RULE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from . import embeddings
@@ -2540,30 +2541,39 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
             run.font.name = 'Times New Roman'
         return run
 
-    def _tight(para, space_after=0):
+    def _tight(para, exact_pt):
+        """Force an EXACT line height (in points). This is the real height lever:
+        without WD_LINE_SPACING.EXACTLY, Word adds font-driven leading and ignores
+        small line_spacing multipliers, so the box never actually shrinks. Text
+        taller than exact_pt would clip, so keep exact_pt >= the run's font size."""
         pf = para.paragraph_format
         pf.space_before = Pt(0)
-        pf.space_after = Pt(space_after)
-        pf.line_spacing = 0.8  # 80% line spacing for compact header
+        pf.space_after = Pt(0)
+        pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+        pf.line_spacing = Pt(exact_pt)
         return para
+
+    def _fix_row_height(row, twips):
+        """Pin a table row to an EXACT height. Without hRule='exact', trHeight is
+        only a minimum and Word grows the row to fit content — which is why the
+        earlier tiny row heights did nothing."""
+        row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+        row.height = Twips(twips)
 
     # Outer 1-column table is the bordered box (9360 twips = 6.5", matching header1.xml).
     outer = header.add_table(rows=2, cols=1, width=Inches(6.5))
     _fix_table_width(outer, [9360])
     _set_cell_margins(outer, top=0, bottom=0)   # no vertical padding → compact box
-    # Set explicit minimal row heights (in twips)
-    outer.rows[0].height = Twips(180)  # title row: ~0.125 inch (minimal)
-    outer.rows[1].height = Twips(180)  # detail row: ~0.125 inch (minimal)
 
     # Title block — school name + exam-name/period line, centred. No internal
     # divider: the top cell's bottom border is off so it merges with the grid below.
     top = outer.rows[0].cells[0]
-    title_lines = [(school_name_val or "", 9, True),
-                   (test_type_val or "", 8, True)]
+    title_lines = [(school_name_val or "", 11, True),
+                   (test_type_val or "", 10, True)]
     for idx, (txt, size, bold) in enumerate(title_lines):
         para = top.paragraphs[0] if idx == 0 else top.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _tight(para, space_after=0)
+        _tight(para, exact_pt=size)   # exact line = font size (minimum, no leading)
         _style_run(para.add_run(txt), size, bold)
     _set_cell_border(top, top=_HDR_BORDER, left=_HDR_BORDER, right=_HDR_BORDER, bottom='none')
 
@@ -2572,18 +2582,16 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     #     CLASS : <class>                                  TIME  : <time>
     #     EXAM NO :               <SUBJECT>                MARKS : <marks>
     bot = outer.rows[1].cells[0]
-    _tight(bot.paragraphs[0])
-    _style_run(bot.paragraphs[0].add_run(""), 6)   # spacer with tight line spacing = minimal visual gap
+    # Collapse the cell's mandatory leading empty paragraph to ~nothing (1pt exact)
+    # instead of leaving a full blank line above the grid.
+    _tight(bot.paragraphs[0], exact_pt=1)
     grid = bot.add_table(rows=2, cols=3)   # _Cell.add_table takes no width; pinned below
     _fix_table_width(grid, [3120, 3120, 3120])
     _set_cell_margins(grid, top=0, bottom=0)
-    # Set explicit minimal row heights for the detail grid (in twips)
-    grid.rows[0].height = Twips(150)  # CLASS/TIME row: ~0.1 inch
-    grid.rows[1].height = Twips(150)  # EXAM NO/SUBJECT/MARKS row: ~0.1 inch
 
-    def _detail(cell, text, align="left", bold=False, size=8):
+    def _detail(cell, text, align="left", bold=False, size=10):
         para = cell.paragraphs[0]
-        _tight(para)
+        _tight(para, exact_pt=size)
         if align == "right":
             para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         elif align == "center":
@@ -2598,13 +2606,13 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     _detail(grid.rows[0].cells[2], f"TIME        :  {time_val}" if time_val else "TIME        :", align="right")
     # Row 2: EXAM NO | SUBJECT (centred, bold) | MARKS
     _detail(grid.rows[1].cells[0], "EXAM NO  :")
-    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=8)
+    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=10)
     _detail(grid.rows[1].cells[2], f"MARKS    :  {marks_val}" if marks_val else "MARKS    :", align="right")
 
-    # A table cell may not end on a nested table — close the detail cell with a spacer.
+    # A table cell may not end on a nested table — close with the smallest possible
+    # (1pt) spacer so the detail grid sits right against the box's bottom border.
     tail = bot.add_paragraph()
-    _tight(tail)
-    _style_run(tail.add_run(""), 0.5)   # minimal closing spacer (a cell can't end on a table)
+    _tight(tail, exact_pt=1)
     _set_cell_border(bot, top='none', left=_HDR_BORDER, right=_HDR_BORDER, bottom=_HDR_BORDER)
 
 

@@ -6,6 +6,7 @@ from .views import (
     MaterialViewSet,
     BlueprintTemplateViewSet,
     ExamBlueprintViewSet,
+    IssueViewSet,
     get_subjects_for_class,
     subjects_list,
     cbse_exam_types,
@@ -54,6 +55,7 @@ router.register(r'papers', QuestionPaperViewSet, basename='questionpaper')
 router.register(r'materials', MaterialViewSet, basename='material')
 router.register(r'templates', BlueprintTemplateViewSet, basename='blueprinttemplate')
 router.register(r'blueprints', ExamBlueprintViewSet, basename='examblueprint')
+router.register(r'issues', IssueViewSet, basename='issue')
 
 urlpatterns = [
     path('auth/login/', login, name='api_login'),

@@ -7,7 +7,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Subject
+from core.models import ExamPattern, QuestionPaper, Material, BlueprintTemplate, ExamBlueprint, Subject, Issue
 from core import embeddings
 from core.tasks import (ingest_material_task, split_book_task, ingest_url_task,
                         dispatch_paper, dispatch_next_queued_paper)
@@ -23,7 +23,9 @@ from .serializers import (
     MaterialSerializer,
     BlueprintTemplateSerializer,
     ExamBlueprintSerializer,
+    IssueSerializer,
 )
+from .permissions import IsSuperAdmin
 
 class LargeResultsSetPagination(PageNumberPagination):
     page_size = 1000
@@ -91,6 +93,41 @@ def _owner_scope(qs, user, owner_field='created_by'):
         return qs.filter(**{owner_field: user})
     # teacher / unknown role → own only
     return qs.filter(**{owner_field: user})
+
+
+class IssueViewSet(viewsets.ModelViewSet):
+    """User issue reports. Any authenticated user can create an issue and list/read their
+    OWN issues; superadmin sees every issue (filterable by ?status=) and is the only role
+    allowed to change status / add a note / delete."""
+    serializer_class = IssueSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = LargeResultsSetPagination
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['status']
+    search_fields = ['title', 'description']
+
+    def get_permissions(self):
+        # Only superadmin may edit status/note or delete; anyone authenticated may create/read.
+        if self.action in ('update', 'partial_update', 'destroy'):
+            return [IsSuperAdmin()]
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        qs = Issue.objects.select_related('created_by', 'school').all()
+        if _user_role(self.request.user) == 'superadmin' or self.request.user.is_superuser:
+            return qs
+        # Regular users only ever see the issues they reported.
+        return qs.filter(created_by=self.request.user)
+
+    def perform_create(self, serializer):
+        # Force safe defaults regardless of request body: a reporter can never set status
+        # or an admin note. Only title + description come from the user.
+        serializer.save(
+            created_by=self.request.user,
+            school=_get_school(self.request.user),
+            status=Issue.STATUS_OPEN,
+            admin_note='',
+        )
 
 
 def _budget_blocked(user):

@@ -24,6 +24,7 @@ import {
   X,
   Bell,
   Sparkles,
+  Bug,
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -66,6 +67,7 @@ export default function Sidebar() {
     { href: '/superadmin/cbse-patterns', icon: ClipboardList, label: 'CBSE Patterns' },
     { href: '/superadmin/queue', icon: ListOrdered, label: 'Queue' },
     { href: '/superadmin/notifications', icon: Bell, label: 'Notifications' },
+    { href: '/superadmin/issues', icon: Bug, label: 'Issues' },
   ];
 
   // SuperAdmin content management — populates the shared/global vector store.
@@ -223,7 +225,8 @@ export default function Sidebar() {
           </>
         )}
 
-        <div className="pt-2 border-t border-slate-100">
+        <div className="pt-2 border-t border-slate-100 space-y-0.5">
+          {!isSuperAdmin && <NavLink href="/report-issue" icon={Bug} label="Report an Issue" />}
           <NavLink href="/manual" icon={HelpCircle} label="User Manual" />
         </div>
       </nav>

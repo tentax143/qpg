@@ -665,3 +665,37 @@ class SystemNotification(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.severity})"
+
+
+class Issue(models.Model):
+    """A problem report raised by any user ("this isn't working"). Superadmin triages it
+    through the status workflow (open → investigating → fixing → fixed) and can leave a
+    note the reporter sees."""
+    STATUS_OPEN = 'open'
+    STATUS_INVESTIGATING = 'investigating'
+    STATUS_FIXING = 'fixing'
+    STATUS_FIXED = 'fixed'
+    STATUS_CHOICES = [
+        (STATUS_OPEN, 'Open'),
+        (STATUS_INVESTIGATING, 'Investigating'),
+        (STATUS_FIXING, 'Fixing'),
+        (STATUS_FIXED, 'Fixed'),
+    ]
+
+    title = models.CharField(max_length=200)
+    description = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_OPEN, db_index=True)
+    # Superadmin's reply/note back to the reporter (e.g. "Fixed in today's release").
+    admin_note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='reported_issues')
+    school = models.ForeignKey('School', on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='issues')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} ({self.status})"
