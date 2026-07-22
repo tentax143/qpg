@@ -2423,6 +2423,13 @@ def _expand_test_type(pattern_name: str) -> str:
     return name
 
 
+def _current_period():
+    """The exam period printed on the header's second title line: the current
+    month and year, e.g. 'JULY - 2026'. Shown in place of the internal pattern
+    name, which isn't meaningful on a printed paper."""
+    return datetime.now().strftime("%B - %Y").upper()
+
+
 # --- Paper header, generated in code ----------------------------------------
 # The header — the school name / subject / test type in a bordered box, above a
 # CLASS/TIME and EXAM NO/MARKS grid — used to live in a data/base.docx template
@@ -2530,7 +2537,7 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     for idx, (txt, size, bold) in enumerate(title_lines):
         para = top.paragraphs[0] if idx == 0 else top.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _tight(para, space_after=2)
+        _tight(para, space_after=1)
         _style_run(para.add_run(txt), size, bold)
     _set_cell_border(top, top=_HDR_BORDER, left=_HDR_BORDER, right=_HDR_BORDER, bottom=_HDR_BORDER)
 
@@ -2540,7 +2547,7 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     #     EXAM NO :               <SUBJECT>                MARKS : <marks>
     bot = outer.rows[1].cells[0]
     _tight(bot.paragraphs[0])
-    _style_run(bot.paragraphs[0].add_run(""), 6)   # 6pt spacer below the divider
+    _style_run(bot.paragraphs[0].add_run(""), 2)   # small spacer below the divider
     grid = bot.add_table(rows=2, cols=3)   # _Cell.add_table takes no width; pinned below
     _fix_table_width(grid, [3120, 3120, 3120])
 
@@ -2567,7 +2574,7 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     # A table cell may not end on a nested table — close the detail cell with a spacer.
     tail = bot.add_paragraph()
     _tight(tail)
-    _style_run(tail.add_run(""), 6)
+    _style_run(tail.add_run(""), 1)   # minimal closing spacer (a cell can't end on a table)
     _set_cell_border(bot, top='none', left=_HDR_BORDER, right=_HDR_BORDER, bottom=_HDR_BORDER)
 
 
@@ -2927,7 +2934,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
     if header_meta is None:
         header_meta = {}
 
-    test_type_val = _expand_test_type(header_meta.get("test_type", header_meta.get("pattern_name", "")))
+    test_type_val = _current_period()   # second title line = current month - year
     class_val = header_meta.get("class_name", class_name) or class_name
     subject_val = header_meta.get("subject", subject) or subject
     time_val = str(header_meta.get("duration", "")).strip()
