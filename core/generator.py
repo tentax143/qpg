@@ -2551,6 +2551,9 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     outer = header.add_table(rows=2, cols=1, width=Inches(6.5))
     _fix_table_width(outer, [9360])
     _set_cell_margins(outer, top=0, bottom=0)   # no vertical padding → compact box
+    # Set explicit minimal row heights (in twips)
+    outer.rows[0].height = Twips(180)  # title row: ~0.125 inch (minimal)
+    outer.rows[1].height = Twips(180)  # detail row: ~0.125 inch (minimal)
 
     # Title block — school name + exam-name/period line, centred. No internal
     # divider: the top cell's bottom border is off so it merges with the grid below.
@@ -2574,6 +2577,9 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     grid = bot.add_table(rows=2, cols=3)   # _Cell.add_table takes no width; pinned below
     _fix_table_width(grid, [3120, 3120, 3120])
     _set_cell_margins(grid, top=0, bottom=0)
+    # Set explicit minimal row heights for the detail grid (in twips)
+    grid.rows[0].height = Twips(150)  # CLASS/TIME row: ~0.1 inch
+    grid.rows[1].height = Twips(150)  # EXAM NO/SUBJECT/MARKS row: ~0.1 inch
 
     def _detail(cell, text, align="left", bold=False, size=8):
         para = cell.paragraphs[0]
@@ -2592,7 +2598,7 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     _detail(grid.rows[0].cells[2], f"TIME        :  {time_val}" if time_val else "TIME        :", align="right")
     # Row 2: EXAM NO | SUBJECT (centred, bold) | MARKS
     _detail(grid.rows[1].cells[0], "EXAM NO  :")
-    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=10)
+    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=8)
     _detail(grid.rows[1].cells[2], f"MARKS    :  {marks_val}" if marks_val else "MARKS    :", align="right")
 
     # A table cell may not end on a nested table — close the detail cell with a spacer.
