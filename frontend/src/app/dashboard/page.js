@@ -521,7 +521,7 @@ export default function DashboardPage() {
                       </div>
                       <p className="text-[15px] font-semibold text-slate-700">No papers yet</p>
                       <p className="text-[13px] text-slate-400 mt-1.5 max-w-[280px] leading-relaxed">
-                        Generate your first question paper to get started with Shiken
+                        Generate your first question paper to get started with qForge AI
                       </p>
                       <Link
                         href="/generator"

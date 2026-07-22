@@ -39,7 +39,7 @@ const body = DM_Sans({
 /* ─── Content ────────────────────────────────────────────── */
 const HEADLINE = 'Build exam papers with the power of AI.';
 const SUBTITLE =
-  'Shiken is a complete platform for schools to generate syllabus-aligned question papers directly from their own textbooks, with built-in team approvals and usage tracking.';
+  'qForge AI is a complete platform for schools to generate syllabus-aligned question papers directly from their own textbooks, with built-in team approvals and usage tracking.';
 
 const STATS = [
   { value: '3', suffix: '×', label: 'Faster first draft' },
@@ -110,7 +110,7 @@ const HOW_IT_WORKS = [
   {
     step: '03',
     title: 'Generate & Refine',
-    body: 'Shiken produces a draft instantly. Swap out any question you don\'t like without breaking the total marks.',
+    body: 'qForge AI produces a draft instantly. Swap out any question you don\'t like without breaking the total marks.',
   },
   {
     step: '04',
@@ -121,12 +121,12 @@ const HOW_IT_WORKS = [
 
 const FAQ = [
   {
-    q: 'Who is Shiken built for?',
-    a: 'Shiken is built for schools — teachers, subject coordinators, academic admins, and principals who deal with question paper creation at scale.',
+    q: 'Who is qForge AI built for?',
+    a: 'qForge AI is built for schools — teachers, subject coordinators, academic admins, and principals who deal with question paper creation at scale.',
   },
   {
     q: 'Does the AI generate out-of-syllabus questions?',
-    a: 'No. Because you upload your own textbooks and materials, Shiken only suggests questions grounded strictly in your school\'s exact curriculum.',
+    a: 'No. Because you upload your own textbooks and materials, qForge AI only suggests questions grounded strictly in your school\'s exact curriculum.',
   },
   {
     q: 'What happens if the AI generates a weak question?',
@@ -625,7 +625,7 @@ export default function RootPage() {
               letterSpacing: '-0.025em',
               fontFamily: 'var(--font-body)',
             }}>
-              Shiken
+              qForge AI
             </span>
           </div>
 
@@ -803,7 +803,7 @@ export default function RootPage() {
                   onMouseOver={e => { e.currentTarget.style.background = '#2a2826'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 28px rgba(15,14,13,0.14)'; }}
                   onMouseOut={e => { e.currentTarget.style.background = '#0f0e0d'; e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}
                 >
-                  Open workspace
+                  Get Started
                   <ArrowRight size={16} />
                 </Link>
 
@@ -933,7 +933,7 @@ export default function RootPage() {
                 padding: '0 10px',
               }}>
                 <span style={{ fontSize: '0.6875rem', color: '#9c9590', fontFamily: 'var(--font-body)' }}>
-                  app.shiken.in / workspace
+                  app.qforge.in / workspace
                 </span>
               </div>
             </div>
@@ -1115,7 +1115,7 @@ export default function RootPage() {
               <span style={{ color: '#c9b99a' }}>Nothing it doesn't.</span>
             </h2>
             <p style={{ fontSize: '1rem', color: '#7a756f', lineHeight: 1.75, fontFamily: 'var(--font-body)', maxWidth: 520, margin: '0 auto' }}>
-              Shiken was built around how teachers and coordinators actually work — not how software engineers assume they do.
+              qForge AI was built around how teachers and coordinators actually work — not how software engineers assume they do.
             </p>
           </motion.div>
 
@@ -1486,7 +1486,7 @@ export default function RootPage() {
                   <span style={{ color: '#c9b99a' }}>Ship with confidence.</span>
                 </h2>
                 <p style={{ fontSize: '1rem', color: '#7a756f', lineHeight: 1.75, fontFamily: 'var(--font-body)', maxWidth: 500 }}>
-                  Shiken is free to start. No credit card required. Works for any subject, board, or school size.
+                  qForge AI is free to start. No credit card required. Works for any subject, board, or school size.
                 </p>
               </div>
 
@@ -1510,7 +1510,7 @@ export default function RootPage() {
                   onMouseOver={e => { e.currentTarget.style.background = '#2a2826'; e.currentTarget.style.transform = 'translateY(-3px) scale(1.02)'; e.currentTarget.style.boxShadow = '0 16px 40px rgba(15,14,13,0.2)'; }}
                   onMouseOut={e => { e.currentTarget.style.background = '#0f0e0d'; e.currentTarget.style.transform = 'translateY(0) scale(1)'; e.currentTarget.style.boxShadow = 'none'; }}
                 >
-                  Enter Shiken
+                  Enter qForge AI
                   <ArrowRight size={16} />
                 </Link>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1535,7 +1535,7 @@ export default function RootPage() {
                 <GraduationCap size={12} style={{ color: '#faf9f7' }} />
               </div>
               <span style={{ fontSize: '0.9375rem', fontWeight: 800, color: '#0f0e0d', letterSpacing: '-0.02em', fontFamily: 'var(--font-body)' }}>
-                Shiken
+                qForge AI
               </span>
             </div>
 

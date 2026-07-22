@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Shiken",
+  title: "qForge AI",
   description: "Generate question papers from exam patterns",
 };
 

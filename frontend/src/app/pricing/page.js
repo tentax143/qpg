@@ -263,7 +263,7 @@ export default function PricingPage() {
               fontSize: '1.25rem', fontWeight: 800, color: '#0f0e0d',
               letterSpacing: '-0.02em', fontFamily: 'var(--font-body)',
             }}>
-              Shiken
+              qForge AI
             </span>
           </Link>
 

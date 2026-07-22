@@ -68,7 +68,7 @@ function ProductMockup() {
           border: '1px solid rgba(236, 233, 228, 0.6)'
         }}>
           <span style={{ fontSize: '0.6875rem', color: '#9c9590', fontFamily: 'var(--l-sans)', fontWeight: 500 }}>
-            app.shiken.in / generator
+            app.qforge.in / generator
           </span>
         </div>
       </div>
@@ -281,7 +281,7 @@ function LoginForm() {
               <GraduationCap size={16} style={{ color: '#faf9f7' }} />
             </div>
             <span style={{ fontSize: '1.125rem', fontWeight: 800, color: '#0f0e0d', letterSpacing: '-0.02em' }}>
-              Shiken
+              qForge AI
             </span>
           </motion.div>
 
@@ -308,7 +308,7 @@ function LoginForm() {
             marginBottom: '2.5rem',
           }}>
             Blueprint-first, AI-assisted,{' '}
-            <span style={{ color: '#b68e45', fontWeight: 600 }}>built with Shiken.</span>
+            <span style={{ color: '#b68e45', fontWeight: 600 }}>built with qForge AI.</span>
           </motion.p>
 
           {/* Form card */}
@@ -525,7 +525,7 @@ function LoginForm() {
             <span style={{ color: '#b68e45' }}>built with clarity.</span>
           </p>
           <p style={{ fontSize: '0.8125rem', fontWeight: 500, color: '#7a756f', fontFamily: 'var(--l-sans)' }}>
-            Shiken · Blueprint-first AI exam platform
+            qForge AI · Blueprint-first AI exam platform
           </p>
         </motion.div>
       </div>

@@ -159,9 +159,9 @@ export default function Sidebar({ isCollapsed, setIsCollapsed }) {
       {/* Mobile top bar */}
       <div className="lg:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-slate-100 flex items-center justify-between px-4 z-40">
         <div className="flex items-center min-w-0">
-          <img src="/SHIKEN.jpg" alt="Shiken Logo" className="w-8 h-8 rounded-[10px] object-cover shrink-0 shadow-sm" />
+          <img src="/qforge-logo.jpg" alt="qForge AI Logo" className="w-8 h-8 rounded-[10px] object-cover shrink-0 shadow-sm" />
           <span className="ml-3 text-[16px] font-black tracking-tight truncate text-slate-900 capitalize">
-            Shiken
+            qForge AI
           </span>
         </div>
         <button
@@ -193,14 +193,14 @@ export default function Sidebar({ isCollapsed, setIsCollapsed }) {
           <div className="flex items-center min-w-0">
             {/* Logo Icon */}
             <img 
-              src="/SHIKEN.jpg" 
-              alt="Shiken Logo" 
+              src="/qforge-logo.jpg" 
+              alt="qForge AI Logo" 
               className="w-10 h-10 rounded-2xl object-cover shrink-0 shadow-sm hover:scale-[1.03] transition-transform duration-300"
             />
             {/* Logo Text */}
             <div className={`ml-3.5 min-w-0 transition-opacity duration-300 ${isCollapsed ? 'opacity-0 hidden' : 'opacity-100'}`}>
               <span className="text-[18px] font-black tracking-wide truncate block text-slate-900 capitalize">
-                Shiken
+                qForge AI
               </span>
             </div>
           </div>
