@@ -2492,11 +2492,29 @@ def _fix_table_width(table, col_twips):
                 cell.width = Twips(col_twips[i])
 
 
+def _set_cell_margins(table, top=0, bottom=0, left=108, right=108):
+    """Set the default cell padding (in twips) for every cell in `table`. Zeroing
+    top/bottom removes the vertical padding Word otherwise adds inside each cell —
+    the main lever for making the header box compact."""
+    tblPr = table._tbl.tblPr
+    mar = tblPr.find(qn('w:tblCellMar'))
+    if mar is None:
+        mar = OxmlElement('w:tblCellMar')
+        tblPr.append(mar)
+    for edge, val in (('top', top), ('left', left), ('bottom', bottom), ('right', right)):
+        el = mar.find(qn(f'w:{edge}'))
+        if el is None:
+            el = OxmlElement(f'w:{edge}')
+            mar.append(el)
+        el.set(qn('w:w'), str(val))
+        el.set(qn('w:type'), 'dxa')
+
+
 def _build_header(section, subject_val, class_val, time_val, marks_val,
                   test_type_val, school_name_val="", script_font=None):
     """Build the paper header into `section`'s header: a bordered box in two
     compartments separated by a rule. The top compartment centres the school
-    name (bold 14pt) and test type (bold 12pt). The bottom compartment is a
+    name (bold 13pt) and the second line (bold 11pt). The bottom compartment is a
     3-column grid — CLASS / TIME on the first line and EXAM NO (left, blank for
     the student to fill) / SUBJECT (centred, bold) / MARKS on the second.
     Replaces the former base.docx template + _fill_header_placeholders
@@ -2528,16 +2546,17 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     # Outer 1-column table is the bordered box (9360 twips = 6.5", matching header1.xml).
     outer = header.add_table(rows=2, cols=1, width=Inches(6.5))
     _fix_table_width(outer, [9360])
+    _set_cell_margins(outer, top=0, bottom=0)   # no vertical padding → compact box
 
     # Compartment 1 — centred title block (school name + test type), closed with a
     # divider rule (bottom border here, top border off the detail cell below → one line).
     top = outer.rows[0].cells[0]
-    title_lines = [(school_name_val or "", 14, True),
-                   (test_type_val or "", 12, True)]
+    title_lines = [(school_name_val or "", 13, True),
+                   (test_type_val or "", 11, True)]
     for idx, (txt, size, bold) in enumerate(title_lines):
         para = top.paragraphs[0] if idx == 0 else top.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _tight(para, space_after=1)
+        _tight(para, space_after=0)
         _style_run(para.add_run(txt), size, bold)
     _set_cell_border(top, top=_HDR_BORDER, left=_HDR_BORDER, right=_HDR_BORDER, bottom=_HDR_BORDER)
 
@@ -2547,9 +2566,10 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     #     EXAM NO :               <SUBJECT>                MARKS : <marks>
     bot = outer.rows[1].cells[0]
     _tight(bot.paragraphs[0])
-    _style_run(bot.paragraphs[0].add_run(""), 2)   # small spacer below the divider
+    _style_run(bot.paragraphs[0].add_run(""), 1)   # minimal spacer below the divider
     grid = bot.add_table(rows=2, cols=3)   # _Cell.add_table takes no width; pinned below
     _fix_table_width(grid, [3120, 3120, 3120])
+    _set_cell_margins(grid, top=0, bottom=0)
 
     def _detail(cell, text, align="left", bold=False, size=11):
         para = cell.paragraphs[0]
@@ -2568,7 +2588,7 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     _detail(grid.rows[0].cells[2], f"TIME        :  {time_val}" if time_val else "TIME        :", align="right")
     # Row 2: EXAM NO | SUBJECT (centred, bold) | MARKS
     _detail(grid.rows[1].cells[0], "EXAM NO  :")
-    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=12)
+    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=11)
     _detail(grid.rows[1].cells[2], f"MARKS    :  {marks_val}" if marks_val else "MARKS    :", align="right")
 
     # A table cell may not end on a nested table — close the detail cell with a spacer.
