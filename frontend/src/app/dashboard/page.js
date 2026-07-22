@@ -50,6 +50,11 @@ const STATUS_GUIDE = [
   },
 ];
 
+// The papers list is server-paginated — one page at a time, not the whole table. The stat
+// tiles come from the /papers/dashboard_stats/ endpoint so they count ALL papers, not just
+// the current page.
+const PAGE_SIZE = 20;
+
 export default function DashboardPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -61,6 +66,9 @@ export default function DashboardPage() {
     recent_activity: []
   });
   const [selectedPapers, setSelectedPapers] = useState([]);
+  const [page, setPage] = useState(1);          // 1-indexed current page
+  const [totalCount, setTotalCount] = useState(0);
+  const pageRef = useRef(1);                     // latest page for closures (handlers/polling)
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [rerenderingId, setRerenderingId] = useState(null);
@@ -75,10 +83,20 @@ export default function DashboardPage() {
     const userData = localStorage.getItem('user');
     if (!token) { router.push('/'); return; }
     if (userData) setUser(JSON.parse(userData));
-    fetchDashboardData();
     setLoading(false);
     return () => { if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current); };
   }, []);
+
+  // Keep pageRef in step with page so fetchDashboardData — which is also invoked from action
+  // handlers and the polling interval (stale closures) — always targets the page on screen.
+  useEffect(() => { pageRef.current = page; }, [page]);
+
+  // Fetch on mount and on every page change. Selection is per-page, so reset it.
+  useEffect(() => {
+    setSelectedPapers([]);
+    fetchDashboardData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   useEffect(() => {
     const hasGeneratingPapers = stats.recent_activity.some(p =>
@@ -100,24 +118,30 @@ export default function DashboardPage() {
 
   const fetchDashboardData = async () => {
     try {
-      const papersRes = await apiClient.get('/papers/?page_size=100');
+      const p = pageRef.current;
+      // One page of papers for the table + whole-table counts for the tiles, in parallel.
+      const [papersRes, statsRes] = await Promise.all([
+        apiClient.get(`/papers/?page_size=${PAGE_SIZE}&page=${p}`),
+        apiClient.get('/papers/dashboard_stats/'),
+      ]);
       const papers = papersRes.data.results || [];
-      const total = papers.length;
-      const now = new Date();
-      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const thisMonth = papers.filter(p => new Date(p.created_at) >= firstDayOfMonth).length;
-      const successCount = papers.filter(p => p.status === 'done').length;
-      const successRate = total > 0 ? Math.round((successCount / total) * 100) : 0;
+      const count = papersRes.data.count ?? papers.length;
+      const s = statsRes.data || {};
+      setTotalCount(count);
       setStats({
-        total_papers: total,
-        this_month: thisMonth,
-        success_rate: `${successRate}%`,
-        recent_activity: papers.slice(0, 10)
+        total_papers: s.total_papers ?? count,
+        this_month: s.this_month ?? 0,
+        success_rate: s.success_rate ?? '0%',
+        recent_activity: papers,
       });
     } catch (err) {
-      if (err.response?.status === 401) {
+      const st = err.response?.status;
+      if (st === 401) {
         localStorage.removeItem('authToken');
         router.push('/');
+      } else if (st === 404 && pageRef.current > 1) {
+        // The page fell out of range (e.g. deletes shrank the list) — step back one.
+        setPage(pageRef.current - 1);
       }
     }
   };
@@ -268,6 +292,8 @@ export default function DashboardPage() {
     );
   };
 
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
   if (loading) return (
     <div className="flex items-center justify-center h-64">
       <div className="w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" />
@@ -314,7 +340,7 @@ export default function DashboardPage() {
         <div className="space-y-6">
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-900">Recent Papers</h2>
+              <h2 className="text-sm font-semibold text-slate-900">Papers</h2>
               {selectedPapers.length > 0 && (
                 <button
                   onClick={handleBulkDelete}
@@ -513,6 +539,31 @@ export default function DashboardPage() {
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination */}
+            {totalCount > 0 && (
+              <div className="px-5 py-3 border-t border-slate-200 flex items-center justify-between">
+                <p className="text-xs text-slate-500">
+                  Page {page} of {totalPages} · {totalCount} paper{totalCount === 1 ? '' : 's'}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                    className="px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                    className="px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Quick actions */}

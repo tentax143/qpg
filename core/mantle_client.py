@@ -57,6 +57,19 @@ def _next_key():
     return key
 
 
+def _reserve_key_start():
+    """Reserve a starting index into the key list for one converse() call and advance the
+    shared rotation cursor. Each call begins on a different key (spreads load across keys under
+    parallel use); converse() then walks forward from this start on auth failover, so a call
+    that draws a dead key deterministically tries the OTHER key(s) next — regardless of what
+    concurrent calls do to the shared cursor in between."""
+    global _key_index
+    with _key_lock:
+        start = _key_index
+        _key_index += 1
+    return start
+
+
 def converse(
     model_id: str,
     prompt: str,
@@ -97,8 +110,20 @@ def converse(
         "temperature": temperature,
     }
 
+    keys = _get_keys()
+    if not keys:
+        raise RuntimeError(
+            "No Mantle API keys found. Set MANTLE_API_KEYS or "
+            "LLM_API_1_MANTLE_KEY / LLM_API_2_MANTLE_KEY in .env"
+        )
+    n_keys = len(keys)
+    key_start = _reserve_key_start()
+
     for attempt in range(retries):
-        api_key = _next_key()
+        # Deterministic per-attempt key: attempt 0 uses the reserved start key; each retry
+        # walks to the next key. Independent of the shared cursor, so the auth failover below
+        # always reaches a DIFFERENT key even when concurrent calls churn the cursor.
+        api_key = keys[(key_start + attempt) % n_keys]
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
@@ -126,6 +151,18 @@ def converse(
 
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response is not None else 0
+            # An unauthorized/forbidden key is a per-KEY fault, not a transient one: retrying the
+            # SAME key is pointless, but a sibling key may still be valid. Fail over to the next
+            # key immediately (no backoff) while an untried key remains. This is the difference
+            # between "~half of all LLM calls hard-fail on a rotated bad key" (whole sections
+            # silently dropped from the paper) and "one dead key is skipped." A 401/403 with a
+            # single key configured — or after every key has been tried — still raises.
+            if status in (401, 403) and n_keys > 1 and (attempt + 1) < min(retries, n_keys):
+                print(
+                    f"[Mantle] HTTP {status} — key unauthorized, "
+                    f"failing over to next key ({attempt + 1}/{n_keys})"
+                )
+                continue
             if status in (429, 503) and attempt < retries - 1:
                 wait = (2 ** attempt) + random.random()
                 print(
