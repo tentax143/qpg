@@ -2423,11 +2423,15 @@ def _expand_test_type(pattern_name: str) -> str:
     return name
 
 
-def _current_period():
-    """The exam period printed on the header's second title line: the current
-    month and year, e.g. 'JULY - 2026'. Shown in place of the internal pattern
-    name, which isn't meaningful on a printed paper."""
-    return datetime.now().strftime("%B - %Y").upper()
+def _header_title_line(pattern_name=""):
+    """The header's second title line: the exam name with the redundant word
+    'Pattern' stripped, followed by the current month and year — e.g. a pattern
+    named 'Board Exam Pattern' becomes 'Board Exam July - 2026'. Falls back to
+    just the month-year when there is no pattern name."""
+    name = _expand_test_type(pattern_name or "")
+    name = re.sub(r"\s*\bpattern\b\s*", " ", name, flags=re.IGNORECASE).strip()
+    period = datetime.now().strftime("%B - %Y")   # e.g. "July - 2026"
+    return f"{name} {period}".strip() if name else period
 
 
 # --- Paper header, generated in code ----------------------------------------
@@ -2512,11 +2516,11 @@ def _set_cell_margins(table, top=0, bottom=0, left=108, right=108):
 
 def _build_header(section, subject_val, class_val, time_val, marks_val,
                   test_type_val, school_name_val="", script_font=None):
-    """Build the paper header into `section`'s header: a bordered box in two
-    compartments separated by a rule. The top compartment centres the school
-    name (bold 13pt) and the second line (bold 11pt). The bottom compartment is a
-    3-column grid — CLASS / TIME on the first line and EXAM NO (left, blank for
-    the student to fill) / SUBJECT (centred, bold) / MARKS on the second.
+    """Build the paper header into `section`'s header: a single bordered box.
+    The top centres the school name (bold 13pt) and the exam-name/period line
+    (bold 11pt); beneath it is a 3-column grid — CLASS / TIME on the first line
+    and EXAM NO (left, blank for the student to fill) / SUBJECT (centred, bold)
+    / MARKS on the second.
     Replaces the former base.docx template + _fill_header_placeholders
     substitution. `script_font`, when set, applies the complex-script font
     (Tamil/Devanagari) to every header run so language papers print correctly,
@@ -2548,8 +2552,8 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     _fix_table_width(outer, [9360])
     _set_cell_margins(outer, top=0, bottom=0)   # no vertical padding → compact box
 
-    # Compartment 1 — centred title block (school name + test type), closed with a
-    # divider rule (bottom border here, top border off the detail cell below → one line).
+    # Title block — school name + exam-name/period line, centred. No internal
+    # divider: the top cell's bottom border is off so it merges with the grid below.
     top = outer.rows[0].cells[0]
     title_lines = [(school_name_val or "", 13, True),
                    (test_type_val or "", 11, True)]
@@ -2558,7 +2562,7 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         _tight(para, space_after=0)
         _style_run(para.add_run(txt), size, bold)
-    _set_cell_border(top, top=_HDR_BORDER, left=_HDR_BORDER, right=_HDR_BORDER, bottom=_HDR_BORDER)
+    _set_cell_border(top, top=_HDR_BORDER, left=_HDR_BORDER, right=_HDR_BORDER, bottom='none')
 
     # Compartment 2 — detail block: a 3-column grid. The subject sits centred on the
     # second line, between EXAM NO (left, blank for the student) and MARKS (right):
@@ -2566,7 +2570,7 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     #     EXAM NO :               <SUBJECT>                MARKS : <marks>
     bot = outer.rows[1].cells[0]
     _tight(bot.paragraphs[0])
-    _style_run(bot.paragraphs[0].add_run(""), 1)   # minimal spacer below the divider
+    _style_run(bot.paragraphs[0].add_run(""), 3)   # small gap between the title and the grid
     grid = bot.add_table(rows=2, cols=3)   # _Cell.add_table takes no width; pinned below
     _fix_table_width(grid, [3120, 3120, 3120])
     _set_cell_margins(grid, top=0, bottom=0)
@@ -2954,7 +2958,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
     if header_meta is None:
         header_meta = {}
 
-    test_type_val = _current_period()   # second title line = current month - year
+    test_type_val = _header_title_line(header_meta.get("test_type", header_meta.get("pattern_name", "")))
     class_val = header_meta.get("class_name", class_name) or class_name
     subject_val = header_meta.get("subject", subject) or subject
     time_val = str(header_meta.get("duration", "")).strip()
