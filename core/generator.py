@@ -2487,13 +2487,15 @@ def _fix_table_width(table, col_twips):
 
 def _build_header(section, subject_val, class_val, time_val, marks_val,
                   test_type_val, school_name_val="", script_font=None):
-    """Build the paper header into `section`'s header: a bordered box with the
-    school name (bold 12pt), subject (10pt) and test type (bold 11pt) centred,
-    above a borderless 2x2 grid — CLASS / TIME on the first line, EXAM NO (left
-    blank for the student to fill) / MARKS on the second. Replaces the former
-    base.docx template + _fill_header_placeholders substitution. `script_font`,
-    when set, applies the complex-script font (Tamil/Devanagari) to every header
-    run so language papers print correctly, matching the body."""
+    """Build the paper header into `section`'s header: a bordered box in two
+    compartments separated by a rule. The top compartment centres the school
+    name (bold 14pt) and test type (bold 12pt). The bottom compartment is a
+    3-column grid — CLASS / TIME on the first line and EXAM NO (left, blank for
+    the student to fill) / SUBJECT (centred, bold) / MARKS on the second.
+    Replaces the former base.docx template + _fill_header_placeholders
+    substitution. `script_font`, when set, applies the complex-script font
+    (Tamil/Devanagari) to every header run so language papers print correctly,
+    matching the body."""
     header = section.header
     header.is_linked_to_previous = False
     # Drop python-docx's auto-created empty paragraph so the box sits flush at the top.
@@ -2520,40 +2522,49 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     outer = header.add_table(rows=2, cols=1, width=Inches(6.5))
     _fix_table_width(outer, [9360])
 
-    # Row 1 — centred title block; border on top/left/right (bottom left open).
+    # Compartment 1 — centred title block (school name + test type), closed with a
+    # divider rule (bottom border here, top border off the detail cell below → one line).
     top = outer.rows[0].cells[0]
-    title_lines = [(school_name_val or "", 12, True),
-                   (subject_val or "", 10, False),
-                   (test_type_val or "", 11, True)]
+    title_lines = [(school_name_val or "", 14, True),
+                   (test_type_val or "", 12, True)]
     for idx, (txt, size, bold) in enumerate(title_lines):
         para = top.paragraphs[0] if idx == 0 else top.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _tight(para)
+        _tight(para, space_after=2)
         _style_run(para.add_run(txt), size, bold)
-    _set_cell_border(top, top=_HDR_BORDER, left=_HDR_BORDER, right=_HDR_BORDER, bottom='none')
+    _set_cell_border(top, top=_HDR_BORDER, left=_HDR_BORDER, right=_HDR_BORDER, bottom=_HDR_BORDER)
 
-    # Row 2 — detail grid; border on left/right/bottom to close the box.
+    # Compartment 2 — detail block: a 3-column grid. The subject sits centred on the
+    # second line, between EXAM NO (left, blank for the student) and MARKS (right):
+    #     CLASS : <class>                                  TIME  : <time>
+    #     EXAM NO :               <SUBJECT>                MARKS : <marks>
     bot = outer.rows[1].cells[0]
     _tight(bot.paragraphs[0])
-    _style_run(bot.paragraphs[0].add_run(""), 6)   # 6pt spacer above the grid
-    grid = bot.add_table(rows=2, cols=2)   # _Cell.add_table takes no width; pinned below
-    _fix_table_width(grid, [4680, 4680])
+    _style_run(bot.paragraphs[0].add_run(""), 6)   # 6pt spacer below the divider
+    grid = bot.add_table(rows=2, cols=3)   # _Cell.add_table takes no width; pinned below
+    _fix_table_width(grid, [3120, 3120, 3120])
 
-    def _detail(cell, text, right=False):
+    def _detail(cell, text, align="left", bold=False, size=11):
         para = cell.paragraphs[0]
         _tight(para)
-        if right:
+        if align == "right":
             para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        _style_run(para.add_run(text), 11)
+        elif align == "center":
+            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _style_run(para.add_run(text), size, bold)
         _set_cell_border(cell, top='none', left='none', bottom='none',
                          right='none', insideH='none', insideV='none')
 
+    # Row 1: CLASS | (blank) | TIME
     _detail(grid.rows[0].cells[0], f"CLASS       :  {class_val}" if class_val else "CLASS       :")
-    _detail(grid.rows[0].cells[1], f"TIME        :  {time_val}" if time_val else "TIME        :", right=True)
+    _detail(grid.rows[0].cells[1], "", align="center")
+    _detail(grid.rows[0].cells[2], f"TIME        :  {time_val}" if time_val else "TIME        :", align="right")
+    # Row 2: EXAM NO | SUBJECT (centred, bold) | MARKS
     _detail(grid.rows[1].cells[0], "EXAM NO  :")
-    _detail(grid.rows[1].cells[1], f"MARKS    :  {marks_val}" if marks_val else "MARKS    :", right=True)
+    _detail(grid.rows[1].cells[1], subject_val or "", align="center", bold=True, size=12)
+    _detail(grid.rows[1].cells[2], f"MARKS    :  {marks_val}" if marks_val else "MARKS    :", align="right")
 
-    # A table cell may not end on a nested table — close row 2 with a trailing spacer.
+    # A table cell may not end on a nested table — close the detail cell with a spacer.
     tail = bot.add_paragraph()
     _tight(tail)
     _style_run(tail.add_run(""), 6)
