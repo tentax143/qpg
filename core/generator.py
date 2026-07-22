@@ -14,7 +14,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import simpleSplit
 from docx import Document
-from docx.shared import Pt, Inches
+from docx.shared import Pt, Inches, Twips
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -2423,24 +2423,141 @@ def _expand_test_type(pattern_name: str) -> str:
     return name
 
 
-def _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, test_type_val, school_name_val=""):
-    """Replace placeholder tokens in base.docx header via XML iteration."""
-    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    replacements = {
-        "SCHOOLNAME":    school_name_val or "",
-        "SUBJECT":       subject_val or "",
-        "TESTTYPE":      test_type_val or "",
-        "CLASS       :": f"CLASS       :  {class_val}" if class_val else "CLASS       :",
-        "TIME        :": f"TIME        :  {time_val}" if time_val else "TIME        :",
-        "MARKS    :":    f"MARKS    :  {marks_val}" if marks_val else "MARKS    :",
-    }
-    hdr_el = doc.sections[0].header._element
-    for t_el in hdr_el.iter(f"{{{W}}}t"):
-        txt = t_el.text or ""
-        for old, new in replacements.items():
-            if old in txt:
-                txt = txt.replace(old, new)
-        t_el.text = txt
+# --- Paper header, generated in code ----------------------------------------
+# The header — the school name / subject / test type in a bordered box, above a
+# CLASS/TIME and EXAM NO/MARKS grid — used to live in a data/base.docx template
+# whose placeholder tokens ("SCHOOLNAME", "CLASS       :", …) were string-replaced
+# at render time. It is now built programmatically: no external .docx is needed,
+# and the values can't be silently lost to whitespace drift in the template.
+# Layout mirrors the old base.docx header1.xml exactly — a 1.5pt box border, a
+# centred three-line title block, and a borderless 2x2 detail grid.
+
+_HDR_BORDER = {"val": "single", "sz": "12", "color": "000000"}  # sz in eighths = 1.5pt
+
+
+def _set_cell_border(cell, **edges):
+    """Set individual borders on a table cell. Each edge kwarg (top/left/bottom/
+    right/insideH/insideV) is either the string 'none' or a spec dict with
+    'val'/'sz'/'color' keys."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcBorders = tcPr.find(qn('w:tcBorders'))
+    if tcBorders is None:
+        tcBorders = OxmlElement('w:tcBorders')
+        tcPr.append(tcBorders)
+    for edge, spec in edges.items():
+        el = tcBorders.find(qn(f'w:{edge}'))
+        if el is None:
+            el = OxmlElement(f'w:{edge}')
+            tcBorders.append(el)
+        if spec == 'none':
+            el.set(qn('w:val'), 'none')
+        else:
+            el.set(qn('w:val'), spec.get('val', 'single'))
+            el.set(qn('w:sz'), str(spec.get('sz', '12')))
+            el.set(qn('w:color'), spec.get('color', '000000'))
+
+
+def _fix_table_width(table, col_twips):
+    """Pin a table to a fixed layout with explicit column widths (in twips), so
+    Word does not autofit-shrink or expand it. `col_twips` is one width per column."""
+    table.autofit = False
+    table.allow_autofit = False
+    tbl = table._tbl
+    tblPr = tbl.tblPr
+    layout = tblPr.find(qn('w:tblLayout'))
+    if layout is None:
+        layout = OxmlElement('w:tblLayout')
+        tblPr.append(layout)
+    layout.set(qn('w:type'), 'fixed')
+    tblW = tblPr.find(qn('w:tblW'))
+    if tblW is None:
+        tblW = OxmlElement('w:tblW')
+        tblPr.append(tblW)
+    tblW.set(qn('w:type'), 'dxa')
+    tblW.set(qn('w:w'), str(sum(col_twips)))
+    grid_cols = tbl.tblGrid.findall(qn('w:gridCol'))
+    for i, w in enumerate(col_twips):
+        if i < len(grid_cols):
+            grid_cols[i].set(qn('w:w'), str(w))
+    for row in table.rows:
+        for i, cell in enumerate(row.cells):
+            if i < len(col_twips):
+                cell.width = Twips(col_twips[i])
+
+
+def _build_header(section, subject_val, class_val, time_val, marks_val,
+                  test_type_val, school_name_val="", script_font=None):
+    """Build the paper header into `section`'s header: a bordered box with the
+    school name (bold 12pt), subject (10pt) and test type (bold 11pt) centred,
+    above a borderless 2x2 grid — CLASS / TIME on the first line, EXAM NO (left
+    blank for the student to fill) / MARKS on the second. Replaces the former
+    base.docx template + _fill_header_placeholders substitution. `script_font`,
+    when set, applies the complex-script font (Tamil/Devanagari) to every header
+    run so language papers print correctly, matching the body."""
+    header = section.header
+    header.is_linked_to_previous = False
+    # Drop python-docx's auto-created empty paragraph so the box sits flush at the top.
+    for p in list(header.paragraphs):
+        p._element.getparent().remove(p._element)
+
+    def _style_run(run, size, bold=False):
+        run.font.size = Pt(size)
+        run.bold = bold
+        if script_font:
+            set_tamil_font(run, script_font)
+        else:
+            run.font.name = 'Times New Roman'
+        return run
+
+    def _tight(para, space_after=0):
+        pf = para.paragraph_format
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(space_after)
+        pf.line_spacing = 1.0
+        return para
+
+    # Outer 1-column table is the bordered box (9360 twips = 6.5", matching header1.xml).
+    outer = header.add_table(rows=2, cols=1, width=Inches(6.5))
+    _fix_table_width(outer, [9360])
+
+    # Row 1 — centred title block; border on top/left/right (bottom left open).
+    top = outer.rows[0].cells[0]
+    title_lines = [(school_name_val or "", 12, True),
+                   (subject_val or "", 10, False),
+                   (test_type_val or "", 11, True)]
+    for idx, (txt, size, bold) in enumerate(title_lines):
+        para = top.paragraphs[0] if idx == 0 else top.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _tight(para)
+        _style_run(para.add_run(txt), size, bold)
+    _set_cell_border(top, top=_HDR_BORDER, left=_HDR_BORDER, right=_HDR_BORDER, bottom='none')
+
+    # Row 2 — detail grid; border on left/right/bottom to close the box.
+    bot = outer.rows[1].cells[0]
+    _tight(bot.paragraphs[0])
+    _style_run(bot.paragraphs[0].add_run(""), 6)   # 6pt spacer above the grid
+    grid = bot.add_table(rows=2, cols=2)   # _Cell.add_table takes no width; pinned below
+    _fix_table_width(grid, [4680, 4680])
+
+    def _detail(cell, text, right=False):
+        para = cell.paragraphs[0]
+        _tight(para)
+        if right:
+            para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        _style_run(para.add_run(text), 11)
+        _set_cell_border(cell, top='none', left='none', bottom='none',
+                         right='none', insideH='none', insideV='none')
+
+    _detail(grid.rows[0].cells[0], f"CLASS       :  {class_val}" if class_val else "CLASS       :")
+    _detail(grid.rows[0].cells[1], f"TIME        :  {time_val}" if time_val else "TIME        :", right=True)
+    _detail(grid.rows[1].cells[0], "EXAM NO  :")
+    _detail(grid.rows[1].cells[1], f"MARKS    :  {marks_val}" if marks_val else "MARKS    :", right=True)
+
+    # A table cell may not end on a nested table — close row 2 with a trailing spacer.
+    tail = bot.add_paragraph()
+    _tight(tail)
+    _style_run(tail.add_run(""), 6)
+    _set_cell_border(bot, top='none', left=_HDR_BORDER, right=_HDR_BORDER, bottom=_HDR_BORDER)
 
 
 def _add_passage_box(doc, text, script_font=None):
@@ -2776,14 +2893,9 @@ def _parse_edited_text(text):
 
 
 def render_docx(class_name, subject, chapters, all_questions, summary, header_meta=None):
-    BASE_DOCX = os.path.join(os.path.dirname(__file__), 'data', 'base.docx')
+    # The header is generated in code (see _build_header) — no base.docx template.
+    doc = Document()
 
-    # Open base.docx as template — its header carries the school design
-    if os.path.exists(BASE_DOCX):
-        doc = Document(BASE_DOCX)
-    else:
-        doc = Document()
-    
     # Pick a complex-script font if this is a Tamil/Hindi/Sanskrit paper (by subject or by
     # scanning the text). None → ordinary Latin font. `is_tamil` kept as the in-body gate, now
     # meaning "needs a complex-script font"; `script_font` says which one.
@@ -2800,7 +2912,7 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
     section.left_margin = Inches(0.75)
     section.right_margin = Inches(0.75)
 
-    # Fill header placeholders
+    # Build the header (school / subject / test type / class / time / marks)
     if header_meta is None:
         header_meta = {}
 
@@ -2812,12 +2924,12 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
     school_name_val = str(header_meta.get("school_name", "")).strip()
 
     try:
-        _fill_header_placeholders(doc, subject_val, class_val, time_val, marks_val, test_type_val, school_name_val)
-        print(f"[DOCX-Header] Filled base.docx placeholders — school={school_name_val!r} class={class_val!r} subject={subject_val!r} time={time_val!r} marks={marks_val!r} test_type={test_type_val!r}")
+        _build_header(section, subject_val, class_val, time_val, marks_val, test_type_val, school_name_val, script_font=script_font)
+        print(f"[DOCX-Header] Built header in code — school={school_name_val!r} class={class_val!r} subject={subject_val!r} time={time_val!r} marks={marks_val!r} test_type={test_type_val!r}")
     except Exception as e:
-        print(f"[DOCX-Header] WARNING: placeholder fill failed: {e}")
+        print(f"[DOCX-Header] WARNING: header build failed: {e}")
 
-    # Set page margins (leave room for the header from base.docx)
+    # Set page margins (leave room for the code-built header)
     section = doc.sections[0]
     section.top_margin = Inches(1.2)
     section.bottom_margin = Inches(0.75)
