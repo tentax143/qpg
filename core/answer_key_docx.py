@@ -2,8 +2,8 @@
 
 Rendered on demand at download time from AnswerKey.data — there is no stored file,
 so the document can never drift out of sync with the JSON. Reuses the paper
-renderer's base.docx template (school-branded header) and script-font handling
-so Tamil/Hindi/Sanskrit keys print with the right complex-script font.
+renderer's code-built header (_build_header) and script-font handling so
+Tamil/Hindi/Sanskrit keys print with the right complex-script font.
 """
 
 import io
@@ -16,8 +16,8 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from .generator import (
+    _build_header,
     _expand_test_type,
-    _fill_header_placeholders,
     _pick_script_font,
     apply_tamil_document_styles,
     set_tamil_font,
@@ -161,8 +161,7 @@ def _render_answer(writer, answer, question_options, multiple):
 
 def render_answer_key_docx(paper, key_data, school_name=""):
     """Build the answer-key DOCX for `paper` from AnswerKey.data. Returns io.BytesIO."""
-    base_docx = os.path.join(os.path.dirname(__file__), 'data', 'base.docx')
-    doc = Document(base_docx) if os.path.exists(base_docx) else Document()
+    doc = Document()
 
     script_font = _pick_script_font(paper.subject, [(None, t) for t in _iter_key_text(key_data)])
     if script_font:
@@ -177,10 +176,10 @@ def render_answer_key_docx(paper, key_data, school_name=""):
     test_type = _expand_test_type(paper.pattern.name if paper.pattern else "")
     marks_val = str(paper.pattern.total_marks) if paper.pattern else ""
     try:
-        _fill_header_placeholders(doc, paper.subject, paper.class_name, "", marks_val,
-                                  test_type, school_name or "")
+        _build_header(section, paper.subject, paper.class_name, "", marks_val,
+                      test_type, school_name or "", script_font=script_font)
     except Exception as e:
-        print(f"[AnswerKey-DOCX] header placeholder fill failed: {e}")
+        print(f"[AnswerKey-DOCX] header build failed: {e}")
 
     # Keep the school header on the first page only (same OOXML trick as the paper).
     try:
