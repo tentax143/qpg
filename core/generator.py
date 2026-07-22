@@ -2516,11 +2516,11 @@ def _set_cell_margins(table, top=0, bottom=0, left=108, right=108):
 
 def _build_header(section, subject_val, class_val, time_val, marks_val,
                   test_type_val, school_name_val="", script_font=None):
-    """Build the paper header into `section`'s header: a single bordered box.
-    The top centres the school name (bold 11pt) and the exam-name/period line
-    (bold 10pt); beneath it is a 3-column grid — CLASS / TIME on the first line
+    """Build the paper header into `section`'s header: a compact single bordered box.
+    The top centres the school name (bold 9pt) and the exam-name/period line
+    (bold 8pt); beneath it is a 3-column grid — CLASS / TIME on the first line
     and EXAM NO (left, blank for the student to fill) / SUBJECT (centred, bold)
-    / MARKS on the second.
+    / MARKS on the second. Line spacing is 0.8 (80%) for compactness.
     Replaces the former base.docx template + _fill_header_placeholders
     substitution. `script_font`, when set, applies the complex-script font
     (Tamil/Devanagari) to every header run so language papers print correctly,
@@ -2544,7 +2544,7 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
         pf = para.paragraph_format
         pf.space_before = Pt(0)
         pf.space_after = Pt(space_after)
-        pf.line_spacing = 1.0
+        pf.line_spacing = 0.8  # 80% line spacing for compact header
         return para
 
     # Outer 1-column table is the bordered box (9360 twips = 6.5", matching header1.xml).
@@ -2555,8 +2555,8 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     # Title block — school name + exam-name/period line, centred. No internal
     # divider: the top cell's bottom border is off so it merges with the grid below.
     top = outer.rows[0].cells[0]
-    title_lines = [(school_name_val or "", 11, True),
-                   (test_type_val or "", 10, True)]
+    title_lines = [(school_name_val or "", 9, True),
+                   (test_type_val or "", 8, True)]
     for idx, (txt, size, bold) in enumerate(title_lines):
         para = top.paragraphs[0] if idx == 0 else top.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -2570,12 +2570,12 @@ def _build_header(section, subject_val, class_val, time_val, marks_val,
     #     EXAM NO :               <SUBJECT>                MARKS : <marks>
     bot = outer.rows[1].cells[0]
     _tight(bot.paragraphs[0])
-    _style_run(bot.paragraphs[0].add_run(""), 1)   # minimal gap between the title and the grid
+    _style_run(bot.paragraphs[0].add_run(""), 6)   # spacer with tight line spacing = minimal visual gap
     grid = bot.add_table(rows=2, cols=3)   # _Cell.add_table takes no width; pinned below
     _fix_table_width(grid, [3120, 3120, 3120])
     _set_cell_margins(grid, top=0, bottom=0)
 
-    def _detail(cell, text, align="left", bold=False, size=10):
+    def _detail(cell, text, align="left", bold=False, size=8):
         para = cell.paragraphs[0]
         _tight(para)
         if align == "right":
