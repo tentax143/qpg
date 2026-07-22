@@ -17,7 +17,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 from .generator import (
     _build_header,
-    _expand_test_type,
+    _current_period,
     _pick_script_font,
     apply_tamil_document_styles,
     set_tamil_font,
@@ -173,11 +173,11 @@ def render_answer_key_docx(paper, key_data, school_name=""):
     section.left_margin = Inches(0.75)
     section.right_margin = Inches(0.75)
 
-    test_type = _expand_test_type(paper.pattern.name if paper.pattern else "")
+    period = _current_period()   # second title line = current month - year
     marks_val = str(paper.pattern.total_marks) if paper.pattern else ""
     try:
         _build_header(section, paper.subject, paper.class_name, "", marks_val,
-                      test_type, school_name or "", script_font=script_font)
+                      period, school_name or "", script_font=script_font)
     except Exception as e:
         print(f"[AnswerKey-DOCX] header build failed: {e}")
 
