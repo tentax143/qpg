@@ -3677,6 +3677,11 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
 
     # Chapters that returned nothing are dropped and their budget share redistributed.
     live_units = [ch for ch in query_units if docs_by_unit.get(ch)]
+    dropped = [ch for ch in query_units if ch and ch not in live_units]
+    if dropped:
+        print(f"[Section-Context] no source chunks for chapter(s) {dropped} — dropped from "
+              f"context (likely un-ingested/un-enriched, or a label variant retrieval could "
+              f"not match); these chapters will get no grounded questions")
     if not live_units:
         return ""
     live_weight = sum(chapter_weights[ch] for ch in live_units) or 1

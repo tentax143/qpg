@@ -12,7 +12,7 @@ These lock in two production bugs so they can't silently return:
 Run with:  python manage.py test core
 """
 
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, SimpleTestCase
 
 from django.contrib.auth.models import User
 
@@ -4801,3 +4801,36 @@ class GrammarChapterRoutingTest(TestCase):
         conv.assert_not_called()
         self.assertEqual(wos[0].chapters, ["Light", "Electricity"])
         self.assertFalse(wos[0].is_grammar)
+
+
+class UnitVariantMatchTest(SimpleTestCase):
+    """embeddings._unit_variants: fuzzy fallback so a chapter whose stored label drifted from
+    the planned name still retrieves (the 'no question anywhere for <chapter>' coverage gap).
+    Both the query unit and the stored labels are already normalize_label()-ed."""
+
+    def test_number_prefix_variant_matches(self):
+        from core.embeddings import _unit_variants
+        stored = ["13_the_sermon_at_benares", "the_proposal", "amanda"]
+        self.assertEqual(_unit_variants("the_sermon_at_benares", stored),
+                         ["13_the_sermon_at_benares"])
+
+    def test_shortened_stored_label_matches(self):
+        from core.embeddings import _unit_variants
+        # Plan carries the article, the ingested label dropped it.
+        self.assertEqual(_unit_variants("the_sermon_at_benares", ["sermon_at_benares"]),
+                         ["sermon_at_benares"])
+
+    def test_unrelated_chapters_do_not_match(self):
+        from core.embeddings import _unit_variants
+        self.assertEqual(_unit_variants("amanda", ["the_proposal", "dust_of_snow"]), [])
+
+    def test_empty_unit_matches_nothing(self):
+        from core.embeddings import _unit_variants
+        self.assertEqual(_unit_variants("", ["amanda", "the_proposal"]), [])
+        self.assertEqual(_unit_variants(None, ["amanda"]), [])
+
+    def test_result_is_sorted_and_deduped(self):
+        from core.embeddings import _unit_variants
+        stored = ["sermon_at_benares", "13_the_sermon_at_benares", "sermon_at_benares"]
+        self.assertEqual(_unit_variants("the_sermon_at_benares", stored),
+                         ["13_the_sermon_at_benares", "sermon_at_benares"])
