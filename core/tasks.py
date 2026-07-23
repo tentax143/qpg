@@ -812,6 +812,13 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         paper.status_detail = " ".join(notes)
         paper.save()
 
+        # Count AI images in this paper so we can attribute them to the school below.
+        try:
+            from .paper_audit import count_paper_images
+            img_count = count_paper_images(paper.paper_data or {})
+        except Exception:
+            img_count = 0
+
         # Update school cumulative usage (atomic — persists even after paper is deleted)
         school = None
         try:
@@ -821,8 +828,9 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
                     total_papers_generated=F('total_papers_generated') + 1,
                     total_tokens_used=F('total_tokens_used') + input_tokens + output_tokens,
                     total_cost_accumulated=F('total_cost_accumulated') + (total_cost or 0),
+                    total_images_generated=F('total_images_generated') + img_count,
                 )
-                print(f"[Task] Updated school '{school.name}' cumulative stats")
+                print(f"[Task] Updated school '{school.name}' cumulative stats (+{img_count} images)")
         except Exception as _se:
             print(f"[Task] Could not update school cumulative stats: {_se}")
 

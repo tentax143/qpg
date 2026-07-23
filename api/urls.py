@@ -46,7 +46,10 @@ from .admin_views import (
     notifications_manage,
     notification_detail,
     notifications_public,
+    active_users,
+    force_logout,
 )
+from .message_views import my_messages, mark_message_read, send_message
 
 # Create a router and register our viewsets
 router = DefaultRouter()
@@ -114,6 +117,15 @@ urlpatterns = [
     path('admin/notifications/', notifications_manage, name='api_notifications_manage'),
     path('admin/notifications/<int:pk>/', notification_detail, name='api_notification_detail'),
     path('notifications/', notifications_public, name='api_notifications_public'),
+
+    # SuperAdmin — live sessions / active users
+    path('admin/active-users/', active_users, name='api_active_users'),
+    path('admin/force-logout/', force_logout, name='api_force_logout'),
+    path('admin/send-message/', send_message, name='api_send_message'),
+
+    # Direct messages (per-user, shown as top-right toasts)
+    path('messages/', my_messages, name='api_my_messages'),
+    path('messages/<int:pk>/read/', mark_message_read, name='api_mark_message_read'),
 
     path('', include(router.urls)),
 ]

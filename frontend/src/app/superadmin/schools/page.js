@@ -121,6 +121,7 @@ export default function SchoolsPage() {
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Contact</th>
                 <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Members</th>
                 <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Papers</th>
+                <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Images</th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider">Vector Store</th>
                 <th className="px-4 py-3" />
@@ -148,6 +149,7 @@ export default function SchoolsPage() {
                     </td>
                     <td className="px-4 py-3 text-right text-slate-700">{school.member_count}</td>
                     <td className="px-4 py-3 text-right text-slate-700">{school.paper_count}</td>
+                    <td className="px-4 py-3 text-right text-slate-700">{(school.images_generated ?? 0).toLocaleString()}</td>
                     <td className="px-4 py-3 text-center">
                       <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${school.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                         {school.is_active ? 'Active' : 'Inactive'}

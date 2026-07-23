@@ -788,7 +788,7 @@ export default function SchoolDetailPage({ params }) {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
                   { label: 'Total Papers', value: usage.total_papers },
-                  { label: 'Completed', value: usage.done_papers },
+                  { label: 'Total Images', value: (usage.total_images ?? 0).toLocaleString() },
                   { label: 'Total Tokens', value: usage.total_tokens > 0 ? usage.total_tokens.toLocaleString() : '—' },
                   { label: 'Total Cost', value: `₹${Number(usage.total_cost).toFixed(4)}` },
                 ].map(({ label, value }) => (

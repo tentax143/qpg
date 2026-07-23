@@ -21,6 +21,9 @@ class School(models.Model):
     total_papers_generated = models.BigIntegerField(default=0)
     total_tokens_used = models.BigIntegerField(default=0)
     total_cost_accumulated = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    # Cumulative count of AI-generated images across this school's papers (one per question
+    # carrying an image_prompt). Bumped on each generation; see core.tasks finalize.
+    total_images_generated = models.BigIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -308,6 +311,9 @@ class UserProfile(models.Model):
     school = models.ForeignKey('School', on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='teacher')
     allowed_subject = models.CharField(max_length=100, blank=True, null=True)
+    # Stamped (throttled to ~once/minute) on every authenticated API request by
+    # api.authentication.touch_last_seen — powers the superadmin "Active Users" view.
+    last_seen = models.DateTimeField(null=True, blank=True, db_index=True)
 
     @property
     def is_superadmin(self):
@@ -699,3 +705,35 @@ class Issue(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.status})"
+
+
+class DirectMessage(models.Model):
+    """A message a superadmin sends to one specific user. The frontend polls the
+    recipient's unread messages and shows them as a toast in the top-right corner;
+    dismissing a toast marks it read so it stops appearing."""
+    LEVEL_INFO = 'info'
+    LEVEL_WARNING = 'warning'
+    LEVEL_SUCCESS = 'success'
+    LEVEL_CHOICES = [
+        (LEVEL_INFO, 'Info'),
+        (LEVEL_WARNING, 'Warning'),
+        (LEVEL_SUCCESS, 'Success'),
+    ]
+
+    recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name='direct_messages')
+    sender = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='sent_direct_messages')
+    body = models.TextField()
+    level = models.CharField(max_length=20, choices=LEVEL_CHOICES, default=LEVEL_INFO)
+    is_read = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['recipient', 'is_read']),
+        ]
+
+    def __str__(self):
+        return f"DM to {self.recipient_id}: {self.body[:40]}"

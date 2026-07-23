@@ -31,6 +31,7 @@ def _school_to_dict(school, include_stats=False):
             'member_count': school.members.count(),
             # Cumulative — persists even after papers are deleted
             'paper_count': school.total_papers_generated,
+            'images_generated': school.total_images_generated,
             'total_cost': str(school.total_cost_accumulated),
         })
     return d
@@ -66,6 +67,7 @@ def superadmin_dashboard(request):
             'member_count': s.members.count(),
             # Cumulative — persists even after papers are deleted
             'paper_count': s.total_papers_generated,
+            'images_generated': s.total_images_generated,
             'total_tokens': s.total_tokens_used,
             'total_cost': str(s.total_cost_accumulated),
             'monthly_token_budget': s.monthly_token_budget,
@@ -256,6 +258,7 @@ def school_usage(request, pk):
         # All-time totals — cumulative, persists after paper deletion
         'total_papers': school.total_papers_generated,
         'done_papers': school.total_papers_generated,
+        'total_images': school.total_images_generated,
         'total_input_tokens': 0,
         'total_output_tokens': 0,
         'total_tokens': school.total_tokens_used,
@@ -1123,3 +1126,104 @@ def notifications_public(request):
             'animation_interval': 10,
         })
     return Response({'notifications': data})
+
+
+# ── Active users / live session control (superadmin) ─────────────────────────
+
+# last_seen recency buckets, in seconds. Updates are throttled server-side to ~60s
+# (see api.authentication.touch_last_seen), so an actively-working user's last_seen is
+# at most ~1 min stale — hence "online" allows a little headroom beyond that.
+_ONLINE_WITHIN = 180      # green — active in the last 3 minutes
+_IDLE_WITHIN = 15 * 60    # amber — seen in the last 15 minutes
+
+
+def _activity_status(seconds):
+    if seconds is None:
+        return 'unknown'
+    if seconds <= _ONLINE_WITHIN:
+        return 'online'
+    if seconds <= _IDLE_WITHIN:
+        return 'idle'
+    return 'away'
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperAdmin])
+def active_users(request):
+    """Every currently logged-in user (i.e. holding an auth token), annotated with how
+    recently they were active. The superadmin uses this to see who is online and to
+    force-log-out or message a specific user."""
+    now = timezone.now()
+    # A live auth token == currently logged in (login mints one, logout deletes it).
+    users = (User.objects
+             .filter(auth_token__isnull=False)
+             .select_related('profile', 'profile__school'))
+
+    rows = []
+    for u in users:
+        profile = getattr(u, 'profile', None)
+        last_seen = getattr(profile, 'last_seen', None)
+        seconds = int((now - last_seen).total_seconds()) if last_seen else None
+        school = getattr(profile, 'school', None)
+        rows.append({
+            'id': u.id,
+            'username': u.username,
+            'full_name': u.get_full_name(),
+            'email': u.email,
+            'role': getattr(profile, 'role', 'teacher') if profile else 'teacher',
+            'school_id': school.id if school else None,
+            'school_name': school.name if school else None,
+            'last_seen': last_seen,
+            'last_login': u.last_login,
+            'seconds_since_seen': seconds,
+            'status': _activity_status(seconds),
+            'is_you': u.id == request.user.id,
+        })
+
+    # Most-recently-active first; never-seen (token but no activity yet) last.
+    rows.sort(key=lambda r: (r['seconds_since_seen'] is None, r['seconds_since_seen'] or 0))
+    online = sum(1 for r in rows if r['status'] == 'online')
+    return Response({
+        'now': now,
+        'users': rows,
+        'total_logged_in': len(rows),
+        'online_count': online,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperAdmin])
+def force_logout(request):
+    """Force-log-out one user: delete their auth token and any Django sessions. Their app
+    is kicked to the login screen on its next request (polls run every ~10s)."""
+    from rest_framework.authtoken.models import Token
+    from django.contrib.sessions.models import Session
+
+    user_id = request.data.get('user_id')
+    if not user_id:
+        return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        target = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if target.id == request.user.id:
+        return Response({'error': "You can't force-log-out yourself."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    tokens_deleted, _ = Token.objects.filter(user=target).delete()
+
+    # Sessions store the user id in their (encoded) payload, so scan and drop matching ones.
+    sessions_deleted = 0
+    for s in Session.objects.iterator():
+        if str(s.get_decoded().get('_auth_user_id')) == str(target.id):
+            s.delete()
+            sessions_deleted += 1
+
+    return Response({
+        'ok': True,
+        'username': target.username,
+        'tokens_deleted': tokens_deleted,
+        'sessions_deleted': sessions_deleted,
+    })

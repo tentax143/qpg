@@ -252,7 +252,7 @@ export default function SuperAdminDashboard() {
                   <div>
                     <p className="text-sm font-medium text-slate-900">{school.name}</p>
                     <p className="text-xs text-slate-400">
-                      {school.member_count} member{school.member_count !== 1 ? 's' : ''} · {school.paper_count} paper{school.paper_count !== 1 ? 's' : ''}
+                      {school.member_count} member{school.member_count !== 1 ? 's' : ''} · {school.paper_count} paper{school.paper_count !== 1 ? 's' : ''} · {(school.images_generated ?? 0).toLocaleString()} image{school.images_generated !== 1 ? 's' : ''}
                     </p>
                   </div>
                 </div>

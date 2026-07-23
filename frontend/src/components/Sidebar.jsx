@@ -25,6 +25,7 @@ import {
   Bell,
   Sparkles,
   Bug,
+  Activity,
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -67,6 +68,7 @@ export default function Sidebar() {
     { href: '/superadmin/cbse-patterns', icon: ClipboardList, label: 'CBSE Patterns' },
     { href: '/superadmin/queue', icon: ListOrdered, label: 'Queue' },
     { href: '/superadmin/notifications', icon: Bell, label: 'Notifications' },
+    { href: '/superadmin/active-users', icon: Activity, label: 'Active Users' },
     { href: '/superadmin/issues', icon: Bug, label: 'Issues' },
   ];
 

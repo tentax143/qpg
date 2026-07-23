@@ -466,22 +466,30 @@ export default function DashboardPage() {
                           {paper.status === 'done' && paper.has_paper_data && (() => {
                             const st = keyStatusOf(paper);
                             const busy = keyBusyId === paper.id || st === 'queued' || st === 'generating';
-                            const cls = st === 'stale' ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
+                            // Colour the key button by answer-key state so it's obvious at a glance
+                            // which papers already have a key: emerald(+check) = ready, slate = none
+                            // yet, amber = stale, red = failed, spinner = in progress.
+                            const cls = busy ? 'text-blue-600 bg-blue-50'
+                              : st === 'done' ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100'
+                              : st === 'stale' ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
                               : st === 'failed' ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                              : 'text-violet-600 bg-violet-50 hover:bg-violet-100';
+                              : 'text-slate-400 bg-slate-100 hover:bg-slate-200';   // 'none' — no key yet
                             const title = busy ? 'Generating answer key — this can take a few minutes'
-                              : st === 'done' ? 'Download the teacher answer key (Word)'
+                              : st === 'done' ? 'Answer key ready — click to download (Word)'
                               : st === 'stale' ? 'Paper changed after the key was generated — click to regenerate or download'
                               : st === 'failed' ? 'Answer key generation failed — click to retry'
-                              : 'Generate a teacher answer key with marking scheme (Word)';
+                              : 'No answer key yet — click to generate (Word)';
                             return (
                               <button
                                 onClick={() => handleAnswerKey(paper)}
                                 disabled={busy}
-                                className={`p-1.5 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${cls}`}
+                                className={`relative p-1.5 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${cls}`}
                                 title={title}
                               >
                                 {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+                                {st === 'done' && !busy && (
+                                  <CheckCircle className="w-3 h-3 text-emerald-600 fill-white absolute -top-1 -right-1" />
+                                )}
                               </button>
                             );
                           })()}

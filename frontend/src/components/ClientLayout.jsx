@@ -4,6 +4,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import Sidebar from './Sidebar';
 import NotificationBanner from './NotificationBanner';
+import DirectMessageToasts from './DirectMessageToasts';
 
 // Pages reachable without a session (the root "/" is itself the login screen).
 const PUBLIC_PATHS = ['/', '/login', '/register', '/forgot-password', '/change-password'];
@@ -46,6 +47,7 @@ export default function ClientLayout({ children }) {
 
   return (
     <div className="flex min-h-screen flex-col">
+      <DirectMessageToasts />
       <div className="px-4 md:px-8 py-4 bg-white z-40">
         <div className="flex justify-center">
           <NotificationBanner />

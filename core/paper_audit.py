@@ -196,6 +196,24 @@ def audit_paper_marks(paper_data, pattern, tolerance=0.5):
     }
 
 
+def count_paper_images(paper_data):
+    """Number of images in an assembled paper: each question (or sub-question) that carries
+    an ``image_prompt`` or a materialised ``image_path`` counts once. Best-effort — never
+    raises. Used for the per-school image tally shown to the superadmin."""
+    n = 0
+    for _name, sec in _iter_assembled_sections(paper_data):
+        for q in sec.get("questions", []) or []:
+            if not isinstance(q, dict):
+                continue
+            if (str(q.get("image_prompt", "") or "").strip()
+                    or str(q.get("image_path", "") or q.get("image", "") or "").strip()):
+                n += 1
+            for sq in (q.get("sub_questions", []) or []):
+                if isinstance(sq, dict) and str(sq.get("image_prompt", "") or "").strip():
+                    n += 1
+    return n
+
+
 def summary_line(result, max_len=480):
     """One-line, teacher-facing summary of a failed audit (empty string if ok)."""
     if result.get("ok"):
