@@ -16,6 +16,9 @@ class School(models.Model):
     # Set by the superadmin when the school's billing lapses: users still log in (with a
     # dismissible notice) but every AI-generation action is refused until it is cleared.
     billing_period_over = models.BooleanField(default=False)
+    # Set by the superadmin to cut AI image generation for this school only. Papers still
+    # generate normally; image_based questions simply skip the image step (no image_finder call).
+    disable_image_generation = models.BooleanField(default=False)
     access_shared_vector_store = models.BooleanField(default=False)
     # Cumulative usage — persists even after papers are deleted
     total_papers_generated = models.BigIntegerField(default=0)

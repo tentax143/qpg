@@ -9,7 +9,7 @@ import SuccessAlert from '@/components/SuccessAlert';
 import {
   ArrowLeft, Users, BarChart3, FileText, Settings,
   Plus, Trash2, Edit3, Check, X, ShieldCheck, ShieldOff,
-  Database, Link2, Download, RefreshCw, Zap, Pencil, RotateCw,
+  Database, Link2, Download, RefreshCw, Zap, Pencil, RotateCw, ImageOff,
 } from 'lucide-react';
 
 const TABS = [
@@ -101,6 +101,7 @@ export default function SchoolDetailPage({ params }) {
         email: r.data.email,
         monthly_token_budget: r.data.monthly_token_budget,
         is_active: r.data.is_active,
+        disable_image_generation: r.data.disable_image_generation,
         access_shared_vector_store: r.data.access_shared_vector_store,
       });
     } catch (e) {
@@ -453,6 +454,35 @@ export default function SchoolDetailPage({ params }) {
                 </label>
               </div>
             )}
+
+            {/* Superadmin per-school AI image generation kill switch */}
+            <div className="flex items-start gap-4">
+              <span className="text-sm text-slate-500 w-40 shrink-0 pt-1">Image Generation</span>
+              {editing ? (
+                <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!editForm.disable_image_generation}
+                    onChange={e => setEditForm(prev => ({ ...prev, disable_image_generation: e.target.checked }))}
+                    className="w-4 h-4 mt-0.5 text-red-600 border-slate-300 rounded"
+                  />
+                  <span>
+                    Disable AI image generation for this school
+                    <span className="block text-xs text-slate-400">
+                      Papers still generate; image-based questions skip the image step.
+                    </span>
+                  </span>
+                </label>
+              ) : (
+                school.disable_image_generation ? (
+                  <span className="inline-flex items-center gap-1.5 text-sm font-medium text-red-600">
+                    <ImageOff className="w-4 h-4" /> Disabled
+                  </span>
+                ) : (
+                  <span className="text-sm text-slate-900">Enabled</span>
+                )
+              )}
+            </div>
 
             <div className="flex items-center gap-2 text-xs text-slate-400 pt-1">
               <Database className="w-3.5 h-3.5" />

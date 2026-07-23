@@ -117,6 +117,7 @@ class SectionWorkOrder:
     chapter_plan: list = field(default_factory=list)     # one chapter name per question slot (weighted allocation)
     slots: list = field(default_factory=list)            # question_slots (per-question structure) — see docs/PER_QUESTION_STRUCTURE.md
     is_grammar: bool = False                             # grammar (இலக்கணம்/व्याकरण) section — chapters routed to grammar lessons only
+    disable_images: bool = False                         # superadmin cut AI image generation for this school — skip image_finder entirely
 
 
 # ─────────────────────────────────────────────
@@ -2685,6 +2686,10 @@ def _post_process_cbq_images(section_data: dict, wo: SectionWorkOrder) -> None:
     and replace its sub_questions with Kimi-verified ones.
     Mutates section_data in place. Fails silently on any error.
     """
+    if wo.disable_images:
+        print(f"[Section-Gen] Image generation disabled for this school — skipping images in '{wo.section_name}'")
+        return
+
     from . import image_finder
 
     subject = wo.section_subject or wo.subject or "Science"
@@ -4463,7 +4468,7 @@ def plan_chapter_allocation(work_orders: list) -> list:
     return work_orders
 
 
-def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list) -> list:
+def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False) -> list:
     pattern_section_map: dict = {}
     if pattern and hasattr(pattern, "sections") and pattern.sections:
         for ps in pattern.sections:
@@ -4658,6 +4663,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             context_by_type={} if _all_general else context_by_type_all.get(sec_name, {}),  # 3.2
             slots=slots,
             is_grammar=sec_is_grammar,
+            disable_images=disable_images,
         )
         work_orders.append(wo)
         subj_tag = f" [{section_subject}]" if section_subject else ""
@@ -5173,7 +5179,7 @@ def trim_overfull_sections(paper_data: dict, work_orders: list) -> dict:
     return paper_data
 
 
-def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list):
+def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False):
     """
     Generate all sections in parallel using ThreadPoolExecutor.
 
@@ -5181,7 +5187,7 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
     Raises RuntimeError if any section is still entirely missing after the serial retry
     (caller falls back to the whole-paper single-prompt path).
     """
-    work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters)
+    work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters, disable_images=disable_images)
     if not work_orders:
         raise RuntimeError("Blueprint produced no work orders")
 

@@ -3617,6 +3617,18 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
         try:
             from .section_generator import generate_paper_parallel, get_section_context_map
             print("[Universal-Generator] Trying parallel per-section pipeline...")
+            # Superadmin per-school kill switch for AI image generation. Resolved once here
+            # (worker threads can't hit a request-scoped state), threaded onto each work order.
+            _disable_images = False
+            if school_id:
+                try:
+                    from .models import School
+                    _disable_images = School.objects.filter(pk=school_id).values_list(
+                        'disable_image_generation', flat=True).first() or False
+                except Exception as _de:
+                    print(f"[Universal-Generator] Could not resolve image-generation flag: {_de}")
+            if _disable_images:
+                print(f"[Universal-Generator] Image generation is DISABLED for school {school_id}")
             _context_map = get_section_context_map(class_name, subject, chapters, blueprint_dict, all_question_types, school_id=school_id)
             _paper_data, _in_tok, _out_tok = generate_paper_parallel(
                 blueprint=blueprint_dict,
@@ -3626,6 +3638,7 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
                 class_name=class_name,
                 subject=subject,
                 chapters=chapters,
+                disable_images=_disable_images,
             )
             print("[Universal-Generator] ✅ Parallel pipeline succeeded — rendering")
             return _render_paper_from_data(

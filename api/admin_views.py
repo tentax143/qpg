@@ -22,6 +22,7 @@ def _school_to_dict(school, include_stats=False):
         'monthly_token_budget': school.monthly_token_budget,
         'is_active': school.is_active,
         'billing_period_over': school.billing_period_over,
+        'disable_image_generation': school.disable_image_generation,
         'access_shared_vector_store': school.access_shared_vector_store,
         'created_at': school.created_at,
         'updated_at': school.updated_at,
@@ -129,12 +130,13 @@ def school_detail(request, pk):
 
     prev_shared = school.access_shared_vector_store
     for field in ('name', 'address', 'phone', 'email', 'monthly_token_budget', 'is_active',
-                  'billing_period_over', 'access_shared_vector_store'):
+                  'billing_period_over', 'disable_image_generation', 'access_shared_vector_store'):
         if field in request.data:
             val = request.data[field]
             if field == 'monthly_token_budget':
                 val = int(val)
-            elif field in ('is_active', 'billing_period_over', 'access_shared_vector_store'):
+            elif field in ('is_active', 'billing_period_over', 'disable_image_generation',
+                           'access_shared_vector_store'):
                 val = bool(val)
             setattr(school, field, val)
     school.save()
