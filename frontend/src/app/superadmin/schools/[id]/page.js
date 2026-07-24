@@ -9,24 +9,24 @@ import SuccessAlert from '@/components/SuccessAlert';
 import {
   ArrowLeft, Users, BarChart3, FileText, Settings,
   Plus, Trash2, Edit3, Check, X, ShieldCheck, ShieldOff,
-  Database, Link2, Download, RefreshCw, Zap, Pencil, RotateCw, ImageOff,
+  Database, Link2, Download, RefreshCw, Zap, Pencil, RotateCw, ImageOff, Loader2,
 } from 'lucide-react';
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: Settings },
   { id: 'users', label: 'Users', icon: Users },
-  { id: 'data', label: 'Data', icon: Database },
+  { id: 'data', label: 'Data & Access', icon: Database },
   { id: 'usage', label: 'Usage', icon: BarChart3 },
   { id: 'papers', label: 'Papers', icon: FileText },
 ];
 
 const STATUS_COLORS = {
-  done: 'bg-emerald-50 text-emerald-700',
-  generating: 'bg-blue-50 text-blue-700',
-  processing: 'bg-blue-50 text-blue-700',
-  queued: 'bg-slate-100 text-slate-600',
-  failed: 'bg-red-50 text-red-700',
-  cancelled: 'bg-slate-100 text-slate-500',
+  done: 'bg-emerald-50 text-emerald-700 border border-emerald-200/50',
+  generating: 'bg-indigo-50 text-indigo-700 border border-indigo-200/50',
+  processing: 'bg-indigo-50 text-indigo-700 border border-indigo-200/50',
+  queued: 'bg-slate-100 text-slate-600 border border-slate-200/50',
+  failed: 'bg-red-50 text-red-700 border border-red-200/50',
+  cancelled: 'bg-slate-100 text-slate-500 border border-slate-200/50',
 };
 
 export default function SchoolDetailPage({ params }) {
@@ -69,6 +69,7 @@ export default function SchoolDetailPage({ params }) {
     if (!user || user.role !== 'superadmin') { router.replace('/dashboard'); return; }
     fetchSchool();
     apiClient.get('/subjects/').then(r => setSubjects(r.data.subjects || [])).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   useEffect(() => {
@@ -77,6 +78,7 @@ export default function SchoolDetailPage({ params }) {
     else if (tab === 'usage') fetchUsage();
     else if (tab === 'papers') fetchPapers();
     else if (tab === 'data') { fetchVectorLinks(); fetchVectorStores(); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, school]);
 
   useEffect(() => {
@@ -331,674 +333,711 @@ export default function SchoolDetailPage({ params }) {
     }
   }
 
-  if (loading) return <div className="flex justify-center py-20"><div className="w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>;
-  if (error) return <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>;
+  if (loading) return (
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="w-8 h-8 border-2 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div>
+    </div>
+  );
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 rounded-2xl p-6 text-red-700 text-sm font-semibold max-w-2xl mx-auto mt-10 text-center">
+      {error}
+    </div>
+  );
 
   return (
-    <div className="space-y-5">
+    <div className="w-full pb-20 relative">
+      {/* Decorative background blobs */}
+      <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-indigo-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+      <div className="absolute top-40 right-1/4 w-[400px] h-[400px] bg-purple-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <Link href="/superadmin/schools" className="text-slate-400 hover:text-slate-600 transition-colors">
-          <ArrowLeft className="w-5 h-5" />
+      <div className="max-w-5xl mx-auto mb-10">
+        <Link href="/superadmin/schools" className="inline-flex items-center gap-2 px-4 py-2 bg-white/80 border border-slate-200/60 rounded-full text-[12px] font-bold text-slate-500 hover:text-indigo-600 hover:border-indigo-200 transition-all shadow-sm mb-6 group">
+          <ArrowLeft size={14} className="group-hover:-translate-x-1 transition-transform" />
+          Back to Directory
         </Link>
-        <div className="flex-1">
-          <h1 className="text-xl font-semibold text-slate-900">{school.name}</h1>
-          <p className="text-sm text-slate-400">
-            {school.member_count} member{school.member_count !== 1 ? 's' : ''} · {school.paper_count} paper{school.paper_count !== 1 ? 's' : ''}
-          </p>
-        </div>
-        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${school.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-          {school.is_active ? 'Active' : 'Inactive'}
-        </span>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-200">
-        {TABS.map(t => {
-          const Icon = t.icon;
-          return (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
-                tab === t.id
-                  ? 'border-blue-600 text-blue-700'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {paperError && <ErrorAlert message={paperError} onClose={() => setPaperError(null)} />}
-      {paperSuccess && <SuccessAlert message={paperSuccess} onClose={() => setPaperSuccess(null)} />}
-
-      {/* Tab content */}
-      {tab === 'overview' && (
-        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-900">School Information</h2>
-            <div className="flex gap-2">
-              {editing ? (
-                <>
-                  <button onClick={handleSaveEdit} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-                    <Check className="w-3.5 h-3.5" /> Save
-                  </button>
-                  <button onClick={() => setEditing(false)} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors">
-                    <X className="w-3.5 h-3.5" /> Cancel
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button onClick={() => setEditing(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors">
-                    <Edit3 className="w-3.5 h-3.5" /> Edit
-                  </button>
-                  <button onClick={handleDeleteSchool} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors">
-                    <Trash2 className="w-3.5 h-3.5" /> Delete
-                  </button>
-                </>
-              )}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="flex items-center gap-4">
+            <div className="w-16 h-16 bg-white border border-slate-200/60 shadow-lg rounded-2xl flex items-center justify-center text-indigo-600 text-[24px] font-extrabold">
+              {school.name.charAt(0)}
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4">
-            {[
-              { label: 'School Name', field: 'name', type: 'text' },
-              { label: 'Address', field: 'address', type: 'textarea' },
-              { label: 'Phone', field: 'phone', type: 'text' },
-              { label: 'Email', field: 'email', type: 'email' },
-              { label: 'Monthly Token Budget', field: 'monthly_token_budget', type: 'number' },
-            ].map(({ label, field, type }) => (
-              <div key={field} className="flex items-start gap-4">
-                <span className="text-sm text-slate-500 w-40 shrink-0 pt-1">{label}</span>
-                {editing ? (
-                  type === 'textarea' ? (
-                    <textarea
-                      value={editForm[field]}
-                      onChange={e => setEditForm(prev => ({ ...prev, [field]: e.target.value }))}
-                      rows={2}
-                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                    />
-                  ) : (
-                    <input
-                      type={type}
-                      value={editForm[field]}
-                      onChange={e => setEditForm(prev => ({ ...prev, [field]: e.target.value }))}
-                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  )
-                ) : (
-                  <span className="text-sm text-slate-900">
-                    {field === 'monthly_token_budget'
-                      ? (school[field] > 0 ? school[field].toLocaleString() + ' tokens' : 'Unlimited')
-                      : (school[field] || <span className="text-slate-400">—</span>)
-                    }
-                  </span>
-                )}
-              </div>
-            ))}
-            {editing && (
-              <div className="flex items-center gap-4">
-                <span className="text-sm text-slate-500 w-40 shrink-0">Status</span>
-                <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={editForm.is_active}
-                    onChange={e => setEditForm(prev => ({ ...prev, is_active: e.target.checked }))}
-                    className="w-4 h-4 text-blue-600 border-slate-300 rounded"
-                  />
-                  Active
-                </label>
-              </div>
-            )}
-
-            {/* Superadmin per-school AI image generation kill switch */}
-            <div className="flex items-start gap-4">
-              <span className="text-sm text-slate-500 w-40 shrink-0 pt-1">Image Generation</span>
-              {editing ? (
-                <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={!!editForm.disable_image_generation}
-                    onChange={e => setEditForm(prev => ({ ...prev, disable_image_generation: e.target.checked }))}
-                    className="w-4 h-4 mt-0.5 text-red-600 border-slate-300 rounded"
-                  />
-                  <span>
-                    Disable AI image generation for this school
-                    <span className="block text-xs text-slate-400">
-                      Papers still generate; image-based questions skip the image step.
-                    </span>
-                  </span>
-                </label>
-              ) : (
-                school.disable_image_generation ? (
-                  <span className="inline-flex items-center gap-1.5 text-sm font-medium text-red-600">
-                    <ImageOff className="w-4 h-4" /> Disabled
-                  </span>
-                ) : (
-                  <span className="text-sm text-slate-900">Enabled</span>
-                )
-              )}
-            </div>
-
-            <div className="flex items-center gap-2 text-xs text-slate-400 pt-1">
-              <Database className="w-3.5 h-3.5" />
-              Vector-store access (shared store + cross-school links) is managed in the <span className="font-medium text-slate-600">Data</span> tab.
-            </div>
-          </div>
-        </div>
-      )}
-
-      {tab === 'data' && (
-        <div className="space-y-5">
-          {/* Shared (super-admin) store */}
-          <div className="bg-white border border-slate-200 rounded-xl p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Database className="w-4 h-4 text-blue-600" />
-                <h2 className="text-sm font-semibold text-slate-900">Shared (super-admin) vector store</h2>
-                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${school.access_shared_vector_store ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                  {school.access_shared_vector_store ? 'Granted' : 'Not granted'}
+            <div>
+              <div className="flex items-center gap-3 mb-1">
+                <h1 className="text-[28px] font-extrabold text-slate-900 tracking-tight leading-tight">{school.name}</h1>
+                <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${school.is_active ? 'bg-emerald-50 text-emerald-700 border border-emerald-100/50' : 'bg-slate-100 text-slate-500 border border-slate-200/50'}`}>
+                  {school.is_active ? 'Active' : 'Inactive'}
                 </span>
               </div>
-              <button
-                onClick={() => handleToggleShared(!school.access_shared_vector_store)}
-                disabled={sharedBusy}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-60 ${school.access_shared_vector_store ? 'border border-red-200 text-red-600 hover:bg-red-50' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-              >
-                {sharedBusy ? '…' : school.access_shared_vector_store ? 'Revoke' : 'Grant'}
-              </button>
-            </div>
-            <p className="text-xs text-slate-500 mt-2">
-              When granted, this school reads all shared textbooks &amp; chapters uploaded by the super-admin, alongside its own materials. Instant — nothing is copied.
-            </p>
-          </div>
-
-          {/* Named vector stores allocated to this school */}
-          <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-            <div className="flex items-center gap-2">
-              <Database className="w-4 h-4 text-blue-600" />
-              <h2 className="text-sm font-semibold text-slate-900">Named vector stores</h2>
-            </div>
-            <p className="text-xs text-slate-500 -mt-2">
-              Shared corpora allocated to <span className="font-medium text-slate-700">{school.name}</span> — it retrieves from every store listed here, alongside its own materials. Store contents are managed on the <span className="font-medium text-slate-600">Vector Stores</span> page.
-            </p>
-
-            {!storeData ? (
-              <div className="flex justify-center py-6"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
-            ) : (
-              <>
-                {storeData.allocated.length === 0 ? (
-                  <p className="text-sm text-slate-400 py-1">No vector stores allocated yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {storeData.allocated.map(s => (
-                      <div key={s.id} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2">
-                        <div className="flex items-center gap-2 text-sm">
-                          <Database className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="font-medium text-slate-900">{s.name}</span>
-                          <span className="text-[11px] text-slate-400">· {s.material_count} material(s)</span>
-                        </div>
-                        <button
-                          onClick={() => handleRemoveStore(s.id)}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-colors"
-                          title="Remove allocation"
-                          aria-label={`Remove ${s.name} allocation`}
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {storeData.allocatable.length > 0 && (
-                  <div className="flex items-center gap-2 pt-3 border-t border-slate-100">
-                    <select
-                      value={addStore}
-                      onChange={e => setAddStore(e.target.value)}
-                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                    >
-                      <option value="">Select a vector store to allocate…</option>
-                      {storeData.allocatable.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
-                    <button
-                      onClick={handleAllocateStore}
-                      disabled={!addStore || storeBusy}
-                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Add
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* Cross-school links */}
-          <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-            <div className="flex items-center gap-2">
-              <Link2 className="w-4 h-4 text-blue-600" />
-              <h2 className="text-sm font-semibold text-slate-900">Cross-school access</h2>
-            </div>
-            <p className="text-xs text-slate-500 -mt-2">
-              Let <span className="font-medium text-slate-700">{school.name}</span> also read the private materials of other schools. Directional — tick <span className="font-medium">Mutual</span> to share both ways.
-            </p>
-
-            {tabLoading || !vectorData ? (
-              <div className="flex justify-center py-6"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
-            ) : (
-              <>
-                {vectorData.links.length === 0 ? (
-                  <p className="text-sm text-slate-400 py-1">No cross-school links yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {vectorData.links.map(l => (
-                      <div key={l.source_id} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2">
-                        <div className="flex items-center gap-2 text-sm">
-                          <span className="text-slate-400">can read</span>
-                          <span className="font-medium text-slate-900">{l.source_name}</span>
-                          {l.mutual && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 font-medium">Mutual</span>}
-                        </div>
-                        <button
-                          onClick={() => handleRemoveLink(l.source_id, l.mutual)}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-colors"
-                          title="Remove link"
-                          aria-label={`Remove access link to ${l.source_name}`}
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2 pt-3 border-t border-slate-100">
-                  <select
-                    value={addSource}
-                    onChange={e => setAddSource(e.target.value)}
-                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                  >
-                    <option value="">Select a school to link…</option>
-                    {vectorData.linkable
-                      .filter(s => !vectorData.links.some(l => l.source_id === s.id))
-                      .map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap">
-                    <input type="checkbox" checked={addMutual} onChange={e => setAddMutual(e.target.checked)} className="w-4 h-4 text-blue-600 border-slate-300 rounded" />
-                    Mutual
-                  </label>
-                  <button
-                    onClick={handleAddLink}
-                    disabled={!addSource || linkBusy}
-                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> Add
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {tab === 'users' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-slate-500">{users.length} user{users.length !== 1 ? 's' : ''} in this school</p>
-            <button
-              onClick={() => setShowAddUser(!showAddUser)}
-              className="inline-flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              Add User
-            </button>
-          </div>
-
-          {showAddUser && (
-            <div className="bg-white border border-slate-200 rounded-xl p-5">
-              <h3 className="text-sm font-semibold text-slate-900 mb-4">New User</h3>
-              {addUserError && <div className="mb-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{addUserError}</div>}
-              <form onSubmit={handleAddUser} className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Username *</label>
-                  <input
-                    type="text"
-                    value={newUser.username}
-                    onChange={e => setNewUser(p => ({ ...p, username: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
-                  <input
-                    type="email"
-                    value={newUser.email}
-                    onChange={e => setNewUser(p => ({ ...p, email: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Password *</label>
-                  <input
-                    type="password"
-                    value={newUser.password}
-                    onChange={e => setNewUser(p => ({ ...p, password: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required
-                    minLength={8}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Role</label>
-                  <select
-                    value={newUser.role}
-                    onChange={e => setNewUser(p => ({ ...p, role: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="teacher">Teacher</option>
-                    <option value="school_admin">School Admin</option>
-                  </select>
-                </div>
-                <div className="col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Subject Restriction</label>
-                  <select
-                    value={newUser.allowed_subject}
-                    onChange={e => setNewUser(p => ({ ...p, allowed_subject: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                  >
-                    <option value="">All Subjects (no restriction)</option>
-                    {subjects.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                  <p className="mt-1 text-xs text-slate-400">If set, this user can only generate papers and upload materials for this subject.</p>
-                </div>
-                <div className="col-span-2 flex gap-2">
-                  <button
-                    type="submit"
-                    disabled={addUserLoading}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
-                  >
-                    {addUserLoading ? <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Create User'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setShowAddUser(false); setAddUserError(null); }}
-                    className="px-4 py-2 border border-slate-300 text-slate-600 text-sm rounded-lg hover:bg-slate-50 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
-
-          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-            {tabLoading ? (
-              <div className="flex justify-center py-10"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
-            ) : users.length === 0 ? (
-              <div className="py-12 text-center text-sm text-slate-400">No users in this school yet</div>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">User</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Role</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Joined</th>
-                    <th className="px-4 py-3 w-12" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {users.map(u => (
-                    <tr key={u.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-4 py-3">
-                        <div>
-                          <p className="font-medium text-slate-900">{u.username}</p>
-                          {u.email && <p className="text-xs text-slate-400">{u.email}</p>}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                          u.role === 'school_admin' ? 'bg-violet-50 text-violet-700' : 'bg-slate-100 text-slate-600'
-                        }`}>
-                          {u.role === 'school_admin' ? 'School Admin' : 'Teacher'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right text-xs text-slate-400">
-                        {new Date(u.date_joined).toLocaleDateString()}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="inline-flex items-center gap-1 whitespace-nowrap">
-                          {u.role === 'teacher' ? (
-                            <button
-                              onClick={() => handleChangeRole(u.id, u.username, 'school_admin')}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-violet-600 hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 transition-colors"
-                              title="Promote to School Admin"
-                              aria-label={`Promote ${u.username} to School Admin`}
-                            >
-                              <ShieldCheck className="w-4 h-4" />
-                            </button>
-                          ) : u.role === 'school_admin' ? (
-                            <button
-                              onClick={() => handleChangeRole(u.id, u.username, 'teacher')}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-amber-600 hover:bg-amber-50 hover:text-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-1 transition-colors"
-                              title="Demote to Teacher"
-                              aria-label={`Demote ${u.username} to Teacher`}
-                            >
-                              <ShieldOff className="w-4 h-4" />
-                            </button>
-                          ) : null}
-                          <button
-                            onClick={() => handleRemoveUser(u.id, u.username)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-colors"
-                            title="Remove user"
-                            aria-label={`Remove ${u.username}`}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      )}
-
-      {tab === 'usage' && (
-        <div className="space-y-4">
-          {tabLoading ? (
-            <div className="flex justify-center py-10"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
-          ) : usage ? (
-            <>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                {[
-                  { label: 'Total Papers', value: usage.total_papers },
-                  { label: 'Total Images', value: (usage.total_images ?? 0).toLocaleString() },
-                  { label: 'Total Tokens', value: usage.total_tokens > 0 ? usage.total_tokens.toLocaleString() : '—' },
-                  { label: 'Total Cost', value: `₹${Number(usage.total_cost).toFixed(4)}` },
-                ].map(({ label, value }) => (
-                  <div key={label} className="bg-white border border-slate-200 rounded-xl p-4">
-                    <p className="text-xs text-slate-500 mb-1">{label}</p>
-                    <p className="text-xl font-semibold text-slate-900">{value}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="bg-white border border-slate-200 rounded-xl p-5">
-                <h3 className="text-sm font-semibold text-slate-900 mb-4">This Month</h3>
-                <div className="space-y-3">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-500">Tokens used</span>
-                    <span className="font-medium text-slate-900">{usage.monthly_tokens.toLocaleString()}</span>
-                  </div>
-                  {usage.monthly_token_budget > 0 && (
-                    <>
-                      <div className="w-full bg-slate-100 rounded-full h-2">
-                        <div
-                          className={`h-2 rounded-full transition-all ${
-                            (usage.budget_used_pct || 0) > 90 ? 'bg-red-500' :
-                            (usage.budget_used_pct || 0) > 70 ? 'bg-amber-500' : 'bg-blue-500'
-                          }`}
-                          style={{ width: `${Math.min(usage.budget_used_pct || 0, 100)}%` }}
-                        />
-                      </div>
-                      <div className="flex justify-between text-xs text-slate-400">
-                        <span>{usage.budget_used_pct || 0}% of budget used</span>
-                        <span>Budget: {usage.monthly_token_budget.toLocaleString()} tokens</span>
-                      </div>
-                    </>
-                  )}
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-500">Cost this month</span>
-                    <span className="font-medium text-slate-900">₹{Number(usage.monthly_cost).toFixed(4)}</span>
-                  </div>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="text-sm text-slate-400">No usage data available</div>
-          )}
-        </div>
-      )}
-
-      {tab === 'papers' && (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900">School Papers</h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                {papers.length} recent paper{papers.length !== 1 ? 's' : ''} generated by {school.name}
+              <p className="text-[13px] font-medium text-slate-500">
+                {school.member_count} member{school.member_count !== 1 ? 's' : ''} · {school.paper_count} paper{school.paper_count !== 1 ? 's' : ''}
               </p>
             </div>
-            <button
-              onClick={() => fetchPapers(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Refresh
-            </button>
           </div>
-          {tabLoading ? (
-            <div className="flex justify-center py-10"><div className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" /></div>
-          ) : papers.length === 0 ? (
-            <div className="py-12 text-center text-sm text-slate-400">No papers generated yet</div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50">
-                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Paper</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">By</th>
-                  <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Cost</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Date</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {papers.map(p => (
-                  <tr key={p.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-3">
-                      <p className="font-medium text-slate-900">{p.subject}</p>
-                      <p className="text-xs text-slate-400">Class {p.class_name} · {p.difficulty}</p>
-                    </td>
-                    <td className="px-4 py-3 text-slate-500">{p.created_by || '—'}</td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${STATUS_COLORS[p.status] || 'bg-slate-100 text-slate-500'}`}>
-                        {p.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right text-xs text-slate-500">
-                      {p.cost ? `₹${Number(p.cost).toFixed(4)}` : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right text-xs text-slate-400">
-                      {new Date(p.created_at).toLocaleDateString()}
-                    </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1">
-                        {p.status === 'done' && (
-                          <Link
-                            href={`/papers/${p.id}/edit`}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-blue-600 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
-                            title="Edit / AI edit"
-                            aria-label={`Edit ${p.subject} paper`}
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </Link>
-                        )}
-                        {p.file && (
-                          <a
-                            href={p.file}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-blue-600 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
-                            title="Download"
-                            aria-label={`Download ${p.subject} paper`}
-                          >
-                            <Download className="w-4 h-4" />
-                          </a>
-                        )}
-                        {p.status === 'done' && p.has_paper_data && (
-                          <button
-                            onClick={() => handleRerenderPaper(p.id)}
-                            disabled={rerenderingId === p.id}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-violet-600 hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 transition-colors disabled:opacity-40"
-                            title="Re-render DOCX"
-                            aria-label={`Re-render ${p.subject} paper`}
-                          >
-                            {rerenderingId === p.id
-                              ? <RefreshCw className="w-4 h-4 animate-spin" />
-                              : <Zap className="w-4 h-4" />
-                            }
-                          </button>
-                        )}
-                        {p.status === 'done' && (
-                          <button
-                            onClick={() => handleRegeneratePaper(p.id)}
-                            disabled={regeneratingId === p.id}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-amber-600 hover:bg-amber-50 hover:text-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-1 transition-colors disabled:opacity-40"
-                            title="Regenerate fresh questions"
-                            aria-label={`Regenerate ${p.subject} paper`}
-                          >
-                            <RotateCw className={`w-4 h-4 ${regeneratingId === p.id ? 'animate-spin' : ''}`} />
-                          </button>
-                        )}
-                        {(p.status === 'failed' || isStuck(p)) && (
-                          <button
-                            onClick={() => handleRetryPaper(p.id)}
-                            disabled={retryingId === p.id}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 transition-colors disabled:opacity-40"
-                            title="Retry generation"
-                            aria-label={`Retry ${p.subject} paper generation`}
-                          >
-                            <RefreshCw className={`w-4 h-4 ${retryingId === p.id ? 'animate-spin' : ''}`} />
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleDeletePaper(p.id)}
-                          disabled={deletingPaperId === p.id}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-colors disabled:opacity-40"
-                          title="Delete"
-                          aria-label={`Delete ${p.subject} paper`}
-                        >
-                          {deletingPaperId === p.id
-                            ? <RefreshCw className="w-4 h-4 animate-spin" />
-                            : <Trash2 className="w-4 h-4" />
-                          }
-                        </button>
+        </div>
+      </div>
+
+      <div className="max-w-5xl mx-auto">
+        {/* Tabs */}
+        <div className="flex gap-2 border-b border-slate-200 mb-8 overflow-x-auto no-scrollbar pb-1">
+          {TABS.map(t => {
+            const Icon = t.icon;
+            const isActive = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`flex items-center gap-2 px-5 py-3 text-[13px] font-bold rounded-xl transition-all whitespace-nowrap ${
+                  isActive
+                    ? 'bg-indigo-50 text-indigo-700 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'
+                }`}
+              >
+                <Icon size={16} />
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {(paperError || paperSuccess) && (
+          <div className="mb-6 space-y-3">
+            {paperError && <ErrorAlert message={paperError} onClose={() => setPaperError(null)} />}
+            {paperSuccess && <SuccessAlert message={paperSuccess} onClose={() => setPaperSuccess(null)} />}
+          </div>
+        )}
+
+        {/* Tab content */}
+        <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[32px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+          {tab === 'overview' && (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+                <div>
+                  <h2 className="text-[18px] font-bold text-slate-900 tracking-tight">School Details</h2>
+                  <p className="text-[12px] font-medium text-slate-500 mt-1">Manage core tenant information.</p>
+                </div>
+                <div className="flex gap-3">
+                  {editing ? (
+                    <>
+                      <button onClick={() => setEditing(false)} className="px-5 py-2.5 text-[12px] font-bold border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 transition-colors shadow-sm">
+                        Cancel
+                      </button>
+                      <button onClick={handleSaveEdit} className="px-5 py-2.5 text-[12px] font-bold bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors shadow-sm flex items-center gap-1.5">
+                        <Check size={14} /> Save Changes
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => setEditing(true)} className="px-5 py-2.5 text-[12px] font-bold border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-1.5">
+                        <Edit3 size={14} /> Edit Details
+                      </button>
+                      <button onClick={handleDeleteSchool} className="px-5 py-2.5 text-[12px] font-bold border border-red-200 text-red-600 rounded-xl hover:bg-red-50 transition-colors shadow-sm flex items-center gap-1.5">
+                        <Trash2 size={14} /> Delete Tenant
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="space-y-6">
+                  {[
+                    { label: 'School Name', field: 'name', type: 'text' },
+                    { label: 'Address', field: 'address', type: 'textarea' },
+                    { label: 'Phone', field: 'phone', type: 'text' },
+                    { label: 'Email', field: 'email', type: 'email' },
+                  ].map(({ label, field, type }) => (
+                    <div key={field}>
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">{label}</label>
+                      {editing ? (
+                        type === 'textarea' ? (
+                          <textarea
+                            value={editForm[field]}
+                            onChange={e => setEditForm(prev => ({ ...prev, [field]: e.target.value }))}
+                            rows={3}
+                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none shadow-sm"
+                          />
+                        ) : (
+                          <input
+                            type={type}
+                            value={editForm[field]}
+                            onChange={e => setEditForm(prev => ({ ...prev, [field]: e.target.value }))}
+                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                          />
+                        )
+                      ) : (
+                        <div className="px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-[14px] font-bold text-slate-900 min-h-[46px] flex items-center">
+                          {school[field] || <span className="text-slate-400 font-medium italic">Not provided</span>}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Token Budget</label>
+                    {editing ? (
+                      <div>
+                        <input
+                          type="number"
+                          value={editForm.monthly_token_budget}
+                          onChange={e => setEditForm(prev => ({ ...prev, monthly_token_budget: e.target.value }))}
+                          className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                        />
+                        <p className="mt-1.5 text-[11px] font-medium text-slate-400">Set 0 for unlimited API consumption.</p>
                       </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    ) : (
+                      <div className="px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-[14px] font-bold text-slate-900">
+                        {school.monthly_token_budget > 0 ? school.monthly_token_budget.toLocaleString() + ' tokens / mo' : 'Unlimited Budget'}
+                      </div>
+                    )}
+                  </div>
+
+                  {editing && (
+                    <label className={`flex flex-col p-4 rounded-xl border-2 cursor-pointer transition-all ${editForm.is_active ? 'bg-emerald-50/50 border-emerald-500 shadow-sm' : 'bg-slate-50 border-slate-200'}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[13px] font-extrabold text-slate-900">Tenant Active</span>
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${editForm.is_active ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-slate-300'}`}>
+                          {editForm.is_active && <Check size={12} className="text-white" />}
+                        </div>
+                      </div>
+                      <p className="text-[11px] font-medium text-slate-500">Allow users to log in.</p>
+                      <input
+                        type="checkbox"
+                        checked={editForm.is_active}
+                        onChange={e => setEditForm(prev => ({ ...prev, is_active: e.target.checked }))}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+
+                  {/* Superadmin per-school AI image generation kill switch */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">AI Image Generation</label>
+                    {editing ? (
+                      <label className={`flex flex-col p-4 rounded-xl border-2 cursor-pointer transition-all ${editForm.disable_image_generation ? 'bg-red-50/50 border-red-400 shadow-sm' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[13px] font-extrabold text-slate-900">Disable Image Generation</span>
+                          <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${editForm.disable_image_generation ? 'bg-red-500 border-red-500' : 'bg-white border-slate-300'}`}>
+                            {editForm.disable_image_generation && <Check size={12} className="text-white" />}
+                          </div>
+                        </div>
+                        <p className="text-[11px] font-medium text-slate-500">Papers still generate; image-based questions skip the image step.</p>
+                        <input
+                          type="checkbox"
+                          checked={!!editForm.disable_image_generation}
+                          onChange={e => setEditForm(prev => ({ ...prev, disable_image_generation: e.target.checked }))}
+                          className="hidden"
+                        />
+                      </label>
+                    ) : (
+                      <div className="px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-[14px] font-bold min-h-[46px] flex items-center">
+                        {school.disable_image_generation ? (
+                          <span className="inline-flex items-center gap-2 text-red-600">
+                            <ImageOff size={16} /> Disabled
+                          </span>
+                        ) : (
+                          <span className="text-slate-900">Enabled</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 text-[11px] font-medium text-slate-400 pt-2 border-t border-slate-100">
+                <Database size={14} />
+                Vector-store access (shared store + cross-school links) is managed in the <span className="font-bold text-slate-600">Data &amp; Access</span> tab.
+              </div>
+            </div>
+          )}
+
+          {tab === 'data' && (
+            <div className="space-y-8">
+              {/* Shared store toggle */}
+              <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm flex items-center justify-between">
+                <div>
+                  <h3 className="text-[16px] font-bold text-slate-900 flex items-center gap-2">
+                    <Database size={18} className="text-indigo-600" />
+                    Global Shared Store
+                  </h3>
+                  <p className="text-[12px] font-medium text-slate-500 mt-1 max-w-xl">
+                    Allows this school to query all shared textbooks and official materials uploaded by the superadmin. Changes take effect instantly.
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleToggleShared(!school.access_shared_vector_store)}
+                  disabled={sharedBusy}
+                  className={`px-6 py-3 text-[12px] font-bold rounded-xl transition-all shadow-sm flex items-center gap-2 disabled:opacity-60 ${school.access_shared_vector_store ? 'bg-white border border-red-200 text-red-600 hover:bg-red-50' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                >
+                  {sharedBusy ? <Loader2 size={16} className="animate-spin" /> : school.access_shared_vector_store ? 'Revoke Access' : 'Grant Access'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Custom Vector Stores */}
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-6">
+                  <div className="mb-6">
+                    <h3 className="text-[15px] font-bold text-slate-900">Assigned Vector Stores</h3>
+                    <p className="text-[11px] font-medium text-slate-500 mt-1">Additional corpora explicitly assigned to this school.</p>
+                  </div>
+                  {!storeData ? (
+                    <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-indigo-500" /></div>
+                  ) : (
+                    <div className="space-y-4">
+                      {storeData.allocated.length === 0 ? (
+                        <p className="text-[12px] font-medium text-slate-400 italic py-2">No custom stores assigned.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {storeData.allocated.map(s => (
+                            <div key={s.id} className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
+                              <div>
+                                <p className="text-[13px] font-bold text-slate-900">{s.name}</p>
+                                <p className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">{s.material_count} materials</p>
+                              </div>
+                              <button onClick={() => handleRemoveStore(s.id)} className="w-8 h-8 flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Remove allocation" aria-label={`Remove ${s.name} allocation`}>
+                                <X size={16} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {storeData.allocatable.length > 0 && (
+                        <div className="flex flex-col gap-3 pt-4 border-t border-slate-200">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Assign new store</label>
+                          <select
+                            value={addStore}
+                            onChange={e => setAddStore(e.target.value)}
+                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[12px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                          >
+                            <option value="">Select a vector store…</option>
+                            {storeData.allocatable.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                          </select>
+                          <button
+                            onClick={handleAllocateStore}
+                            disabled={!addStore || storeBusy}
+                            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-[12px] font-bold rounded-xl transition-colors flex items-center justify-center gap-2 shadow-sm"
+                          >
+                            <Plus size={14} /> Assign Store
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Cross-school access */}
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-6">
+                  <div className="mb-6">
+                    <h3 className="text-[15px] font-bold text-slate-900">Cross-School Links</h3>
+                    <p className="text-[11px] font-medium text-slate-500 mt-1">Allow this school to read another school's private materials.</p>
+                  </div>
+                  {tabLoading || !vectorData ? (
+                    <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-indigo-500" /></div>
+                  ) : (
+                    <div className="space-y-4">
+                      {vectorData.links.length === 0 ? (
+                        <p className="text-[12px] font-medium text-slate-400 italic py-2">No cross-school links.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {vectorData.links.map(l => (
+                            <div key={l.source_id} className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <Link2 size={12} className="text-slate-400" />
+                                  <p className="text-[13px] font-bold text-slate-900">{l.source_name}</p>
+                                </div>
+                                <p className="text-[10px] font-bold text-indigo-500 tracking-wider uppercase mt-0.5">
+                                  {l.mutual ? 'Mutual Link' : 'One-way Read Access'}
+                                </p>
+                              </div>
+                              <button onClick={() => handleRemoveLink(l.source_id, l.mutual)} className="w-8 h-8 flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Remove link" aria-label={`Remove access link to ${l.source_name}`}>
+                                <X size={16} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="flex flex-col gap-3 pt-4 border-t border-slate-200">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Create new link</label>
+                        <select
+                          value={addSource}
+                          onChange={e => setAddSource(e.target.value)}
+                          className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[12px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                        >
+                          <option value="">Select a school to link…</option>
+                          {vectorData.linkable
+                            .filter(s => !vectorData.links.some(l => l.source_id === s.id))
+                            .map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 text-[12px] font-bold text-slate-700 cursor-pointer">
+                            <input type="checkbox" checked={addMutual} onChange={e => setAddMutual(e.target.checked)} className="w-4 h-4 text-indigo-600 border-slate-300 rounded" />
+                            Mutual (Two-way access)
+                          </label>
+                          <button
+                            onClick={handleAddLink}
+                            disabled={!addSource || linkBusy}
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-[12px] font-bold rounded-lg transition-colors shadow-sm"
+                          >
+                            Add Link
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab === 'users' && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-[18px] font-bold text-slate-900 tracking-tight">User Management</h2>
+                  <p className="text-[12px] font-medium text-slate-500 mt-1">{users.length} registered members</p>
+                </div>
+                <button
+                  onClick={() => setShowAddUser(!showAddUser)}
+                  className="px-5 py-2.5 bg-indigo-600 text-white text-[12px] font-bold rounded-xl hover:bg-indigo-700 transition-all shadow-sm flex items-center gap-2 active:scale-[0.98]"
+                >
+                  {showAddUser ? <X size={14} /> : <Plus size={14} />}
+                  {showAddUser ? 'Cancel' : 'Add User'}
+                </button>
+              </div>
+
+              {showAddUser && (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 shadow-sm">
+                  <h3 className="text-[15px] font-bold text-slate-900 mb-6">Create New User</h3>
+                  {addUserError && <div className="mb-4 text-[12px] font-bold text-red-600 bg-red-50 border border-red-100 rounded-xl px-4 py-3">{addUserError}</div>}
+                  <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 ml-1">Username *</label>
+                      <input
+                        type="text"
+                        value={newUser.username}
+                        onChange={e => setNewUser(p => ({ ...p, username: e.target.value }))}
+                        className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 ml-1">Email</label>
+                      <input
+                        type="email"
+                        value={newUser.email}
+                        onChange={e => setNewUser(p => ({ ...p, email: e.target.value }))}
+                        className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 ml-1">Password *</label>
+                      <input
+                        type="password"
+                        value={newUser.password}
+                        onChange={e => setNewUser(p => ({ ...p, password: e.target.value }))}
+                        className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                        required
+                        minLength={8}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 ml-1">Role</label>
+                      <select
+                        value={newUser.role}
+                        onChange={e => setNewUser(p => ({ ...p, role: e.target.value }))}
+                        className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                      >
+                        <option value="teacher">Teacher</option>
+                        <option value="school_admin">School Admin</option>
+                      </select>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 ml-1">Subject Restriction</label>
+                      <select
+                        value={newUser.allowed_subject}
+                        onChange={e => setNewUser(p => ({ ...p, allowed_subject: e.target.value }))}
+                        className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-[13px] font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                      >
+                        <option value="">All Subjects (no restriction)</option>
+                        {subjects.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      <p className="mt-1.5 ml-1 text-[11px] font-medium text-slate-400">If set, this user can only generate papers and upload materials for this subject.</p>
+                    </div>
+                    <div className="md:col-span-2 pt-2">
+                      <button
+                        type="submit"
+                        disabled={addUserLoading}
+                        className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-[13px] font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] flex items-center justify-center gap-2"
+                      >
+                        {addUserLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create User'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                {tabLoading ? (
+                  <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-indigo-600" /></div>
+                ) : users.length === 0 ? (
+                  <div className="py-16 text-center">
+                    <Users size={32} className="mx-auto text-slate-300 mb-3" />
+                    <p className="text-[14px] font-bold text-slate-900">No users in this school yet.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-50/80 text-[11px] font-bold uppercase text-slate-400 tracking-wider border-b border-slate-100">
+                        <tr>
+                          <th className="px-6 py-4">User</th>
+                          <th className="px-6 py-4">Role</th>
+                          <th className="px-6 py-4 text-right">Joined</th>
+                          <th className="px-6 py-4 w-20 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {users.map(u => (
+                          <tr key={u.id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="px-6 py-4">
+                              <p className="font-bold text-slate-900">{u.username}</p>
+                              {u.email && <p className="text-[11px] font-medium text-slate-500 mt-0.5">{u.email}</p>}
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={`inline-flex px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+                                u.role === 'school_admin' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100' : 'bg-slate-100 text-slate-600 border border-slate-200'
+                              }`}>
+                                {u.role === 'school_admin' ? 'School Admin' : 'Teacher'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-right text-[12px] font-semibold text-slate-500">
+                              {new Date(u.date_joined).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <div className="inline-flex items-center justify-end gap-3">
+                                {u.role === 'teacher' ? (
+                                  <button onClick={() => handleChangeRole(u.id, u.username, 'school_admin')} className="text-slate-400 hover:text-indigo-600 transition-colors" title="Promote to School Admin" aria-label={`Promote ${u.username} to School Admin`}>
+                                    <ShieldCheck size={16} />
+                                  </button>
+                                ) : u.role === 'school_admin' ? (
+                                  <button onClick={() => handleChangeRole(u.id, u.username, 'teacher')} className="text-slate-400 hover:text-amber-500 transition-colors" title="Demote to Teacher" aria-label={`Demote ${u.username} to Teacher`}>
+                                    <ShieldOff size={16} />
+                                  </button>
+                                ) : null}
+                                <button onClick={() => handleRemoveUser(u.id, u.username)} className="text-slate-400 hover:text-red-500 transition-colors" title="Remove user" aria-label={`Remove ${u.username}`}>
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {tab === 'usage' && (
+            <div className="space-y-8">
+              <div className="mb-2">
+                <h2 className="text-[18px] font-bold text-slate-900 tracking-tight">API Usage Metrics</h2>
+              </div>
+              {tabLoading ? (
+                <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-indigo-600" /></div>
+              ) : usage ? (
+                <>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+                    {[
+                      { label: 'Total Papers', value: usage.total_papers },
+                      { label: 'Total Images', value: (usage.total_images ?? 0).toLocaleString() },
+                      { label: 'Total Tokens', value: usage.total_tokens > 0 ? usage.total_tokens.toLocaleString() : '—' },
+                      { label: 'Total Cost', value: `₹${Number(usage.total_cost).toFixed(4)}` },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="bg-slate-50 border border-slate-100 rounded-2xl p-6">
+                        <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">{label}</p>
+                        <p className="text-[28px] font-extrabold text-slate-900 tracking-tight">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm max-w-2xl">
+                    <h3 className="text-[15px] font-bold text-slate-900 mb-6">Current Month Consumption</h3>
+                    <div className="space-y-6">
+                      <div className="flex justify-between text-[14px]">
+                        <span className="font-bold text-slate-500">Tokens used</span>
+                        <span className="font-extrabold text-slate-900">{usage.monthly_tokens.toLocaleString()}</span>
+                      </div>
+                      {usage.monthly_token_budget > 0 && (
+                        <div>
+                          <div className="w-full bg-slate-100 rounded-full h-3 mb-3 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-1000 ${
+                                (usage.budget_used_pct || 0) > 90 ? 'bg-red-500' :
+                                (usage.budget_used_pct || 0) > 70 ? 'bg-amber-500' : 'bg-indigo-500'
+                              }`}
+                              style={{ width: `${Math.min(usage.budget_used_pct || 0, 100)}%` }}
+                            />
+                          </div>
+                          <div className="flex justify-between text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                            <span>{usage.budget_used_pct || 0}% of budget used</span>
+                            <span>Limit: {usage.monthly_token_budget.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-[14px] pt-4 border-t border-slate-100">
+                        <span className="font-bold text-slate-500">Estimated Cost</span>
+                        <span className="font-extrabold text-slate-900">₹{Number(usage.monthly_cost).toFixed(4)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="py-16 text-center text-[13px] font-bold text-slate-400">No usage data available</div>
+              )}
+            </div>
+          )}
+
+          {tab === 'papers' && (
+            <div className="space-y-6">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h2 className="text-[18px] font-bold text-slate-900 tracking-tight">Generation History</h2>
+                <button
+                  onClick={() => fetchPapers(true)}
+                  className="px-4 py-2 text-[12px] font-bold border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-2"
+                >
+                  <RefreshCw size={14} /> Refresh
+                </button>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                {tabLoading ? (
+                  <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-indigo-600" /></div>
+                ) : papers.length === 0 ? (
+                  <div className="py-16 text-center">
+                    <FileText size={32} className="mx-auto text-slate-300 mb-3" />
+                    <p className="text-[14px] font-bold text-slate-900">No papers generated yet.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-50/80 text-[11px] font-bold uppercase text-slate-400 tracking-wider border-b border-slate-100">
+                        <tr>
+                          <th className="px-6 py-4">Paper Details</th>
+                          <th className="px-6 py-4">Created By</th>
+                          <th className="px-6 py-4 text-center">Status</th>
+                          <th className="px-6 py-4 text-right">Cost</th>
+                          <th className="px-6 py-4 text-right">Date</th>
+                          <th className="px-6 py-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {papers.map(p => (
+                          <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="px-6 py-4">
+                              <p className="font-bold text-slate-900">{p.subject}</p>
+                              <p className="text-[11px] font-medium text-slate-500 mt-0.5">Class {p.class_name} · <span className="capitalize">{p.difficulty}</span></p>
+                            </td>
+                            <td className="px-6 py-4 text-[13px] font-bold text-slate-600">{p.created_by || '—'}</td>
+                            <td className="px-6 py-4 text-center">
+                              <span className={`inline-flex px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${STATUS_COLORS[p.status] || 'bg-slate-100 text-slate-500'}`}>
+                                {p.status}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-right text-[12px] font-bold text-slate-500">
+                              {p.cost ? `₹${Number(p.cost).toFixed(4)}` : '—'}
+                            </td>
+                            <td className="px-6 py-4 text-right text-[12px] font-semibold text-slate-400">
+                              {new Date(p.created_at).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 text-right whitespace-nowrap">
+                              <div className="inline-flex items-center justify-end gap-3">
+                                {p.status === 'done' && (
+                                  <Link
+                                    href={`/papers/${p.id}/edit`}
+                                    className="text-slate-400 hover:text-indigo-600 transition-colors"
+                                    title="Edit / AI edit"
+                                    aria-label={`Edit ${p.subject} paper`}
+                                  >
+                                    <Pencil size={16} />
+                                  </Link>
+                                )}
+                                {p.file && (
+                                  <a
+                                    href={p.file}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-slate-400 hover:text-indigo-600 transition-colors"
+                                    title="Download"
+                                    aria-label={`Download ${p.subject} paper`}
+                                  >
+                                    <Download size={16} />
+                                  </a>
+                                )}
+                                {p.status === 'done' && p.has_paper_data && (
+                                  <button
+                                    onClick={() => handleRerenderPaper(p.id)}
+                                    disabled={rerenderingId === p.id}
+                                    className="text-slate-400 hover:text-violet-600 transition-colors disabled:opacity-40"
+                                    title="Re-render DOCX"
+                                    aria-label={`Re-render ${p.subject} paper`}
+                                  >
+                                    {rerenderingId === p.id
+                                      ? <RefreshCw size={16} className="animate-spin" />
+                                      : <Zap size={16} />
+                                    }
+                                  </button>
+                                )}
+                                {p.status === 'done' && (
+                                  <button
+                                    onClick={() => handleRegeneratePaper(p.id)}
+                                    disabled={regeneratingId === p.id}
+                                    className="text-slate-400 hover:text-amber-600 transition-colors disabled:opacity-40"
+                                    title="Regenerate fresh questions"
+                                    aria-label={`Regenerate ${p.subject} paper`}
+                                  >
+                                    <RotateCw size={16} className={regeneratingId === p.id ? 'animate-spin' : ''} />
+                                  </button>
+                                )}
+                                {(p.status === 'failed' || isStuck(p)) && (
+                                  <button
+                                    onClick={() => handleRetryPaper(p.id)}
+                                    disabled={retryingId === p.id}
+                                    className="text-slate-400 hover:text-emerald-600 transition-colors disabled:opacity-40"
+                                    title="Retry generation"
+                                    aria-label={`Retry ${p.subject} paper generation`}
+                                  >
+                                    <RefreshCw size={16} className={retryingId === p.id ? 'animate-spin' : ''} />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => handleDeletePaper(p.id)}
+                                  disabled={deletingPaperId === p.id}
+                                  className="text-slate-400 hover:text-red-500 transition-colors disabled:opacity-40"
+                                  title="Delete"
+                                  aria-label={`Delete ${p.subject} paper`}
+                                >
+                                  {deletingPaperId === p.id
+                                    ? <RefreshCw size={16} className="animate-spin" />
+                                    : <Trash2 size={16} />
+                                  }
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

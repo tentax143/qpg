@@ -97,16 +97,6 @@ class Migration(migrations.Migration):
             ),
         ),
         migrations.AddIndex(
-            model_name="materialchunk",
-            index=pgvector.django.indexes.HnswIndex(
-                ef_construction=64,
-                fields=["embedding_local"],
-                m=16,
-                name="chunk_emb_local_hnsw",
-                opclasses=["vector_cosine_ops"],
-            ),
-        ),
-        migrations.AddIndex(
             model_name="chunkchapter",
             index=models.Index(fields=["unit"], name="chunkchapter_unit_idx"),
         ),

@@ -482,40 +482,46 @@ export default function UploadMaterialPage() {
   };
 
   return (
-    <div className="w-full relative py-2">
+    <div className="w-full pb-20 relative">
+      {/* Decorative background blobs */}
+      <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-indigo-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+      <div className="absolute top-40 right-1/4 w-[400px] h-[400px] bg-purple-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+
       {/* Header */}
-      <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-8 mb-12">
-        <div className="flex items-center gap-6">
-          <Link href="/materials" className="w-14 h-14 bg-white border border-gray-100 rounded-2xl flex items-center justify-center text-gray-400 hover:text-blue-600 hover:border-blue-100 hover:shadow-xl hover:shadow-blue-500/5 transition-all group">
-            <ArrowLeft className="group-hover:-translate-x-1 transition-transform" size={24} />
-          </Link>
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-black uppercase tracking-wider rounded-full">Asset Management</span>
-              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-            </div>
-            <h1 className="text-4xl font-black text-gray-900 leading-tight">Upload Material</h1>
-            <p className="text-gray-500 font-medium text-lg mt-1 tracking-tight">Populate your knowledge base with fresh curriculum content.</p>
+      <div className="mb-10 max-w-7xl mx-auto flex flex-col xl:flex-row xl:items-end justify-between gap-6">
+        <div>
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200/60 shadow-sm rounded-full mb-3">
+            <Sparkles size={14} className="text-indigo-500" strokeWidth={2} />
+            <span className="text-[11px] font-bold text-slate-700 uppercase tracking-widest">Library</span>
           </div>
+          <h1 className="text-[32px] font-extrabold text-slate-900 tracking-tight leading-tight mb-2">Upload Materials</h1>
+          <p className="text-[15px] text-slate-500 leading-relaxed max-w-lg">Add textbooks, notes, and references to the AI library.</p>
+        </div>
+        
+        <div className="flex items-center gap-4">
+          <Link href="/materials" className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-6 py-3.5 rounded-2xl font-bold text-[13px] hover:bg-slate-50 hover:text-indigo-600 hover:border-indigo-200 transition-all active:scale-[0.98]">
+            <ArrowLeft size={16} />
+            Back to Library
+          </Link>
         </div>
       </div>
 
-      {error   && <ErrorAlert   message={error}   onClose={() => setError(null)}   className="mb-8" />}
-      {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} className="mb-8" />}
+      {error   && <ErrorAlert   message={error}   onClose={() => setError(null)}   className="mb-6 max-w-7xl mx-auto" />}
+      {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} className="mb-6 max-w-7xl mx-auto" />}
 
-      <form onSubmit={handleSubmit}>
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
+      <form onSubmit={handleSubmit} className="max-w-7xl mx-auto relative z-[50]">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
 
         {/* RIGHT — Upload Settings, in its own container (sticky on desktop, on top on mobile) */}
         <aside className="xl:col-span-4 xl:order-2 xl:sticky xl:top-6">
-        <div className="bg-blue-100 border border-blue-200 rounded-xl overflow-visible relative z-30">
-          <div className="p-6 border-b border-blue-200 bg-blue-200/60 flex items-center gap-3 rounded-t-xl">
-            <div className="w-10 h-10 bg-blue-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-blue-200">
-              <Settings size={20} />
+        <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] relative z-[60]">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
+              <Settings size={18} strokeWidth={2} />
             </div>
-            <h2 className="text-xl font-black text-gray-900">Upload Settings</h2>
+            <h2 className="text-[18px] font-bold text-slate-900 tracking-tight">Upload Configuration</h2>
           </div>
-          <div className="p-8 space-y-4">
+          <div className="space-y-4">
 
             {/* Import-from-URL toggle — only when not multi-subject */}
             {!isMultiSubject && (
@@ -621,7 +627,7 @@ export default function UploadMaterialPage() {
         </aside>
 
         {/* LEFT — main upload area */}
-        <div className="xl:col-span-8 xl:order-1">
+        <div className="lg:col-span-12 xl:col-span-8 space-y-8">
         {/* ── Multi-subject groups ────────────────────────────────────────── */}
         {isMultiSubject ? (
           <div className="space-y-4 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
@@ -645,22 +651,20 @@ export default function UploadMaterialPage() {
           <>
             {/* ── Single-subject info ──────────────────────────────────────── */}
             {/* z-30 keeps the Class/Subject/Type dropdowns above the file card below it */}
-            <div className="glass-card mb-8 overflow-visible relative z-30">
-              <div className="p-6 border-b border-gray-100 bg-white/50 flex items-center gap-3 rounded-t-[32px]">
-                <div className="w-10 h-10 bg-blue-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-blue-200">
-                  <BookOpen size={20} />
+            <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] relative z-[50]">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
+                  <Database size={18} strokeWidth={2} />
                 </div>
-                <h2 className="text-xl font-black text-gray-900">Material Information</h2>
+                <h2 className="text-[18px] font-bold text-slate-900 tracking-tight">Source Details</h2>
               </div>
-              <div className="p-8">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                  <CustomSelect label="Class" icon={Layers} value={formData.class_name}
-                    onChange={v => handleFieldChange('class_name', v)} options={CLASS_OPTIONS} placeholder="Select Class" />
-                  <CustomSelect label="Subject" icon={BookOpen} value={formData.subject}
-                    onChange={v => handleFieldChange('subject', v)} options={subjectOptions} placeholder="Select Subject" />
-                  <CustomSelect label="Material Type" icon={Settings} value={formData.type}
-                    onChange={v => handleFieldChange('type', v)} options={TYPE_OPTIONS} placeholder="Select type" />
-                </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <CustomSelect label="Class" icon={Layers} value={formData.class_name}
+                  onChange={v => handleFieldChange('class_name', v)} options={CLASS_OPTIONS} placeholder="Select Class" />
+                <CustomSelect label="Subject" icon={BookOpen} value={formData.subject}
+                  onChange={v => handleFieldChange('subject', v)} options={subjectOptions} placeholder="Select Subject" />
+                <CustomSelect label="Material Type" icon={Settings} value={formData.type}
+                  onChange={v => handleFieldChange('type', v)} options={TYPE_OPTIONS} placeholder="Select type" />
               </div>
             </div>
 
@@ -983,18 +987,18 @@ export default function UploadMaterialPage() {
         )}
 
         {/* Action bar */}
-        <div className="flex flex-col md:flex-row items-center justify-between gap-6 p-8 glass-card">
-          <div className="flex items-center gap-4 text-gray-400">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6 p-6 mt-8 bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] relative z-[40]">
+          <div className="flex items-center gap-4 text-slate-400">
             <HelpCircle size={18} />
-            <p className="text-[10px] font-black uppercase tracking-widest">All uploads are processed by AI for concept extraction.</p>
+            <p className="text-[11px] font-bold uppercase tracking-wider">All uploads are processed by AI for concept extraction.</p>
           </div>
           <div className="flex items-center gap-4 w-full md:w-auto">
             <button type="button" onClick={resetForm}
-              className="flex-1 md:flex-none flex items-center justify-center gap-2 px-8 py-4 bg-white border border-gray-200 text-gray-500 rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-gray-50 transition-all active:scale-95">
-              <Undo size={18} /> Reset
+              className="flex-1 md:flex-none flex items-center justify-center gap-2 px-6 py-3.5 bg-white border border-slate-200 text-slate-500 hover:text-slate-900 rounded-2xl font-bold text-[13px] uppercase tracking-wider hover:bg-slate-50 transition-all active:scale-95">
+              <Undo size={16} /> Reset
             </button>
             <button disabled={loading || (isUrlImport && !(detected && detected.count > 0)) || (formData.isBulk && formData.type === 'textbook' && autoDetectUnits && !detectedNames) || (formData.isBulk && formData.type === 'textbook' && bulkSplit && !splitPreview)} type="submit"
-              className="flex-1 md:flex-none flex items-center justify-center gap-3 px-10 py-4 bg-blue-600 text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-xl shadow-blue-200 hover:bg-blue-700 transition-all hover:-translate-y-1 active:translate-y-0 disabled:opacity-50 disabled:translate-y-0">
+              className="flex-1 md:flex-none flex items-center justify-center gap-2 px-8 py-3.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-2xl font-bold text-[13px] uppercase tracking-wider shadow-lg shadow-indigo-200/50 transition-all active:scale-[0.98] disabled:opacity-50">
               {loading
                 ? <><RefreshCw size={18} className="animate-spin" /> Processing...</>
                 : isUrlImport

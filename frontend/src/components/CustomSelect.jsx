@@ -29,10 +29,10 @@ export default function CustomSelect({
   const selectedOption = options.find(opt => String(opt.value) === String(value));
 
   return (
-    <div className={`relative space-y-2 ${className} ${isOpen ? 'z-[100]' : 'z-10'}`} ref={dropdownRef}>
+    <div className={`relative ${className} ${isOpen ? 'z-[100]' : 'z-10'}`} ref={dropdownRef}>
       {label && (
-        <label className="flex items-center gap-2 text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">
-          {Icon && <Icon size={12} className="text-blue-500" />}
+        <label className="flex items-center gap-2 text-[12px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+          {Icon && <Icon size={14} className="text-indigo-500" strokeWidth={1.75} />}
           {label}
         </label>
       )}
@@ -41,28 +41,37 @@ export default function CustomSelect({
         type="button"
         disabled={disabled}
         onClick={() => setIsOpen(!isOpen)}
-        className={`w-full flex items-center justify-between px-5 py-4 bg-white/70 backdrop-blur-md border border-gray-200 rounded-2xl transition-all duration-300 ${
-          isOpen ? 'ring-4 ring-blue-500/5 border-blue-500 shadow-lg' : 'hover:border-blue-400 hover:bg-white'
-        } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+        className={`w-full flex items-center justify-between px-4 py-3.5 bg-white border rounded-2xl transition-all duration-200 ${
+          isOpen 
+            ? 'ring-2 ring-indigo-500/10 border-indigo-400 shadow-md shadow-indigo-100/30' 
+            : 'border-slate-200 hover:border-slate-300 hover:shadow-sm'
+        } ${disabled ? 'opacity-50 cursor-not-allowed bg-slate-50' : 'cursor-pointer'}`}
       >
-        <span className={`font-bold text-sm ${selectedOption ? 'text-gray-900' : 'text-gray-400'}`}>
+        <span className={`text-[14px] font-semibold truncate ${selectedOption ? 'text-slate-900' : 'text-slate-400'}`}>
           {selectedOption ? selectedOption.label : placeholder}
         </span>
         <ChevronDown 
-          size={18} 
-          className={`text-gray-400 transition-transform duration-300 ${isOpen ? 'rotate-180 text-blue-500' : ''}`} 
+          size={16} 
+          strokeWidth={2}
+          className={`text-slate-400 shrink-0 ml-2 transition-transform duration-200 ${isOpen ? 'rotate-180 text-indigo-500' : ''}`} 
         />
       </button>
 
-      {isOpen && !disabled && (
-        <div 
-          className="absolute z-[1000] top-full left-0 mt-2 w-full bg-white border border-gray-100 rounded-[24px] shadow-2xl shadow-blue-500/10 py-3 animate-in fade-in duration-200 max-h-80 overflow-y-auto custom-scrollbar pr-1"
-          style={{ overscrollBehavior: 'contain' }}
-        >
-          {options.length === 0 ? (
-            <div className="px-5 py-3 text-xs font-bold text-gray-400 italic">No options available</div>
-          ) : (
-            options.map((option) => (
+      {/* Dropdown Panel */}
+      <div 
+        className={`absolute top-full left-0 mt-1.5 w-full bg-white border border-slate-100 rounded-2xl shadow-xl shadow-slate-200/40 py-1.5 max-h-72 overflow-y-auto transition-all duration-200 origin-top ${
+          isOpen && !disabled
+            ? 'opacity-100 scale-100 pointer-events-auto'
+            : 'opacity-0 scale-95 pointer-events-none'
+        }`}
+        style={{ overscrollBehavior: 'contain', zIndex: 1000 }}
+      >
+        {options.length === 0 ? (
+          <div className="px-4 py-4 text-[13px] font-medium text-slate-400 text-center">No options available</div>
+        ) : (
+          options.map((option) => {
+            const isSelected = String(option.value) === String(value);
+            return (
               <button
                 key={option.value}
                 type="button"
@@ -70,23 +79,25 @@ export default function CustomSelect({
                   onChange(option.value);
                   setIsOpen(false);
                 }}
-                className={`w-full flex items-center justify-between px-5 py-4 hover:bg-blue-50/50 transition-colors group ${
-                  String(option.value) === String(value) ? 'bg-blue-50' : ''
+                className={`w-full flex items-center justify-between px-4 py-3 mx-0 rounded-xl transition-all duration-150 group ${
+                  isSelected 
+                    ? 'bg-indigo-50/70 text-indigo-700' 
+                    : 'text-slate-700 hover:bg-slate-50'
                 }`}
               >
-                <span className={`text-sm font-bold transition-colors ${
-                  String(option.value) === String(value) ? 'text-blue-600' : 'text-gray-700 group-hover:text-gray-900'
+                <span className={`text-[14px] truncate pr-2 ${
+                  isSelected ? 'font-semibold text-indigo-700' : 'font-medium text-slate-700 group-hover:text-slate-900'
                 }`}>
                   {option.label}
                 </span>
-                {String(option.value) === String(value) && (
-                  <Check size={16} className="text-blue-600 mr-2" />
+                {isSelected && (
+                  <Check size={15} strokeWidth={2.5} className="text-indigo-600 shrink-0" />
                 )}
               </button>
-            ))
-          )}
-        </div>
-      )}
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }

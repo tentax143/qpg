@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useSyncExternalStore } from 'react';
 import {
   LayoutDashboard,
   PenTool,
@@ -12,20 +12,19 @@ import {
   BookOpen,
   Users,
   LogOut,
-  ChevronUp,
-  GraduationCap,
   School,
   BarChart3,
-  ShieldCheck,
   HelpCircle,
   Database,
   ListOrdered,
   Menu,
   X,
+  PanelLeftClose,
+  PanelLeftOpen,
   Bell,
   Sparkles,
   Bug,
-  Activity,
+  Activity
 } from 'lucide-react';
 
 const ROLE_LABELS = {
@@ -34,32 +33,88 @@ const ROLE_LABELS = {
   teacher: 'Teacher',
 };
 
-export default function Sidebar() {
+function subscribeToAuthState(callback) {
+  window.addEventListener('storage', callback);
+  window.addEventListener('focus', callback);
+  return () => {
+    window.removeEventListener('storage', callback);
+    window.removeEventListener('focus', callback);
+  };
+}
+
+function getAuthTokenSnapshot() {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('authToken');
+}
+
+function getAuthUserSnapshot() {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('user');
+}
+
+function NavLink({ href, icon: Icon, label, active, onClick, isCollapsed }) {
+  return (
+    <div className="relative group">
+      <Link
+        href={href}
+        onClick={onClick}
+        className={`flex items-center ${
+          isCollapsed ? 'justify-center w-[46px] h-[46px] mx-auto' : 'gap-3 px-4 py-3 w-full'
+        } rounded-2xl text-[14px] font-medium transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] transform hover:scale-[1.02] active:scale-[0.98] ${
+          active
+            ? 'bg-white text-slate-900 shadow-sm shadow-slate-200/50 border border-slate-100'
+            : 'text-slate-500 hover:bg-slate-100/60 hover:text-slate-900 border border-transparent'
+        }`}
+      >
+        <Icon strokeWidth={active ? 2 : 1.75} className={`w-[22px] h-[22px] shrink-0 transition-colors duration-300 ${active ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-600'}`} />
+        {!isCollapsed && <span className="truncate">{label}</span>}
+      </Link>
+
+      {/* Tooltip for collapsed state */}
+      {isCollapsed && (
+        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-4 px-3.5 py-2 bg-slate-800 text-white text-xs font-semibold rounded-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-300 whitespace-nowrap z-50 shadow-xl shadow-slate-900/20 border border-slate-700">
+          {label}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Sidebar({ isCollapsed, setIsCollapsed }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [user, setUser] = useState(null);
-  const [showUserMenu, setShowUserMenu] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  useEffect(() => {
-    const token = localStorage.getItem('authToken');
-    const userData = localStorage.getItem('user');
-    if (token && userData) {
-      setIsAuthenticated(true);
-      setUser(JSON.parse(userData));
-    } else {
-      setIsAuthenticated(false);
+  const token = useSyncExternalStore(subscribeToAuthState, getAuthTokenSnapshot, () => null);
+  const userData = useSyncExternalStore(subscribeToAuthState, getAuthUserSnapshot, () => null);
+  const user = useMemo(() => {
+    if (!userData) return null;
+    try {
+      return JSON.parse(userData);
+    } catch {
+      return null;
     }
-  }, [pathname]);
+  }, [userData]);
+
+  const isAuthenticated = Boolean(token && userData);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    if (pathname === '/' || pathname === '/login') return;
+    if (!isAuthenticated) router.replace('/login');
+  }, [pathname, router, isAuthenticated, mounted]);
 
   const isAuthPage = pathname === '/' || pathname === '/login';
-  if (isAuthPage || !isAuthenticated) return null;
+  if (!mounted || isAuthPage || !isAuthenticated) return null;
 
   const role = user?.role || 'teacher';
   const isSuperAdmin = role === 'superadmin';
 
-  // SuperAdmin navigation
   const superAdminItems = [
     { href: '/superadmin', icon: LayoutDashboard, label: 'Dashboard' },
     { href: '/superadmin/schools', icon: School, label: 'Schools' },
@@ -72,13 +127,11 @@ export default function Sidebar() {
     { href: '/superadmin/issues', icon: Bug, label: 'Issues' },
   ];
 
-  // SuperAdmin content management — populates the shared/global vector store.
   const superAdminContentItems = [
     { href: '/materials/upload', icon: UploadCloud, label: 'Upload Material' },
     { href: '/materials', icon: BookOpen, label: 'Materials' },
   ];
 
-  // Regular user navigation
   const mainItems = [
     { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
     { href: '/generator', icon: PenTool, label: 'Generate Paper' },
@@ -102,172 +155,181 @@ export default function Sidebar() {
 
   const isActive = (href) => {
     if (href === '/superadmin') return pathname === '/superadmin';
+    if (href === '/materials' && pathname.startsWith('/materials/upload')) return false;
     return pathname === href || pathname.startsWith(href + '/');
-  };
-
-  const NavLink = ({ href, icon: Icon, label }) => {
-    const active = isActive(href);
-    return (
-      <Link
-        href={href}
-        onClick={() => setMobileOpen(false)}
-        className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors duration-150 ${
-          active
-            ? 'bg-blue-50 text-blue-700 font-medium'
-            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-        }`}
-      >
-        <Icon className="w-4 h-4 shrink-0" />
-        <span>{label}</span>
-      </Link>
-    );
   };
 
   return (
     <>
       {/* Mobile top bar */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 z-40">
+      <div className="lg:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-slate-100 flex items-center justify-between px-4 z-40">
         <div className="flex items-center min-w-0">
-          <div className="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
-            <GraduationCap className="w-4 h-4 text-white" />
-          </div>
-          <span className="ml-2.5 text-sm font-semibold text-slate-900 tracking-tight truncate">
-            {isSuperAdmin ? 'QPG' : (user?.school_name || 'QPG')}
+          <img src="/qforge-logo.jpg" alt="qForge AI Logo" className="w-8 h-8 rounded-[10px] object-cover shrink-0 shadow-sm" />
+          <span className="ml-3 text-[16px] font-black tracking-tight truncate text-slate-900 capitalize">
+            qForge AI
           </span>
         </div>
         <button
           onClick={() => setMobileOpen(true)}
-          className="p-2 -mr-2 text-slate-600 hover:text-slate-900"
-          aria-label="Open menu"
+          className="p-2 -mr-2 text-slate-600 hover:text-slate-900 active:scale-95 transition-transform"
         >
           <Menu className="w-6 h-6" />
         </button>
       </div>
 
-      {/* Backdrop, mobile only, shown while the drawer is open */}
       {mobileOpen && (
         <div
-          className="lg:hidden fixed inset-0 bg-black/40 z-30"
+          className="lg:hidden fixed inset-0 bg-slate-900/30 z-40 backdrop-blur-sm transition-opacity duration-300"
           onClick={() => setMobileOpen(false)}
         />
       )}
 
+      {/* Sidebar Container */}
       <div
-        className={`w-64 bg-white border-r border-slate-200 min-h-screen fixed left-0 top-0 flex flex-col z-50 transform transition-transform duration-200 ease-in-out ${
+        className={`${
+          isCollapsed ? 'w-[88px]' : 'w-[260px]'
+        } bg-[#FDFDFD] border-r border-slate-100/60 min-h-screen fixed left-0 top-0 flex flex-col z-50 transform transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] shadow-[4px_0_24px_rgba(0,0,0,0.01)] ${
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
         } lg:translate-x-0`}
       >
-        {/* Brand */}
-        <div className="h-16 px-5 flex items-center justify-between border-b border-slate-200 shrink-0">
+
+        {/* Brand Header */}
+        <div className={`h-[88px] flex items-center shrink-0 relative ${isCollapsed ? 'justify-center' : 'px-6 justify-between'}`}>
           <div className="flex items-center min-w-0">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
-              <GraduationCap className="w-4 h-4 text-white" />
-            </div>
-            <div className="ml-3 min-w-0">
-              <span className="text-[15px] font-semibold text-slate-900 tracking-tight truncate block">
-                {isSuperAdmin ? 'QPG' : (user?.school_name || 'QPG')}
+            {/* Logo Icon */}
+            <img
+              src="/qforge-logo.jpg"
+              alt="qForge AI Logo"
+              className="w-10 h-10 rounded-2xl object-cover shrink-0 shadow-sm hover:scale-[1.03] transition-transform duration-300"
+            />
+            {/* Logo Text */}
+            <div className={`ml-3.5 min-w-0 transition-opacity duration-300 ${isCollapsed ? 'opacity-0 hidden' : 'opacity-100'}`}>
+              <span className="text-[18px] font-black tracking-wide truncate block text-slate-900 capitalize">
+                qForge AI
               </span>
-              {isSuperAdmin && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                  <ShieldCheck className="w-2.5 h-2.5" />
-                  Admin
-                </span>
-              )}
             </div>
           </div>
+
+          {/* Mobile Close Button */}
           <button
             onClick={() => setMobileOpen(false)}
-            className="lg:hidden p-1 text-slate-400 hover:text-slate-600 shrink-0"
-            aria-label="Close menu"
+            className="lg:hidden p-1.5 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 shrink-0 active:scale-95 transition-all"
           >
             <X className="w-5 h-5" />
           </button>
+
+          {/* Desktop Toggle Button */}
+          <button
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className={`hidden lg:flex absolute right-0 translate-x-1/2 w-8 h-8 bg-white border border-slate-200 rounded-full items-center justify-center text-slate-400 hover:text-slate-700 hover:border-slate-300 hover:scale-110 active:scale-95 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] z-10 ${isCollapsed ? 'top-10' : 'top-10'}`}
+          >
+            {isCollapsed ? <PanelLeftOpen strokeWidth={1.5} className="w-[15px] h-[15px]" /> : <PanelLeftClose strokeWidth={1.5} className="w-[15px] h-[15px]" />}
+          </button>
         </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 overflow-y-auto custom-scrollbar space-y-5">
-        {isSuperAdmin ? (
-          <>
-            <div>
-              <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Administration</p>
-              <div className="space-y-0.5">
-                {superAdminItems.map((item) => (
-                  <NavLink key={item.href} {...item} />
-                ))}
+        {/* Navigation */}
+        <nav className={`flex-1 overflow-y-auto py-4 flex flex-col gap-6 ${isCollapsed ? 'px-3 scrollbar-hide [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]' : 'px-4 custom-scrollbar'}`}>
+          {isSuperAdmin ? (
+            <>
+              <div>
+                {!isCollapsed && <p className="px-4 mb-3 text-[11px] font-bold tracking-widest text-slate-400/80 uppercase">Main Menu</p>}
+                <div className="space-y-1.5">
+                  {superAdminItems.map((item) => (
+                    <NavLink key={item.href} {...item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} isCollapsed={isCollapsed} />
+                  ))}
+                </div>
               </div>
-            </div>
-            <div>
-              <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Shared Content</p>
-              <div className="space-y-0.5">
-                {superAdminContentItems.map((item) => (
-                  <NavLink key={item.href} {...item} />
-                ))}
+              <div>
+                {!isCollapsed && <p className="px-4 mb-3 text-[11px] font-bold tracking-widest text-slate-400/80 uppercase">Teams</p>}
+                <div className="space-y-1.5">
+                  {superAdminContentItems.map((item) => (
+                    <NavLink key={item.href} {...item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} isCollapsed={isCollapsed} />
+                  ))}
+                </div>
               </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div>
-              <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Main</p>
-              <div className="space-y-0.5">
-                {mainItems.map((item) => (
-                  <NavLink key={item.href} {...item} />
-                ))}
+            </>
+          ) : (
+            <>
+              <div>
+                {!isCollapsed && <p className="px-4 mb-3 text-[11px] font-bold tracking-widest text-slate-400/80 uppercase">Main Menu</p>}
+                <div className="space-y-1.5">
+                  {mainItems.map((item) => (
+                    <NavLink key={item.href} {...item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} isCollapsed={isCollapsed} />
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div>
-              <p className="px-3 mb-1.5 text-[11px] font-medium text-slate-400 uppercase tracking-wider">Management</p>
-              <div className="space-y-0.5">
-                {managementItems.filter(item => !item.roles || item.roles.includes(role)).map((item) => (
-                  <NavLink key={item.href} {...item} />
-                ))}
+              <div>
+                {!isCollapsed && <p className="px-4 mb-3 text-[11px] font-bold tracking-widest text-slate-400/80 uppercase">Teams</p>}
+                <div className="space-y-1.5">
+                  {managementItems.filter(item => !item.roles || item.roles.includes(role)).map((item) => (
+                    <NavLink key={item.href} {...item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} isCollapsed={isCollapsed} />
+                  ))}
+                </div>
               </div>
-            </div>
-          </>
-        )}
+            </>
+          )}
 
-        <div className="pt-2 border-t border-slate-100 space-y-0.5">
-          {!isSuperAdmin && <NavLink href="/report-issue" icon={Bug} label="Report an Issue" />}
-          <NavLink href="/manual" icon={HelpCircle} label="User Manual" />
-        </div>
-      </nav>
+          <div className="mt-auto space-y-1.5">
+            {!isSuperAdmin && (
+              <NavLink href="/report-issue" icon={Bug} label="Report an Issue" active={isActive('/report-issue')} onClick={() => setMobileOpen(false)} isCollapsed={isCollapsed} />
+            )}
+            <NavLink href="/manual" icon={HelpCircle} label="Help center" active={isActive('/manual')} onClick={() => setMobileOpen(false)} isCollapsed={isCollapsed} />
+          </div>
+        </nav>
 
-      {/* User footer */}
-      <div className="px-3 py-3 border-t border-slate-200 shrink-0 relative">
-        {user && (
-          <>
-            <button
-              onClick={() => setShowUserMenu(!showUserMenu)}
-              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-100 transition-colors text-left"
-            >
-              <div className={`w-7 h-7 rounded-md flex items-center justify-center text-white text-xs font-semibold shrink-0 ${isSuperAdmin ? 'bg-amber-600' : 'bg-blue-600'}`}>
-                {user.username.charAt(0).toUpperCase()}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">{user.username}</p>
-                <p className="text-xs text-slate-500 truncate">{ROLE_LABELS[role] || 'Member'}</p>
-                {!isSuperAdmin && user.school_name && (
-                  <p className="text-[11px] text-slate-400 truncate">{user.school_name}</p>
+        {/* Bottom Section: User Profile */}
+        <div className={`p-5 shrink-0 border-t border-slate-100/60 ${isCollapsed ? 'flex flex-col items-center' : ''}`}>
+          {user && (
+            <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'} w-full`}>
+              <div className="relative group">
+                <div className={`w-[46px] h-[46px] rounded-2xl bg-indigo-50 flex items-center justify-center shrink-0 border border-indigo-100/50 shadow-sm transition-transform duration-300 hover:scale-[1.03] active:scale-95 cursor-pointer`}>
+                  <img src={`https://ui-avatars.com/api/?name=${user.username}&background=eff6ff&color=4f46e5&bold=true`} alt="Avatar" className="w-full h-full object-cover rounded-2xl" />
+                </div>
+
+                {/* Tooltip for collapsed user avatar */}
+                {isCollapsed && (
+                  <div className="absolute left-full top-1/2 -translate-y-1/2 ml-4 px-3.5 py-2.5 bg-slate-800 text-white text-xs font-medium rounded-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-300 whitespace-nowrap z-50 shadow-xl shadow-slate-900/20 border border-slate-700">
+                    <p className="font-bold text-[13px]">{user.username}</p>
+                    <p className="text-slate-300 mt-0.5">{ROLE_LABELS[role]}</p>
+                  </div>
                 )}
               </div>
-              <ChevronUp className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${showUserMenu ? '' : 'rotate-180'}`} />
-            </button>
 
-            {showUserMenu && (
-              <div className="absolute bottom-full left-3 right-3 mb-1 bg-white border border-slate-200 rounded-lg shadow-lg py-1 z-50">
-                <button
-                  onClick={handleLogout}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors rounded-md"
-                >
-                  <LogOut className="w-4 h-4" />
-                  <span>Log out</span>
-                </button>
+              {!isCollapsed && (
+                <>
+                  <div className="ml-3.5 min-w-0 pr-2 flex-1">
+                    <p className="text-[14px] font-bold truncate text-slate-900 tracking-tight">{user.username}</p>
+                    <p className="text-[12px] truncate text-slate-500 font-medium">{ROLE_LABELS[role] || 'Member'}</p>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="p-2.5 rounded-2xl text-slate-400 hover:bg-red-50 hover:text-red-600 transition-all duration-300 hover:scale-[1.05] active:scale-95 shrink-0"
+                    title="Logout"
+                  >
+                    <LogOut strokeWidth={1.75} className="w-[18px] h-[18px]" />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Logout for collapsed state */}
+          {isCollapsed && user && (
+            <div className="relative group mt-3 w-full flex justify-center">
+              <button
+                onClick={handleLogout}
+                className="w-[46px] h-[46px] flex items-center justify-center rounded-2xl text-slate-400 hover:bg-red-50 hover:text-red-600 transition-all duration-300 hover:scale-[1.05] active:scale-95 shadow-sm"
+                title="Logout"
+              >
+                <LogOut strokeWidth={1.75} className="w-[18px] h-[18px]" />
+              </button>
+              <div className="absolute left-full top-1/2 -translate-y-1/2 ml-4 px-3.5 py-2 bg-red-600 text-white text-xs font-bold rounded-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-300 whitespace-nowrap z-50 shadow-xl shadow-red-900/20 border border-red-700">
+                Logout
               </div>
-            )}
-          </>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
       </div>
     </>
   );

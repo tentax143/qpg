@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Plus, FileText, Download, CheckCircle, AlertTriangle,
-  Trash2, RefreshCw, Settings, Upload, FileSignature, Zap, Pencil, RotateCw, Clock, KeyRound
+  Trash2, RefreshCw, Upload, FileSignature, Zap, Pencil, RotateCw, Clock, KeyRound,
+  CalendarDays, Award, Sparkles, ClipboardList
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -21,31 +22,38 @@ const parseWarnings = (detail) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+const getGreeting = () => {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good Morning';
+  if (hour < 17) return 'Good Afternoon';
+  return 'Good Evening';
+};
+
 // Teacher-facing explanations for the Status column badges.
 const STATUS_GUIDE = [
   {
     label: 'Completed', icon: CheckCircle, spin: false,
-    badge: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    badge: 'text-emerald-700 bg-emerald-50 border-emerald-200/80',
     text: 'The paper is ready — you can download, edit or print it. A ⚠ on the badge means it finished with warnings; click the badge to see what to double-check.',
   },
   {
     label: 'Generating', icon: RefreshCw, spin: true,
-    badge: 'text-blue-700 bg-blue-50 border-blue-200',
+    badge: 'text-indigo-700 bg-indigo-50 border-indigo-200/80',
     text: 'Questions are being created right now. This takes a few minutes and the list updates by itself — no need to refresh the page.',
   },
   {
     label: 'Queued', icon: Clock, spin: false,
-    badge: 'text-amber-700 bg-amber-50 border-amber-200',
+    badge: 'text-amber-700 bg-amber-50 border-amber-200/80',
     text: 'Waiting in line behind another paper that is generating. It starts automatically — nothing to do.',
   },
   {
     label: 'Stalled', icon: null, spin: false,
-    badge: 'text-amber-700 bg-amber-50 border-amber-200',
+    badge: 'text-amber-700 bg-amber-50 border-amber-200/80',
     text: 'Generation is taking a bit longer than usual. Please wait — it will continue on its own and finish shortly.',
   },
   {
     label: 'Failed', icon: null, spin: false,
-    badge: 'text-red-700 bg-red-50 border-red-200',
+    badge: 'text-red-700 bg-red-50 border-red-200/80',
     text: 'Generation could not finish. Click the badge to read the reason, then use the retry button to try again.',
   },
 ];
@@ -296,38 +304,124 @@ export default function DashboardPage() {
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">
-      <div className="w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" />
+      <div className="w-6 h-6 border-2 border-slate-200 border-t-indigo-600 rounded-full animate-spin" />
     </div>
   );
 
+  const statCards = [
+    {
+      label: 'Total Papers',
+      value: stats.total_papers,
+      sub: 'All time generated',
+      icon: FileText,
+      gradient: 'from-indigo-500 to-indigo-600',
+      lightBg: 'bg-indigo-50',
+      iconColor: 'text-indigo-600',
+      borderAccent: 'border-indigo-100',
+    },
+    {
+      label: 'This Month',
+      value: stats.this_month,
+      sub: 'Current month activity',
+      icon: CalendarDays,
+      gradient: 'from-emerald-500 to-emerald-600',
+      lightBg: 'bg-emerald-50',
+      iconColor: 'text-emerald-600',
+      borderAccent: 'border-emerald-100',
+    },
+    {
+      label: 'Success Rate',
+      value: stats.success_rate,
+      sub: 'Completion rate',
+      icon: Award,
+      gradient: 'from-amber-500 to-orange-500',
+      lightBg: 'bg-amber-50',
+      iconColor: 'text-amber-600',
+      borderAccent: 'border-amber-100',
+    },
+  ];
+
+  const quickActions = [
+    {
+      title: 'Generate Paper',
+      desc: 'Create a new question paper with AI',
+      icon: Sparkles,
+      link: '/generator',
+      gradient: 'from-indigo-500 to-purple-600',
+      hoverGradient: 'hover:from-indigo-600 hover:to-purple-700',
+      isPrimary: true,
+    },
+    {
+      title: 'New Blueprint',
+      desc: 'Design a custom paper structure',
+      icon: FileSignature,
+      link: '/blueprints',
+      iconBg: 'bg-sky-50',
+      iconColor: 'text-sky-600',
+      borderColor: 'border-sky-100',
+    },
+    {
+      title: 'Upload Material',
+      desc: 'Add study content to your library',
+      icon: Upload,
+      link: '/materials/upload',
+      iconBg: 'bg-emerald-50',
+      iconColor: 'text-emerald-600',
+      borderColor: 'border-emerald-100',
+    },
+    {
+      title: 'Manage Patterns',
+      desc: 'Configure exam pattern templates',
+      icon: ClipboardList,
+      link: '/patterns',
+      iconBg: 'bg-amber-50',
+      iconColor: 'text-amber-600',
+      borderColor: 'border-amber-100',
+    },
+  ];
+
   return (
-    <div className="w-full space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="w-full space-y-8 pb-8">
+      {/* Welcome Header */}
+      <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Manage and track your question papers</p>
+          <p className="text-sm font-medium text-indigo-600 mb-1 tracking-wide uppercase">{getGreeting()}</p>
+          <h1 className="text-[28px] font-bold text-slate-900 tracking-tight leading-tight">
+            Welcome back{user?.username ? `, ${user.username}` : ''} 👋
+          </h1>
+          <p className="text-[15px] text-slate-500 mt-1.5 leading-relaxed">
+            Here's what's happening with your question papers today.
+          </p>
         </div>
         <Link
           href="/generator"
-          className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white text-sm font-semibold rounded-2xl transition-all duration-300 shadow-lg shadow-indigo-200/50 hover:shadow-indigo-300/50 hover:scale-[1.02] active:scale-[0.98]"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-4 h-4" strokeWidth={2.5} />
           New Paper
         </Link>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {[
-          { label: 'Total Papers', value: stats.total_papers, sub: 'All time' },
-          { label: 'This Month', value: stats.this_month, sub: 'Current month' },
-          { label: 'Success Rate', value: stats.success_rate, sub: 'Completion rate' },
-        ].map((stat, i) => (
-          <div key={i} className="bg-white border border-slate-200 rounded-xl p-5">
-            <p className="text-xs font-medium text-slate-500">{stat.label}</p>
-            <p className="text-3xl font-semibold text-slate-900 mt-1.5 tracking-tight">{stat.value}</p>
-            <p className="text-xs text-slate-400 mt-1">{stat.sub}</p>
+      {/* Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+        {statCards.map((stat, i) => (
+          <div
+            key={i}
+            className={`relative overflow-hidden bg-white border ${stat.borderAccent} rounded-2xl p-6 transition-all duration-300 hover:shadow-lg hover:shadow-slate-100/50 hover:-translate-y-0.5 group`}
+          >
+            {/* Subtle gradient accent line at top */}
+            <div className={`absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r ${stat.gradient} opacity-80`} />
+
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[13px] font-semibold text-slate-500 tracking-wide">{stat.label}</p>
+                <p className="text-[36px] font-extrabold text-slate-900 mt-2 tracking-tight leading-none">{stat.value}</p>
+                <p className="text-[12px] text-slate-400 mt-2 font-medium">{stat.sub}</p>
+              </div>
+              <div className={`${stat.lightBg} w-12 h-12 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300`}>
+                <stat.icon className={`w-6 h-6 ${stat.iconColor}`} strokeWidth={1.75} />
+              </div>
+            </div>
           </div>
         ))}
       </div>
@@ -335,286 +429,321 @@ export default function DashboardPage() {
       {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} />}
       {error && <ErrorAlert message={error} onClose={() => setError(null)} />}
 
+      {/* Quick Actions */}
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-[16px] font-bold text-slate-900 tracking-tight">Quick Actions</h2>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {quickActions.map((action, i) => (
+            action.isPrimary ? (
+              <Link
+                key={i}
+                href={action.link}
+                className={`relative overflow-hidden bg-gradient-to-br ${action.gradient} ${action.hoverGradient} rounded-2xl p-5 transition-all duration-300 hover:shadow-xl hover:shadow-indigo-200/40 hover:-translate-y-0.5 group`}
+              >
+                <div className="absolute top-0 right-0 w-24 h-24 bg-white/10 rounded-full -translate-x-4 -translate-y-8 group-hover:scale-110 transition-transform duration-500" />
+                <div className="absolute bottom-0 left-0 w-16 h-16 bg-white/5 rounded-full translate-x-2 translate-y-6" />
+                <div className="relative">
+                  <div className="w-11 h-11 bg-white/20 backdrop-blur-sm rounded-2xl flex items-center justify-center mb-4 group-hover:scale-105 transition-transform duration-300">
+                    <action.icon className="w-5 h-5 text-white" strokeWidth={1.75} />
+                  </div>
+                  <h3 className="text-[15px] font-bold text-white">{action.title}</h3>
+                  <p className="text-[12px] text-white/70 mt-1">{action.desc}</p>
+                </div>
+              </Link>
+            ) : (
+              <Link
+                key={i}
+                href={action.link}
+                className={`bg-white border ${action.borderColor} rounded-2xl p-5 transition-all duration-300 hover:shadow-lg hover:shadow-slate-100/50 hover:-translate-y-0.5 group`}
+              >
+                <div className={`${action.iconBg} w-11 h-11 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-105 transition-transform duration-300`}>
+                  <action.icon className={`w-5 h-5 ${action.iconColor}`} strokeWidth={1.75} />
+                </div>
+                <h3 className="text-[15px] font-bold text-slate-900">{action.title}</h3>
+                <p className="text-[12px] text-slate-400 mt-1">{action.desc}</p>
+              </Link>
+            )
+          ))}
+        </div>
+      </div>
+
+      {/* Papers Table + Status guide */}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] gap-6 items-start">
-        {/* Papers table */}
-        <div className="space-y-6">
-          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-900">Papers</h2>
+        {/* Papers Table */}
+        <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm shadow-slate-100/50">
+          <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h2 className="text-[16px] font-bold text-slate-900 tracking-tight">Recent Papers</h2>
+              <p className="text-[12px] text-slate-400 mt-0.5">Your latest generated question papers</p>
+            </div>
+            <div className="flex items-center gap-2">
               {selectedPapers.length > 0 && (
                 <button
                   onClick={handleBulkDelete}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-red-600 border border-red-200 bg-red-50 rounded-md text-xs font-medium hover:bg-red-100 transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-red-600 border border-red-200 bg-red-50 rounded-xl text-xs font-semibold hover:bg-red-100 transition-all duration-200 active:scale-95"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   Delete ({selectedPapers.length})
                 </button>
               )}
             </div>
+          </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50/60">
-                    <th className="w-10 px-5 py-3 text-left">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50/50">
+                  <th className="w-10 px-6 py-3.5 text-left">
+                    <input
+                      type="checkbox"
+                      className="rounded-md border-slate-300 text-indigo-600 focus:ring-indigo-500/20 transition-all w-4 h-4"
+                      checked={selectedPapers.length === stats.recent_activity.length && stats.recent_activity.length > 0}
+                      onChange={toggleSelectAll}
+                    />
+                  </th>
+                  <th className="px-6 py-3.5 text-left text-[11px] font-bold text-slate-400 uppercase tracking-widest">Paper</th>
+                  <th className="px-6 py-3.5 text-left text-[11px] font-bold text-slate-400 uppercase tracking-widest">Pattern</th>
+                  <th className="px-6 py-3.5 text-left text-[11px] font-bold text-slate-400 uppercase tracking-widest">Status</th>
+                  <th className="px-6 py-3.5 text-right text-[11px] font-bold text-slate-400 uppercase tracking-widest">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {stats.recent_activity.length > 0 ? stats.recent_activity.map((paper) => (
+                  <tr key={paper.id} className="hover:bg-slate-50/70 transition-colors duration-200 group">
+                    <td className="px-6 py-4">
                       <input
                         type="checkbox"
-                        className="rounded border-slate-300 text-blue-600"
-                        checked={selectedPapers.length === stats.recent_activity.length && stats.recent_activity.length > 0}
-                        onChange={toggleSelectAll}
+                        className="rounded-md border-slate-300 text-indigo-600 focus:ring-indigo-500/20 transition-all w-4 h-4"
+                        checked={selectedPapers.includes(paper.id)}
+                        onChange={() => toggleSelectPaper(paper.id)}
                       />
-                    </th>
-                    <th className="px-5 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Paper</th>
-                    <th className="px-5 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Pattern</th>
-                    <th className="px-5 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
-                    <th className="px-5 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {stats.recent_activity.length > 0 ? stats.recent_activity.map((paper) => (
-                    <tr key={paper.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="px-5 py-4">
-                        <input
-                          type="checkbox"
-                          className="rounded border-slate-300 text-blue-600"
-                          checked={selectedPapers.includes(paper.id)}
-                          onChange={() => toggleSelectPaper(paper.id)}
-                        />
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 bg-slate-100 border border-slate-200 rounded-md flex items-center justify-center text-slate-700 text-xs font-semibold shrink-0">
-                            {paper.class_name}
-                          </div>
-                          <div>
-                            <p className="font-medium text-slate-900">{paper.subject}</p>
-                            <p className="text-xs text-slate-400">{new Date(paper.created_at).toLocaleDateString()}</p>
-                          </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3.5">
+                        <div className="w-10 h-10 bg-gradient-to-br from-slate-100 to-slate-50 border border-slate-200/80 rounded-xl flex items-center justify-center text-slate-700 text-xs font-bold shrink-0 shadow-sm">
+                          {paper.class_name}
                         </div>
-                      </td>
-                      <td className="px-5 py-4">
-                        <span className="text-xs text-slate-600 bg-slate-100 px-2.5 py-1 rounded-md font-medium">
-                          {paper.pattern_name || 'Standard'}
-                        </span>
-                      </td>
-                      <td className="px-5 py-4">
-                        {paper.status === 'done' ? (
-                          paper.status_detail ? (
-                            <button
-                              type="button"
-                              onClick={() => setWarningPaper(paper)}
-                              title="Click to see what to check"
-                              className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full hover:bg-emerald-100 transition-colors cursor-pointer"
-                            >
-                              <CheckCircle className="w-3.5 h-3.5" />
-                              Completed ⚠
-                            </button>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
-                              <CheckCircle className="w-3.5 h-3.5" />
-                              Completed
-                            </span>
-                          )
-                        ) : paper.status === 'failed' ? (
+                        <div>
+                          <p className="font-semibold text-slate-900 text-[14px]">{paper.subject}</p>
+                          <p className="text-[12px] text-slate-400 mt-0.5">{new Date(paper.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-[12px] text-slate-600 bg-slate-100/80 px-3 py-1.5 rounded-lg font-semibold border border-slate-100">
+                        {paper.pattern_name || 'Standard'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      {paper.status === 'done' ? (
+                        paper.status_detail ? (
                           <button
                             type="button"
-                            onClick={() => paper.status_detail && setWarningPaper(paper)}
-                            title={paper.status_detail ? 'Click to see why it failed' : 'Generation failed'}
-                            className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full hover:bg-red-100 transition-colors cursor-pointer disabled:cursor-default"
-                            disabled={!paper.status_detail}
+                            onClick={() => setWarningPaper(paper)}
+                            title="Click to see what to check"
+                            className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-3 py-1.5 rounded-xl hover:bg-emerald-100 transition-all duration-200 cursor-pointer"
                           >
-                            Failed
+                            <CheckCircle className="w-3.5 h-3.5" />
+                            Completed ⚠
                           </button>
-                        ) : isStuck(paper) ? (
-                          <span title="Taking a bit longer than usual — please wait." className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
-                            Stalled
-                          </span>
-                        ) : paper.status === 'queued' ? (
-                          <span title="Waiting behind your current generation — it starts automatically." className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
-                            <Clock className="w-3.5 h-3.5" />
-                            Queued
-                          </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded-full">
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            Generating
+                          <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-3 py-1.5 rounded-xl">
+                            <CheckCircle className="w-3.5 h-3.5" />
+                            Completed
                           </span>
-                        )}
-                      </td>
-                      <td className="px-5 py-4 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {paper.status === 'done' && (
-                            <Link
-                              href={`/papers/${paper.id}/edit`}
-                              className="p-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors"
-                              title="Edit paper"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </Link>
-                          )}
-                          {paper.file && (
-                            <a
-                              href={paper.file}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-1.5 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
-                              title="Download"
-                            >
-                              <Download className="w-4 h-4" />
-                            </a>
-                          )}
-                          {paper.status === 'done' && paper.has_paper_data && (() => {
-                            const st = keyStatusOf(paper);
-                            const busy = keyBusyId === paper.id || st === 'queued' || st === 'generating';
-                            // Colour the key button by answer-key state so it's obvious at a glance
-                            // which papers already have a key: emerald(+check) = ready, slate = none
-                            // yet, amber = stale, red = failed, spinner = in progress.
-                            const cls = busy ? 'text-blue-600 bg-blue-50'
-                              : st === 'done' ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100'
-                              : st === 'stale' ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
-                              : st === 'failed' ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                              : 'text-slate-400 bg-slate-100 hover:bg-slate-200';   // 'none' — no key yet
-                            const title = busy ? 'Generating answer key — this can take a few minutes'
-                              : st === 'done' ? 'Answer key ready — click to download (Word)'
-                              : st === 'stale' ? 'Paper changed after the key was generated — click to regenerate or download'
-                              : st === 'failed' ? 'Answer key generation failed — click to retry'
-                              : 'No answer key yet — click to generate (Word)';
-                            return (
-                              <button
-                                onClick={() => handleAnswerKey(paper)}
-                                disabled={busy}
-                                className={`relative p-1.5 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${cls}`}
-                                title={title}
-                              >
-                                {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
-                                {st === 'done' && !busy && (
-                                  <CheckCircle className="w-3 h-3 text-emerald-600 fill-white absolute -top-1 -right-1" />
-                                )}
-                              </button>
-                            );
-                          })()}
-                          {paper.status === 'done' && paper.has_paper_data && (
-                            <button
-                              onClick={() => handleRerender(paper.id)}
-                              disabled={rerenderingId === paper.id}
-                              className="p-1.5 text-violet-600 bg-violet-50 hover:bg-violet-100 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                              title="Re-render DOCX"
-                            >
-                              {rerenderingId === paper.id
-                                ? <RefreshCw className="w-4 h-4 animate-spin" />
-                                : <Zap className="w-4 h-4" />
-                              }
-                            </button>
-                          )}
-                          {paper.status === 'done' && (
-                            <button
-                              onClick={() => handleRegenerate(paper.id)}
-                              disabled={regeneratingId === paper.id}
-                              className="p-1.5 text-amber-600 bg-amber-50 hover:bg-amber-100 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                              title="Regenerate fresh questions (same pattern, class, subject & chapters)"
-                            >
-                              <RotateCw className={`w-4 h-4 ${regeneratingId === paper.id ? 'animate-spin' : ''}`} />
-                            </button>
-                          )}
-                          {(paper.status === 'failed' || isStuck(paper)) && (
-                            <button
-                              onClick={() => handleRetry(paper.id)}
-                              className="p-1.5 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors"
-                              title={paper.status_detail || 'Retry'}
-                            >
-                              <RefreshCw className="w-4 h-4" />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleDelete(paper.id)}
-                            className="p-1.5 text-red-500 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
-                            title="Delete"
+                        )
+                      ) : paper.status === 'failed' ? (
+                        <button
+                          type="button"
+                          onClick={() => paper.status_detail && setWarningPaper(paper)}
+                          title={paper.status_detail ? 'Click to see why it failed' : 'Generation failed'}
+                          className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-red-700 bg-red-50 border border-red-200/80 px-3 py-1.5 rounded-xl hover:bg-red-100 transition-all duration-200 cursor-pointer disabled:cursor-default"
+                          disabled={!paper.status_detail}
+                        >
+                          Failed
+                        </button>
+                      ) : isStuck(paper) ? (
+                        <span title="Taking a bit longer than usual — please wait." className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200/80 px-3 py-1.5 rounded-xl">
+                          Stalled
+                        </span>
+                      ) : paper.status === 'queued' ? (
+                        <span title="Waiting behind your current generation — it starts automatically." className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200/80 px-3 py-1.5 rounded-xl">
+                          <Clock className="w-3.5 h-3.5" />
+                          Queued
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-3 py-1.5 rounded-xl">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Generating
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {paper.status === 'done' && (
+                          <Link
+                            href={`/papers/${paper.id}/edit`}
+                            className="p-2 text-slate-500 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 rounded-xl transition-all duration-200 hover:scale-105 active:scale-95"
+                            title="Edit paper"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Pencil className="w-4 h-4" strokeWidth={1.75} />
+                          </Link>
+                        )}
+                        {paper.file && (
+                          <a
+                            href={paper.file}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-2 text-slate-500 hover:text-emerald-600 bg-slate-50 hover:bg-emerald-50 rounded-xl transition-all duration-200 hover:scale-105 active:scale-95"
+                            title="Download"
+                          >
+                            <Download className="w-4 h-4" strokeWidth={1.75} />
+                          </a>
+                        )}
+                        {paper.status === 'done' && paper.has_paper_data && (() => {
+                          const st = keyStatusOf(paper);
+                          const busy = keyBusyId === paper.id || st === 'queued' || st === 'generating';
+                          // Colour the key button by answer-key state so it's obvious at a glance
+                          // which papers already have a key: emerald(+check) = ready, slate = none
+                          // yet, amber = stale, red = failed, spinner = in progress.
+                          const cls = busy ? 'text-indigo-600 bg-indigo-50'
+                            : st === 'done' ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100'
+                            : st === 'stale' ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
+                            : st === 'failed' ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                            : 'text-slate-500 bg-slate-50 hover:bg-slate-100';   // 'none' — no key yet
+                          const title = busy ? 'Generating answer key — this can take a few minutes'
+                            : st === 'done' ? 'Answer key ready — click to download (Word)'
+                            : st === 'stale' ? 'Paper changed after the key was generated — click to regenerate or download'
+                            : st === 'failed' ? 'Answer key generation failed — click to retry'
+                            : 'No answer key yet — click to generate (Word)';
+                          return (
+                            <button
+                              onClick={() => handleAnswerKey(paper)}
+                              disabled={busy}
+                              className={`relative p-2 rounded-xl transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-105 active:scale-95 ${cls}`}
+                              title={title}
+                            >
+                              {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" strokeWidth={1.75} />}
+                              {st === 'done' && !busy && (
+                                <CheckCircle className="w-3 h-3 text-emerald-600 fill-white absolute -top-1 -right-1" />
+                              )}
+                            </button>
+                          );
+                        })()}
+                        {paper.status === 'done' && paper.has_paper_data && (
+                          <button
+                            onClick={() => handleRerender(paper.id)}
+                            disabled={rerenderingId === paper.id}
+                            className="p-2 text-slate-500 hover:text-violet-600 bg-slate-50 hover:bg-violet-50 rounded-xl transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-105 active:scale-95"
+                            title="Re-render DOCX"
+                          >
+                            {rerenderingId === paper.id
+                              ? <RefreshCw className="w-4 h-4 animate-spin" />
+                              : <Zap className="w-4 h-4" strokeWidth={1.75} />
+                            }
                           </button>
+                        )}
+                        {paper.status === 'done' && (
+                          <button
+                            onClick={() => handleRegenerate(paper.id)}
+                            disabled={regeneratingId === paper.id}
+                            className="p-2 text-slate-500 hover:text-amber-600 bg-slate-50 hover:bg-amber-50 rounded-xl transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-105 active:scale-95"
+                            title="Regenerate fresh questions (same pattern, class, subject & chapters)"
+                          >
+                            <RotateCw className={`w-4 h-4 ${regeneratingId === paper.id ? 'animate-spin' : ''}`} strokeWidth={1.75} />
+                          </button>
+                        )}
+                        {(paper.status === 'failed' || isStuck(paper)) && (
+                          <button
+                            onClick={() => handleRetry(paper.id)}
+                            className="p-2 text-slate-500 hover:text-emerald-600 bg-slate-50 hover:bg-emerald-50 rounded-xl transition-all duration-200 hover:scale-105 active:scale-95"
+                            title={paper.status_detail || 'Retry'}
+                          >
+                            <RefreshCw className="w-4 h-4" strokeWidth={1.75} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDelete(paper.id)}
+                          className="p-2 text-slate-500 hover:text-red-500 bg-slate-50 hover:bg-red-50 rounded-xl transition-all duration-200 hover:scale-105 active:scale-95"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" strokeWidth={1.75} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan="5" className="py-20 text-center">
+                      <div className="flex flex-col items-center">
+                        <div className="w-16 h-16 bg-gradient-to-br from-slate-100 to-slate-50 rounded-3xl flex items-center justify-center mb-5 shadow-sm border border-slate-100">
+                          <FileText className="w-7 h-7 text-slate-300" strokeWidth={1.5} />
                         </div>
-                      </td>
-                    </tr>
-                  )) : (
-                    <tr>
-                      <td colSpan="5" className="py-16 text-center">
-                        <FileText className="w-8 h-8 text-slate-300 mx-auto mb-3" />
-                        <p className="text-sm font-medium text-slate-600">No papers yet</p>
-                        <p className="text-xs text-slate-400 mt-1">Generate your first question paper to get started</p>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination */}
-            {totalCount > 0 && (
-              <div className="px-5 py-3 border-t border-slate-200 flex items-center justify-between">
-                <p className="text-xs text-slate-500">
-                  Page {page} of {totalPages} · {totalCount} paper{totalCount === 1 ? '' : 's'}
-                </p>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setPage(p => Math.max(1, p - 1))}
-                    disabled={page <= 1}
-                    className="px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    Prev
-                  </button>
-                  <button
-                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                    disabled={page >= totalPages}
-                    className="px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-            )}
+                        <p className="text-[15px] font-semibold text-slate-700">No papers yet</p>
+                        <p className="text-[13px] text-slate-400 mt-1.5 max-w-[280px] leading-relaxed">
+                          Generate your first question paper to get started with qForge AI
+                        </p>
+                        <Link
+                          href="/generator"
+                          className="inline-flex items-center gap-2 mt-5 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white text-sm font-semibold rounded-2xl hover:from-indigo-700 hover:to-indigo-800 transition-all duration-300 shadow-lg shadow-indigo-200/50 hover:scale-[1.02] active:scale-[0.98]"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          Create Your First Paper
+                        </Link>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
 
-          {/* Quick actions */}
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 mb-3">Quick Actions</h3>
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { title: 'New Blueprint', icon: FileSignature, link: '/blueprints' },
-                { title: 'Upload Material', icon: Upload, link: '/materials' },
-                { title: 'Manage Patterns', icon: Settings, link: '/patterns' },
-              ].map((action, i) => (
-                <Link
-                  key={i}
-                  href={action.link}
-                  className="flex items-center gap-2.5 p-4 bg-white border border-slate-200 rounded-xl hover:border-slate-300 hover:bg-slate-50 transition-all text-sm text-slate-700 font-medium group"
+          {/* Pagination */}
+          {totalCount > 0 && (
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between">
+              <p className="text-[12px] text-slate-400 font-medium">
+                Page {page} of {totalPages} · {totalCount} paper{totalCount === 1 ? '' : 's'}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="px-3.5 py-2 text-xs font-semibold border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200 active:scale-95"
                 >
-                  <action.icon className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors shrink-0" />
-                  {action.title}
-                </Link>
-              ))}
+                  Prev
+                </button>
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="px-3.5 py-2 text-xs font-semibold border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200 active:scale-95"
+                >
+                  Next
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Status guide */}
-        <aside className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 lg:sticky lg:top-6">
+        <aside className="bg-white border border-slate-100 rounded-2xl p-6 space-y-4 shadow-sm shadow-slate-100/50 lg:sticky lg:top-6">
           <div>
-            <h3 className="text-sm font-semibold text-slate-900">What the statuses mean</h3>
-            <p className="text-xs text-slate-400 mt-0.5">A quick guide to the Status column</p>
+            <h3 className="text-[15px] font-bold text-slate-900 tracking-tight">What the statuses mean</h3>
+            <p className="text-[12px] text-slate-400 mt-0.5">A quick guide to the Status column</p>
           </div>
           <ul className="space-y-4">
             {STATUS_GUIDE.map(({ label, icon: Icon, spin, badge, text }) => (
               <li key={label}>
-                <span className={`inline-flex items-center gap-1.5 text-xs font-medium border px-2.5 py-1 rounded-full ${badge}`}>
+                <span className={`inline-flex items-center gap-1.5 text-[12px] font-semibold border px-3 py-1.5 rounded-xl ${badge}`}>
                   {Icon && <Icon className={`w-3.5 h-3.5 ${spin ? 'animate-spin' : ''}`} />}
                   {label}
                 </span>
-                <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{text}</p>
+                <p className="text-[12px] text-slate-500 mt-1.5 leading-relaxed">{text}</p>
               </li>
             ))}
           </ul>
         </aside>
-
       </div>
 
       {/* Warnings / failure-reason popup for a paper's status badge */}
@@ -627,17 +756,17 @@ export default function DashboardPage() {
         {warningPaper && (
           <div className="space-y-4">
             <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-              <div className="w-9 h-9 bg-slate-100 border border-slate-200 rounded-md flex items-center justify-center text-slate-700 text-xs font-semibold shrink-0">
+              <div className="w-10 h-10 bg-gradient-to-br from-slate-100 to-slate-50 border border-slate-200/80 rounded-xl flex items-center justify-center text-slate-700 text-xs font-bold shrink-0 shadow-sm">
                 {warningPaper.class_name}
               </div>
               <div>
-                <p className="font-medium text-slate-900">{warningPaper.subject}</p>
+                <p className="font-semibold text-slate-900">{warningPaper.subject}</p>
                 <p className="text-xs text-slate-400">{warningPaper.pattern_name || 'Standard'}</p>
               </div>
             </div>
 
             {warningPaper.status === 'failed' ? (
-              <div className="flex gap-2.5 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-800">
+              <div className="flex gap-2.5 p-4 rounded-2xl bg-red-50 border border-red-100 text-sm text-red-800">
                 <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-red-500" />
                 <span className="break-words">{warningPaper.status_detail}</span>
               </div>
@@ -650,7 +779,7 @@ export default function DashboardPage() {
                   {parseWarnings(warningPaper.status_detail).map((w, i) => (
                     <li
                       key={i}
-                      className="flex gap-2.5 p-3 rounded-lg bg-amber-50 border border-amber-100 text-sm text-amber-900"
+                      className="flex gap-2.5 p-4 rounded-2xl bg-amber-50 border border-amber-100 text-sm text-amber-900"
                     >
                       <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
                       <span className="break-words">{w}</span>

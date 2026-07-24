@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Question Paper Generator",
+  title: "qForge AI",
   description: "Generate question papers from exam patterns",
 };
 

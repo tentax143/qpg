@@ -6,7 +6,7 @@ import {
   Plus, X, Upload, Eye, EyeOff, Zap,
   Settings, BookOpen, Layers, BarChart, FilePlus,
   ArrowRight, RefreshCcw, ChevronRight, Users, Clock, Star,
-  CheckCircle, Info, Undo, AlertCircle, GraduationCap
+  CheckCircle, Info, Undo, AlertCircle, GraduationCap, Sparkles, FileText, Check, LayoutGrid
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -177,14 +177,12 @@ function GeneratorContent() {
       let res;
       
       if (patternId.startsWith('exam_') || patternId.startsWith('template_')) {
-        // It's a blueprint ID - call the discovery utility
         res = await apiClient.get(`/get_blueprint_details/${patternId}/`);
         
         if (res.data.success && res.data.blueprint) {
           const bp = res.data.blueprint;
           const sections = bp.blueprint?.sections || bp.sections || [];
           
-          // Normalize the blueprint data for the Pattern Info Card
           setSelectedPatternDetails({
             ...bp,
             sections: sections,
@@ -196,13 +194,11 @@ function GeneratorContent() {
           });
         }
       } else {
-        // It's a standard pattern ID - call the patterns viewset
         res = await apiClient.get(`/patterns/${patternId}/`);
         setSelectedPatternDetails(res.data);
       }
     } catch (err) {
       console.error("Error loading pattern details", err);
-      // Fallback: If one failed, try the other as a safety measure
       try {
         const patternId = String(formData.pattern);
         const fallbackEndpoint = (patternId.startsWith('exam_') || patternId.startsWith('template_')) 
@@ -226,14 +222,12 @@ function GeneratorContent() {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleAddChapter = (chapter) => {
-    if (!selectedChapters.includes(chapter)) {
-      setSelectedChapters(prev => [...prev, chapter]);
-    }
-  };
-
-  const handleRemoveChapter = (chapter) => {
-    setSelectedChapters(prev => prev.filter(c => c !== chapter));
+  const toggleChapter = (chapter) => {
+    setSelectedChapters(prev => 
+      prev.includes(chapter) 
+        ? prev.filter(c => c !== chapter)
+        : [...prev, chapter]
+    );
   };
 
   const handleFileChange = (e) => {
@@ -303,13 +297,9 @@ function GeneratorContent() {
     });
 
     try {
-      // Use the standard REST API /papers/ endpoint
-      // It includes all logic (Celery, Text Extraction) and returns JSON
       const res = await apiClient.post('/papers/', data, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      // If another generation is already running, this paper is queued (no task dispatched yet)
-      // and starts automatically when the current one finishes.
       const queued = res?.data?.status === 'queued' && !res?.data?.task_id;
       setSuccess(queued
         ? "Queued — this paper will start automatically when your current one finishes."
@@ -322,617 +312,520 @@ function GeneratorContent() {
   };
 
   if (loading) return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="w-12 h-12 border-4 border-blue-600/30 border-t-blue-600 rounded-full animate-spin"></div>
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="w-8 h-8 border-2 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div>
+    </div>
+  );
+
+  const difficultyConfig = {
+    Easy: { color: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-200', gradient: 'from-emerald-400 to-emerald-500', icon: <CheckCircle size={16} /> },
+    Medium: { color: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200', gradient: 'from-amber-400 to-amber-500', icon: <BarChart size={16} /> },
+    Hard: { color: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200', gradient: 'from-red-400 to-red-500', icon: <Zap size={16} /> },
+  };
+
+  const diffStyle = difficultyConfig[formData.difficulty] || difficultyConfig.Easy;
+
+  // A small helper component for section headings
+  const SectionHeading = ({ number, title, icon: Icon }) => (
+    <div className="flex items-center gap-3 mb-5">
+      <div className="w-8 h-8 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-sm">
+        {number}
+      </div>
+      <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+        {title}
+        {Icon && <Icon size={18} className="text-slate-400" />}
+      </h3>
     </div>
   );
 
   return (
-    <div className="w-full relative py-2">
+    <div className="w-full pb-12 relative">
+      {/* Decorative background blobs */}
+      <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-indigo-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+      <div className="absolute top-40 right-1/4 w-[400px] h-[400px] bg-purple-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-8 mb-12">
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-black uppercase tracking-wider rounded-full">AI Generator</span>
-            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-          </div>
-          <h1 className="text-4xl font-black text-gray-900 leading-tight">Generate Question Paper</h1>
-          <p className="text-gray-500 font-medium text-lg mt-1 tracking-tight">Configure AI to generate professional-grade exam content.</p>
+      <div className="mb-10 text-center max-w-2xl mx-auto">
+        <div className="inline-flex items-center justify-center gap-1.5 px-4 py-1.5 bg-white border border-slate-200/60 shadow-sm rounded-full mb-4">
+          <Sparkles size={14} className="text-indigo-500" strokeWidth={2} />
+          <span className="text-[12px] font-bold text-slate-700 uppercase tracking-widest">AI Paper Generator</span>
         </div>
+        <h1 className="text-[36px] font-extrabold text-slate-900 tracking-tight leading-tight mb-3">
+          Create Perfect Exams <br />
+          <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">in Seconds.</span>
+        </h1>
+        <p className="text-[16px] text-slate-500 leading-relaxed">
+          Configure parameters, select chapters, and let our AI craft a high-quality, perfectly formatted question paper tailored to your needs.
+        </p>
       </div>
 
-      {error && <ErrorAlert message={error} onClose={() => setError(null)} className="mb-8" />}
-      {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} className="mb-8" />}
+      {error && <ErrorAlert message={error} onClose={() => setError(null)} className="mb-6 max-w-4xl mx-auto" />}
+      {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} className="mb-6 max-w-4xl mx-auto" />}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2">
-          <div className="glass-card shadow-xl mb-12 overflow-visible relative z-30">
-            <div className="p-6 border-b border-gray-100 flex items-center gap-3 bg-white/50 rounded-t-[32px]">
-              <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center">
-                <Settings size={18} />
-              </div>
-              <h2 className="text-xl font-black text-gray-900">Paper Configuration</h2>
+      <form onSubmit={handleSubmit} className="max-w-6xl mx-auto grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-8">
+        
+        {/* Main Form Left Side */}
+        <div className="space-y-6">
+          
+          {/* Block 1: Basics */}
+          <div className="relative z-[60] bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+            <SectionHeading number="1" title="Core Details" icon={GraduationCap} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <CustomSelect
+                label="Class / Grade"
+                icon={GraduationCap}
+                value={formData.class_name}
+                onChange={(val) => handleInputChange({ target: { name: 'class_name', value: val } })}
+                options={['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'].map(c => ({ label: `Class ${c}`, value: c }))}
+                placeholder="Select Class"
+              />
+              <CustomSelect
+                label="Subject"
+                icon={BookOpen}
+                value={formData.subject}
+                onChange={(val) => handleInputChange({ target: { name: 'subject', value: val } })}
+                options={subjects.map(s => ({ label: s, value: s }))}
+                placeholder={loadingSubjects ? 'Loading subjects...' : formData.class_name ? 'Select Subject' : 'Select Class First'}
+                disabled={!formData.class_name || loadingSubjects}
+              />
             </div>
-            
-            <form onSubmit={handleSubmit} className="p-8 space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {/* Class */}
-                <CustomSelect
-                  label="Class"
-                  icon={GraduationCap}
-                  value={formData.class_name}
-                  onChange={(val) => handleInputChange({ target: { name: 'class_name', value: val } })}
-                  options={['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'].map(c => ({ label: `Class ${c}`, value: c }))}
-                  placeholder="Select Class"
-                  className="space-y-2"
-                />
+          </div>
 
-                {/* Subject */}
-                <CustomSelect
-                  label="Subject"
-                  icon={BookOpen}
-                  value={formData.subject}
-                  onChange={(val) => handleInputChange({ target: { name: 'subject', value: val } })}
-                  options={subjects.map(s => ({ label: s, value: s }))}
-                  placeholder={loadingSubjects ? 'Loading subjects...' : formData.class_name ? 'Select Subject' : 'Select Class First'}
-                  disabled={!formData.class_name || loadingSubjects}
-                  className="space-y-2"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {/* Exam Pattern */}
-                <CustomSelect
-                  label="Exam Pattern"
-                  icon={Layers}
-                  value={formData.pattern}
-                  onChange={(val) => handleInputChange({ target: { name: 'pattern', value: val } })}
-                  options={[
-                    ...patterns.filter(p => p.pattern_source === 'one_mark_test').map(p => ({
-                      label: `⚡ ${p.name}`,
+          {/* Block 2: Pattern & Difficulty */}
+          <div className="relative z-[50] bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+            <SectionHeading number="2" title="Exam Structure" icon={Layers} />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
+              <CustomSelect
+                label="Exam Pattern"
+                icon={Layers}
+                value={formData.pattern}
+                onChange={(val) => handleInputChange({ target: { name: 'pattern', value: val } })}
+                options={[
+                  ...patterns.filter(p => p.pattern_source === 'one_mark_test').map(p => ({
+                    label: `⚡ ${p.name}`,
+                    value: p.id,
+                  })),
+                  ...patterns
+                    .filter(p => p.pattern_source !== 'one_mark_test')
+                    .sort((a, b) => {
+                      const sel = formData.subject?.toLowerCase();
+                      const cls = formData.class_name;
+                      const aSubj = a.subject?.toLowerCase() === sel;
+                      const bSubj = b.subject?.toLowerCase() === sel;
+                      const aCls  = a.class_name === cls;
+                      const bCls  = b.class_name === cls;
+                      const aScore = (aSubj && aCls ? 3 : aSubj ? 2 : aCls ? 1 : 0);
+                      const bScore = (bSubj && bCls ? 3 : bSubj ? 2 : bCls ? 1 : 0);
+                      return bScore - aScore;
+                    })
+                    .map(p => ({
+                      label: `${p.name} (${p.class_name} - ${p.subject})`,
                       value: p.id,
                     })),
-                    ...patterns
-                      .filter(p => p.pattern_source !== 'one_mark_test')
-                      .sort((a, b) => {
-                        const sel = formData.subject?.toLowerCase();
-                        const cls = formData.class_name;
-                        const aSubj = a.subject?.toLowerCase() === sel;
-                        const bSubj = b.subject?.toLowerCase() === sel;
-                        const aCls  = a.class_name === cls;
-                        const bCls  = b.class_name === cls;
-                        // Full match (class + subject) > subject-only > class-only > no match
-                        const aScore = (aSubj && aCls ? 3 : aSubj ? 2 : aCls ? 1 : 0);
-                        const bScore = (bSubj && bCls ? 3 : bSubj ? 2 : bCls ? 1 : 0);
-                        return bScore - aScore;
-                      })
-                      .map(p => ({
-                        label: `${p.name} (${p.class_name} - ${p.subject})`,
-                        value: p.id,
-                      })),
-                  ]}
-                  placeholder="Select a pattern"
-                  className="space-y-2"
-                />
+                ]}
+                placeholder="Select an exam pattern"
+              />
 
-                {/* Difficulty */}
-                <CustomSelect
-                  label="Difficulty Level"
-                  icon={Star}
-                  value={formData.difficulty}
-                  onChange={(val) => handleInputChange({ target: { name: 'difficulty', value: val } })}
-                  options={[
-                    { label: 'Easy', value: 'Easy' },
-                    { label: 'Medium', value: 'Medium' },
-                    { label: 'Hard', value: 'Hard' }
-                  ]}
-                  placeholder="Select difficulty"
-                  className="space-y-2"
-                />
-              </div>
+              <CustomSelect
+                label="Blueprint (Optional)"
+                icon={Settings}
+                value={formData.blueprint}
+                onChange={(val) => handleInputChange({ target: { name: 'blueprint', value: val } })}
+                options={blueprints.map(b => ({ label: b.name, value: b.id }))}
+                placeholder="Auto-select blueprint"
+              />
+            </div>
 
-              {/* One Mark Test: question count field */}
-              {isOneMarkTest && (
-                <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl space-y-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">⚡</span>
-                    <p className="text-sm font-black text-amber-800 uppercase tracking-wider">One Mark Test Configuration</p>
-                  </div>
-                  <p className="text-xs text-amber-700">
-                    Each question is a 4-option MCQ (1 mark). Correct answers are distributed randomly across options.
-                    {formData.difficulty === 'Hard' && ' Hard difficulty generates critical thinking questions.'}
-                  </p>
-                  <div className="space-y-1">
-                    <label className="text-xs font-black text-amber-800 uppercase tracking-wider">
-                      Number of Questions
-                    </label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="number"
-                        min={5}
-                        max={100}
-                        value={numOneMarkQuestions}
-                        onChange={e => setNumOneMarkQuestions(Math.max(5, Math.min(100, parseInt(e.target.value) || 20)))}
-                        className="w-28 px-4 py-3 border border-amber-300 rounded-xl text-sm font-bold text-center focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
-                      />
-                      <span className="text-xs text-amber-600 font-medium">× 1 mark = {numOneMarkQuestions} marks total</span>
-                    </div>
-                    <div className="flex gap-2 pt-1">
-                      {[10, 20, 25, 30, 50].map(n => (
-                        <button
-                          key={n}
-                          type="button"
-                          onClick={() => setNumOneMarkQuestions(n)}
-                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors ${
-                            numOneMarkQuestions === n
-                              ? 'bg-amber-600 text-white'
-                              : 'bg-amber-100 text-amber-700 hover:bg-amber-200'
-                          }`}
-                        >
-                          {n}Q
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {/* Blueprint */}
-                <CustomSelect
-                  label="Blueprint (Optional)"
-                  icon={Settings}
-                  value={formData.blueprint}
-                  onChange={(val) => handleInputChange({ target: { name: 'blueprint', value: val } })}
-                  options={blueprints.map(b => ({ label: b.name, value: b.id }))}
-                  placeholder="Auto-select blueprint"
-                  className="space-y-2"
-                />
-
-                {/* Preview Button */}
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
-                    <Eye size={16} className="text-blue-500" />
-                    Blueprint Preview
-                  </label>
-                  <button 
-                    type="button"
-                    onClick={previewBlueprint}
-                    disabled={!formData.blueprint}
-                    className="w-full px-5 py-4 bg-indigo-50 text-indigo-600 rounded-2xl font-black text-sm uppercase tracking-wider transition-all hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  >
-                    <Eye size={18} />
-                    Preview Selection
-                  </button>
-                  <p className="text-[10px] font-bold text-gray-400 uppercase ml-1">View structure before generation</p>
-                </div>
-              </div>
-
-              {/* Chapters Selection */}
-              <div className="space-y-3 pt-4 border-t border-gray-100">
-                <div className="flex items-center justify-between">
-                  <label className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
-                    <BookOpen size={16} className="text-blue-500" />
-                    Chapters/Units Selection
-                  </label>
-                  {availableChapters.length > 0 && (
-                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
-                      {selectedChapters.length}/{availableChapters.length} selected
-                    </span>
-                  )}
-                </div>
-
-                {!formData.subject ? (
-                  <div className="flex flex-col items-center justify-center py-8 text-gray-400 border-2 border-dashed border-gray-200 rounded-2xl">
-                    <BookOpen size={28} className="mb-2 opacity-20" />
-                    <p className="text-[10px] uppercase font-black tracking-widest text-gray-500">Select a subject first</p>
-                  </div>
-                ) : loadingChapters ? (
-                  <div className="flex items-center justify-center py-8 text-gray-400">
-                    <div className="w-4 h-4 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin mr-2" />
-                    <span className="text-sm font-bold">Loading chapters…</span>
-                  </div>
-                ) : availableChapters.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-8 text-gray-400 border-2 border-dashed border-gray-200 rounded-2xl">
-                    <BookOpen size={28} className="mb-2 opacity-20" />
-                    <p className="text-sm font-bold">No chapters found for this subject</p>
-                  </div>
-                ) : (
-                  <div className="border border-gray-200 rounded-2xl overflow-hidden">
-                    {/* Select All */}
-                    <label className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100 transition-colors select-none">
-                      <input
-                        type="checkbox"
-                        checked={selectedChapters.length === availableChapters.length}
-                        ref={el => { if (el) el.indeterminate = selectedChapters.length > 0 && selectedChapters.length < availableChapters.length; }}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedChapters([...availableChapters]);
-                          } else {
-                            setSelectedChapters([]);
-                          }
-                        }}
-                        className="w-4 h-4 accent-blue-600 cursor-pointer"
-                      />
-                      <span className="text-xs font-black text-gray-700 uppercase tracking-wider">Select All</span>
-                    </label>
-
-                    {/* Chapter list */}
-                    <div className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
-                      {availableChapters.map((chapter) => {
-                        const checked = selectedChapters.includes(chapter);
-                        return (
-                          <label
-                            key={chapter}
-                            className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-blue-50/50 transition-colors select-none ${checked ? 'bg-blue-50/30' : ''}`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => checked ? handleRemoveChapter(chapter) : handleAddChapter(chapter)}
-                              className="w-4 h-4 accent-blue-600 cursor-pointer flex-shrink-0"
-                            />
-                            <span className={`text-sm ${checked ? 'font-bold text-blue-700' : 'font-medium text-gray-700'}`}>
-                              {chapter}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                <p className="text-[10px] font-bold text-gray-500 uppercase ml-1 flex items-center gap-1">
-                  <Info size={12} />
-                  Choose one or more chapters to cover in the paper.
-                </p>
-              </div>
-
-              {/* Additional Documents */}
-              <div className="space-y-4 pt-4 border-t border-gray-100">
-                <label className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
-                  <Upload size={16} className="text-blue-500" />
-                  Additional Documents (Optional)
-                </label>
-                
-                <div className="relative group">
-                  <input 
-                    type="file" 
-                    multiple 
-                    onChange={handleFileChange}
-                    accept=".pdf,.docx"
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
-                  />
-                  <div className="p-10 border-2 border-dashed border-gray-200 bg-gray-50/50 rounded-3xl flex flex-col items-center justify-center transition-all group-hover:border-blue-400 group-hover:bg-blue-50/30">
-                    <div className="w-16 h-16 bg-white rounded-2xl shadow-sm flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                      <FilePlus size={32} className="text-blue-500" />
-                    </div>
-                    <p className="text-gray-900 font-extrabold text-sm uppercase tracking-widest">Click or drag to upload</p>
-                    <p className="text-gray-400 text-[10px] font-bold mt-2 uppercase tracking-widest">PDF or Word files (.pdf, .docx)</p>
-                  </div>
-                </div>
-
-                {additionalFiles.length > 0 && (
-                  <div className="flex flex-wrap gap-3">
-                    {additionalFiles.map((file, i) => (
-                      <div key={i} className="flex items-center gap-3 bg-emerald-50 text-emerald-700 px-4 py-3 rounded-2xl text-xs font-black border border-emerald-100 animate-in slide-in-from-bottom-2">
-                        <span>{file.name}</span>
-                        <button type="button" onClick={() => removeFile(i)} className="text-emerald-400 hover:text-emerald-700">
-                          <X size={16} />
-                        </button>
+            {/* Premium Radio Cards for Difficulty */}
+            <div className="mb-2">
+              <label className="flex items-center gap-2 text-[12px] font-bold text-slate-500 uppercase tracking-wider mb-3">
+                <Star size={14} className="text-indigo-500" strokeWidth={1.75} />
+                Difficulty Level
+              </label>
+              <div className="grid grid-cols-3 gap-3">
+                {Object.entries(difficultyConfig).map(([level, config]) => {
+                  const isSelected = formData.difficulty === level;
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      onClick={() => handleInputChange({ target: { name: 'difficulty', value: level } })}
+                      className={`relative flex flex-col items-center justify-center p-4 rounded-2xl border transition-all duration-200 overflow-hidden ${
+                        isSelected 
+                          ? `bg-white border-${config.gradient.split('-')[1]}-400 shadow-md ring-1 ring-${config.gradient.split('-')[1]}-400`
+                          : 'bg-slate-50 border-slate-200 hover:border-slate-300 hover:bg-slate-100/50 text-slate-500'
+                      }`}
+                    >
+                      {isSelected && (
+                        <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r ${config.gradient}`} />
+                      )}
+                      <div className={`mb-2 ${isSelected ? config.color : 'text-slate-400'}`}>
+                        {config.icon}
                       </div>
+                      <span className={`text-[14px] font-bold ${isSelected ? 'text-slate-900' : 'text-slate-600'}`}>
+                        {level}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* One Mark Test Add-on */}
+            {isOneMarkTest && (
+              <div className="mt-6 p-5 bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200/60 rounded-2xl">
+                <div className="flex items-center gap-2 mb-2">
+                  <Zap size={18} className="text-amber-500 fill-amber-500" />
+                  <h4 className="text-[13px] font-bold text-amber-900 uppercase tracking-wider">One Mark MCQ Configuration</h4>
+                </div>
+                <p className="text-[13px] text-amber-700/80 leading-relaxed mb-4">
+                  Each question is a 4-option MCQ worth 1 mark. Options are randomly shuffled.
+                  {formData.difficulty === 'Hard' && ' Hard difficulty generates more critical thinking and application based questions.'}
+                </p>
+                <div className="flex items-center gap-4">
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={5}
+                      max={100}
+                      value={numOneMarkQuestions}
+                      onChange={e => setNumOneMarkQuestions(Math.max(5, Math.min(100, parseInt(e.target.value) || 20)))}
+                      className="w-28 pl-4 pr-10 py-3 border border-amber-300/80 rounded-xl text-lg font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-400/50 bg-white"
+                    />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-medium">Q</span>
+                  </div>
+                  <div className="flex gap-2">
+                    {[10, 20, 30, 50].map(n => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setNumOneMarkQuestions(n)}
+                        className={`px-3 py-1.5 rounded-xl text-[13px] font-bold transition-all duration-200 ${
+                          numOneMarkQuestions === n
+                            ? 'bg-amber-500 text-white shadow-sm'
+                            : 'bg-white border border-amber-200 text-amber-700 hover:bg-amber-100'
+                        }`}
+                      >
+                        {n}
+                      </button>
                     ))}
                   </div>
-                )}
+                  <span className="ml-auto text-[13px] font-bold text-amber-600 bg-amber-100/50 px-3 py-1.5 rounded-lg">
+                    Total: {numOneMarkQuestions} Marks
+                  </span>
+                </div>
               </div>
+            )}
+          </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-4 border-t border-gray-100">
-                {/* Duration */}
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
-                    <Clock size={16} className="text-blue-500" />
-                    Time Duration
-                  </label>
+          {/* Block 3: Syllabus / Chapters */}
+          <div className="relative z-[40] bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+            <div className="flex items-center justify-between mb-5">
+              <SectionHeading number="3" title="Syllabus Coverage" icon={LayoutGrid} />
+              {availableChapters.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedChapters.length === availableChapters.length) setSelectedChapters([]);
+                    else setSelectedChapters([...availableChapters]);
+                  }}
+                  className="text-[12px] font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  {selectedChapters.length === availableChapters.length ? 'Deselect All' : 'Select All'}
+                </button>
+              )}
+            </div>
+
+            {!formData.subject ? (
+              <div className="flex flex-col items-center justify-center py-12 text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                <BookOpen size={32} className="mb-3 text-slate-300" strokeWidth={1.5} />
+                <p className="text-[14px] font-semibold text-slate-500">Select a subject to view chapters</p>
+              </div>
+            ) : loadingChapters ? (
+              <div className="flex flex-col items-center justify-center py-12 text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                <div className="w-8 h-8 border-2 border-slate-200 border-t-indigo-500 rounded-full animate-spin mb-3" />
+                <span className="text-[14px] font-medium text-slate-500">Loading curriculum...</span>
+              </div>
+            ) : availableChapters.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                <Info size={32} className="mb-3 text-slate-300" strokeWidth={1.5} />
+                <p className="text-[14px] font-semibold text-slate-500">No chapters found for this subject</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {availableChapters.map((chapter) => {
+                  const isSelected = selectedChapters.includes(chapter);
+                  return (
+                    <button
+                      key={chapter}
+                      type="button"
+                      onClick={() => toggleChapter(chapter)}
+                      className={`text-left p-4 rounded-2xl border transition-all duration-200 flex items-start gap-3 group ${
+                        isSelected 
+                          ? 'bg-indigo-50/50 border-indigo-400/60 shadow-sm'
+                          : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center shrink-0 border transition-colors ${
+                        isSelected ? 'bg-indigo-600 border-indigo-600 text-white' : 'border-slate-300 bg-white group-hover:border-indigo-400'
+                      }`}>
+                        {isSelected && <Check size={12} strokeWidth={3} />}
+                      </div>
+                      <span className={`text-[13px] leading-snug ${isSelected ? 'font-semibold text-indigo-900' : 'font-medium text-slate-700'}`}>
+                        {chapter}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Block 4: Finishing Touches */}
+          <div className="relative z-[30] bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+            <SectionHeading number="4" title="Finishing Touches" icon={FilePlus} />
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+              <div>
+                <label className="flex items-center gap-2 text-[12px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  <Clock size={14} className="text-indigo-500" strokeWidth={1.75} />
+                  Time Duration
+                </label>
+                <div className="relative">
                   <input 
                     type="text" 
                     name="duration"
                     value={formData.duration}
                     onChange={handleInputChange}
                     placeholder="e.g. 3 hours"
-                    className="w-full px-5 py-4 bg-gray-50/50 border border-gray-200 rounded-2xl outline-none font-bold text-gray-900"
-                  />
-                </div>
-
-                {/* Total Marks */}
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
-                    <Star size={16} className="text-blue-500" />
-                    Total Marks
-                  </label>
-                  <input 
-                    type="number" 
-                    name="total_marks"
-                    value={formData.total_marks}
-                    onChange={handleInputChange}
-                    placeholder="e.g. 100"
-                    className="w-full px-5 py-4 bg-gray-50/50 border border-gray-200 rounded-2xl outline-none font-bold text-gray-900 placeholder:text-gray-400"
+                    className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-[14px] font-bold text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:bg-white focus:ring-2 focus:ring-indigo-500/10 transition-all duration-200"
                   />
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-4 pt-8 border-t border-gray-100">
-                <button 
-                  type="button" 
-                  onClick={resetForm}
-                  className="px-8 py-4 bg-gray-100 text-gray-700 rounded-2xl font-black text-sm uppercase tracking-wider hover:bg-gray-200 transition-all duration-300 flex items-center gap-2 hover:-translate-y-0.5 active:scale-95"
-                >
-                  <Undo size={18} />
-                  Reset
-                </button>
-                <button 
-                  type="submit" 
-                  disabled={submitting}
-                  className="px-10 py-4 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-wider shadow-2xl shadow-blue-200 hover:bg-blue-700 transition-all duration-300 flex items-center gap-3 disabled:opacity-50 group hover:-translate-y-1 active:scale-95"
-                >
-                  {submitting ? (
-                    <>
-                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                      Generating...
-                    </>
-                  ) : (
-                    <>
-                      Generate Paper
-                    </>
-                  )}
-                </button>
+              <div>
+                <label className="flex items-center gap-2 text-[12px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  <BarChart size={14} className="text-indigo-500" strokeWidth={1.75} />
+                  Total Marks
+                </label>
+                <input 
+                  type="number" 
+                  name="total_marks"
+                  value={formData.total_marks}
+                  onChange={handleInputChange}
+                  placeholder="e.g. 100"
+                  className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-[14px] font-bold text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:bg-white focus:ring-2 focus:ring-indigo-500/10 transition-all duration-200"
+                />
               </div>
-            </form>
-          </div>
-        </div>
-
-        <div className="space-y-8">
-          {/* Pattern Info Card */}
-          <div className={`glass-card p-0 overflow-hidden transition-all duration-500 ${selectedPatternDetails ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
-            <div className={`p-6 text-white flex items-center gap-3 transition-colors duration-300 ${
-              formData.difficulty === 'Easy' ? 'bg-green-500' :
-              formData.difficulty === 'Hard' ? 'bg-red-500' :
-              'bg-amber-500'
-            }`}>
-              <AlertCircle size={22} className="animate-pulse" />
-              <h3 className="text-lg font-black tracking-tight">Pattern Details</h3>
-              <span className="ml-auto text-xs font-bold uppercase tracking-widest opacity-80">{formData.difficulty}</span>
             </div>
-            <div className="p-8 space-y-6">
-              {loadingPatternDetails ? (
-                <div className="flex items-center justify-center py-12">
-                  <div className={`w-8 h-8 border-3 rounded-full animate-spin ${
-                    formData.difficulty === 'Easy' ? 'border-green-100 border-t-green-500' :
-                    formData.difficulty === 'Hard' ? 'border-red-100 border-t-red-500' :
-                    'border-amber-100 border-t-amber-500'
-                  }`}></div>
+
+            <div>
+              <label className="flex items-center gap-2 text-[12px] font-bold text-slate-500 uppercase tracking-wider mb-3">
+                <Upload size={14} className="text-indigo-500" strokeWidth={1.75} />
+                Additional Reference Materials (Optional)
+              </label>
+              
+              <div className="relative group">
+                <input 
+                  type="file" 
+                  multiple 
+                  onChange={handleFileChange}
+                  accept=".pdf,.docx"
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
+                />
+                <div className="px-6 py-8 border-2 border-dashed border-slate-200 bg-slate-50/50 rounded-2xl flex flex-col items-center justify-center transition-all duration-200 group-hover:border-indigo-400 group-hover:bg-indigo-50/30">
+                  <div className="w-12 h-12 bg-white rounded-xl shadow-sm border border-slate-100 flex items-center justify-center mb-3 group-hover:-translate-y-1 transition-transform duration-300">
+                    <FilePlus size={20} className="text-indigo-500" strokeWidth={1.5} />
+                  </div>
+                  <p className="text-slate-700 font-semibold text-[14px]">Drop PDFs or Word documents here</p>
+                  <p className="text-slate-400 text-[12px] mt-1">Or click to browse from your computer</p>
                 </div>
-              ) : selectedPatternDetails && (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                      <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1">Total Marks</p>
-                      <p className="text-2xl font-black text-gray-900">{selectedPatternDetails.total_marks}</p>
+              </div>
+
+              {additionalFiles.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-4">
+                  {additionalFiles.map((file, i) => (
+                    <div key={i} className="flex items-center gap-2 bg-slate-100 text-slate-700 px-3 py-2 rounded-xl text-[13px] font-medium border border-slate-200">
+                      <FileText size={14} className="text-slate-500" />
+                      <span className="truncate max-w-[200px]">{file.name}</span>
+                      <button type="button" onClick={() => removeFile(i)} className="text-slate-400 hover:text-red-500 transition-colors ml-1">
+                         <X size={14} />
+                      </button>
                     </div>
-                    <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                      <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1">Questions</p>
-                      <p className="text-2xl font-black text-gray-900">{selectedPatternDetails.total_questions}</p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-4 pt-4 mt-2">
-                    <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest flex items-center gap-2 pl-1">
-                       <Layers size={14} className="text-blue-500" />
-                       Pattern Structure
-                    </p>
-                    {/* Compound subject: render per-subject accordion */}
-                    {selectedPatternDetails.sections?.length > 0 && selectedPatternDetails.sections[0]?.subject ? (
-                      <div className="rounded-2xl border border-gray-100 overflow-hidden">
-                        {/* Header row */}
-                        <div className="grid grid-cols-[28px_1fr_40px_44px_56px_32px_32px_24px] bg-gray-50 border-b border-gray-200 px-3 py-2">
-                          {['§','Subject','Qs','Marks','Choice','HOTS','CBQ',''].map((h, i) => (
-                            <span key={i} className={`text-[8px] font-black text-gray-400 uppercase tracking-widest ${i >= 2 && i < 7 ? 'text-center' : ''}`}>{h}</span>
-                          ))}
-                        </div>
-
-                        {selectedPatternDetails.sections.map((sec, idx) => {
-                          const isOpen = expandedSections.has(idx);
-                          return (
-                            <div key={idx} className="border-b border-gray-50 last:border-0">
-                              {/* Clickable summary row */}
-                              <button
-                                type="button"
-                                onClick={() => toggleSection(idx)}
-                                className="w-full grid grid-cols-[28px_1fr_40px_44px_56px_32px_32px_24px] items-center px-3 py-2.5 hover:bg-blue-50/50 transition-colors text-left"
-                              >
-                                <span className="inline-flex items-center justify-center w-6 h-6 bg-blue-600 text-white rounded-lg text-[9px] font-black">{sec.name}</span>
-                                <span className="font-bold text-gray-900 text-xs truncate pr-1">{sec.subject || sec.title}</span>
-                                <span className="text-center text-xs font-bold text-gray-600">{sec.questions}</span>
-                                <span className="text-center text-xs font-black text-gray-900">{sec.marks}M</span>
-                                <span className="text-center text-[10px] font-bold">
-                                  {sec.internal_choice
-                                    ? <span className="text-emerald-700">Yes{sec.choices ? ` (${sec.choices})` : ''}</span>
-                                    : <span className="text-gray-400">No</span>}
-                                </span>
-                                <span className="text-center text-[10px] font-bold text-amber-700">{sec.hots || '—'}</span>
-                                <span className="text-center text-[10px] font-bold text-purple-700">{sec.cbq || '—'}</span>
-                                <ChevronRight size={12} className={`text-gray-400 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} />
-                              </button>
-
-                              {/* Expanded detail panel */}
-                              {isOpen && (
-                                <div className="px-4 pb-3 bg-blue-50/30 border-t border-blue-100/50">
-                                  <div className="pt-3 space-y-2.5">
-                                    {/* Blueprint info badges */}
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {sec.hots > 0 && (
-                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-[9px] font-black uppercase tracking-wider">
-                                          ★ {sec.hots} HOTS
-                                        </span>
-                                      )}
-                                      {sec.cbq > 0 && (
-                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-800 rounded-full text-[9px] font-black uppercase tracking-wider">
-                                          ❖ {sec.cbq} CBQ
-                                        </span>
-                                      )}
-                                      {sec.internal_choice && (
-                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[9px] font-black uppercase tracking-wider">
-                                          ⇄ {sec.choices || ''} Internal Choice{sec.choices > 1 ? 's' : ''}
-                                        </span>
-                                      )}
-                                    </div>
-
-                                    {/* Question type breakdown from question_types array */}
-                                    {sec.question_types?.length > 0 && (
-                                      <div className="rounded-xl overflow-hidden border border-gray-100">
-                                        <table className="w-full text-[9px]">
-                                          <thead>
-                                            <tr className="bg-gray-100">
-                                              <th className="text-left px-2 py-1 font-black text-gray-500 uppercase tracking-wider">Questions</th>
-                                              <th className="text-left px-2 py-1 font-black text-gray-500 uppercase tracking-wider">Type</th>
-                                              <th className="text-center px-2 py-1 font-black text-gray-500 uppercase tracking-wider">Marks</th>
-                                              <th className="text-center px-2 py-1 font-black text-gray-500 uppercase tracking-wider">Total</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {sec.question_types.map((qt, qi) => (
-                                              <tr key={qi} className="border-t border-gray-100">
-                                                <td className="px-2 py-1 font-bold text-gray-700">{qt.range || `${qt.count}Q`}</td>
-                                                <td className="px-2 py-1 text-gray-600">{qt.type}</td>
-                                                <td className="px-2 py-1 text-center font-bold text-gray-700">{qt.marks_each}M</td>
-                                                <td className="px-2 py-1 text-center font-black text-gray-900">{qt.total || qt.count * qt.marks_each}M</td>
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    )}
-
-                                    {/* Notes text */}
-                                    {sec.notes && (
-                                      <p className="text-[9px] text-gray-500 leading-relaxed bg-white rounded-xl px-3 py-2 border border-gray-100">
-                                        {sec.notes}
-                                      </p>
-                                    )}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-
-                        {/* Total footer */}
-                        <div className="grid grid-cols-[28px_1fr_40px_44px_56px_32px_32px_24px] items-center px-3 py-2 bg-gray-50 border-t-2 border-gray-200">
-                          <span></span>
-                          <span className="text-[9px] font-black text-gray-500 uppercase tracking-widest">Total</span>
-                          <span className="text-center text-xs font-black text-gray-900">
-                            {selectedPatternDetails.sections.reduce((s, r) => s + (r.questions || 0), 0)}
-                          </span>
-                          <span className="text-center text-xs font-black text-gray-900">
-                            {selectedPatternDetails.sections.reduce((s, r) => s + (r.marks || 0), 0)}M
-                          </span>
-                          <span colSpan={4}></span>
-                        </div>
-                      </div>
-                    ) : (
-                      /* Traditional format: render as section rows */
-                      <div className="space-y-2">
-                        {selectedPatternDetails.sections?.map((sec, idx) => (
-                          <div key={idx} className="flex items-center justify-between px-3 py-2.5 bg-gray-50 rounded-xl border border-gray-100 text-xs">
-                            <div className="flex items-center gap-2">
-                              <span className="inline-flex items-center justify-center w-6 h-6 bg-blue-600 text-white rounded-lg text-[9px] font-black">{sec.name}</span>
-                              <span className="font-bold text-gray-800 truncate max-w-[140px]">{sec.title}</span>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className="text-gray-500 font-bold">{sec.questions}Q</span>
-                              <span className="font-black text-gray-900">{sec.marks}M</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </>
+                  ))}
+                </div>
               )}
             </div>
           </div>
+        </div>
 
-          {[
-            { label: 'Fast Generation', sub: 'Generate papers in minutes', icon: Clock, color: 'text-indigo-600', bg: 'bg-indigo-50' },
-            { label: 'Quality Assured', sub: 'Verified output format', icon: CheckCircle, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-          ].map((item, i) => (
-            <div key={i} className="glass-card p-8 hover:bg-white transition-all group">
-              <div className="flex items-center gap-6">
-                <div className={`w-14 h-14 ${item.bg} ${item.color} rounded-2xl flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform`}>
-                  <item.icon size={26} />
+        {/* Right Sidebar - Sticky Summary Container */}
+        <div className="relative">
+          <div className="sticky top-24 space-y-6">
+            
+            {/* Generate Action Card */}
+            <div className="bg-slate-900 rounded-[28px] p-6 shadow-2xl shadow-slate-900/20 text-white relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/30 blur-2xl rounded-full" />
+              <div className="absolute bottom-0 left-0 w-32 h-32 bg-purple-500/30 blur-2xl rounded-full" />
+              
+              <div className="relative z-10">
+                <h3 className="text-xl font-bold mb-1">Ready to Generate?</h3>
+                <p className="text-slate-400 text-sm mb-6">Review your settings and let AI do the heavy lifting.</p>
+                
+                <div className="space-y-3 mb-6">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-400">Chapters</span>
+                    <span className="font-bold text-white">{selectedChapters.length} Selected</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-400">Difficulty</span>
+                    <span className="font-bold text-white">{formData.difficulty}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-400">Pattern</span>
+                    <span className="font-bold text-white truncate max-w-[150px] text-right">
+                      {patterns.find(p => String(p.id) === String(formData.pattern))?.name || 'Not set'}
+                    </span>
+                  </div>
                 </div>
-                <div>
-                  <h4 className="font-extrabold text-gray-900">{item.label}</h4>
-                  <p className="text-sm font-bold text-gray-500 uppercase tracking-tight mt-0.5">{item.sub}</p>
-                </div>
+
+                <button 
+                  type="submit" 
+                  disabled={submitting}
+                  className="w-full py-4 bg-white text-slate-900 rounded-2xl font-bold text-[15px] shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 flex items-center justify-center gap-2 disabled:opacity-50 disabled:hover:scale-100"
+                >
+                  {submitting ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-slate-300 border-t-slate-900 rounded-full animate-spin"></div>
+                      Generating Paper...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={18} strokeWidth={2.5} className="text-indigo-600" />
+                      Generate Question Paper
+                    </>
+                  )}
+                </button>
+                
+                <button 
+                  type="button" 
+                  onClick={resetForm}
+                  className="w-full mt-3 py-3 text-slate-400 hover:text-white text-sm font-semibold transition-colors flex justify-center items-center gap-2"
+                >
+                  <Undo size={14} /> Clear Form
+                </button>
               </div>
             </div>
-          ))}
+
+            {/* Pattern Details Summary (Only shows if pattern selected) */}
+            <div className={`bg-white border border-slate-200/60 rounded-[28px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] overflow-hidden transition-all duration-500 ${selectedPatternDetails ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none hidden'}`}>
+              <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                  <Layers size={16} className="text-indigo-500" />
+                  Pattern Overview
+                </h3>
+                {formData.blueprint && (
+                  <button 
+                    type="button"
+                    onClick={previewBlueprint}
+                    className="p-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors"
+                    title="Preview full blueprint"
+                  >
+                    <Eye size={16} />
+                  </button>
+                )}
+              </div>
+
+              <div className="p-6">
+                {loadingPatternDetails ? (
+                  <div className="flex justify-center py-8">
+                    <div className="w-6 h-6 border-2 border-slate-200 border-t-indigo-500 rounded-full animate-spin"></div>
+                  </div>
+                ) : selectedPatternDetails && (
+                  <div className="space-y-5">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center">
+                        <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Total Marks</p>
+                        <p className="text-2xl font-extrabold text-slate-900">{selectedPatternDetails.total_marks}</p>
+                      </div>
+                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center">
+                        <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Questions</p>
+                        <p className="text-2xl font-extrabold text-slate-900">{selectedPatternDetails.total_questions}</p>
+                      </div>
+                    </div>
+
+                    {selectedPatternDetails.sections?.length > 0 && (
+                       <div>
+                         <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-3 px-1">Section Breakdown</p>
+                         <div className="space-y-2">
+                           {selectedPatternDetails.sections.map((sec, idx) => (
+                             <div key={idx} className="flex items-center justify-between px-3 py-2.5 bg-white border border-slate-100 shadow-sm rounded-xl text-[12px]">
+                               <div className="flex items-center gap-2.5">
+                                 <span className="w-6 h-6 rounded-lg bg-indigo-50 text-indigo-600 font-bold flex items-center justify-center">{sec.name}</span>
+                                 <span className="font-semibold text-slate-700 truncate max-w-[100px]">{sec.subject || sec.title || `Section ${sec.name}`}</span>
+                               </div>
+                               <div className="flex items-center gap-2 font-bold">
+                                 <span className="text-slate-400">{sec.questions}Q</span>
+                                 <span className="text-slate-900">{sec.marks}M</span>
+                               </div>
+                             </div>
+                           ))}
+                         </div>
+                       </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
         </div>
-      </div>
+      </form>
 
       {/* Blueprint Preview Modal */}
       {showBlueprintModal && previewBlueprintData && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-gray-900/60 backdrop-blur-sm" onClick={() => setShowBlueprintModal(false)}></div>
-          <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden relative z-10 animate-in fade-in zoom-in-95 duration-300">
-            <div className="p-8 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowBlueprintModal(false)}></div>
+          <div className="bg-white rounded-[32px] shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden relative z-10 flex flex-col">
+            <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-white shrink-0">
               <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-blue-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200">
-                  <Eye size={24} />
+                <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center border border-indigo-100">
+                  <Layers size={22} strokeWidth={2} />
                 </div>
                 <div>
-                  <h3 className="text-2xl font-black text-gray-900 tracking-tight">{previewBlueprintData.name}</h3>
-                  <p className="text-gray-500 font-bold text-sm uppercase tracking-wider">{previewBlueprintData.class_name} • {previewBlueprintData.subject}</p>
+                  <h3 className="text-xl font-extrabold text-slate-900 tracking-tight">{previewBlueprintData.name}</h3>
+                  <p className="text-slate-500 font-medium text-[13px]">{previewBlueprintData.class_name} • {previewBlueprintData.subject}</p>
                 </div>
               </div>
-              <button onClick={() => setShowBlueprintModal(false)} className="w-12 h-12 bg-white border border-gray-100 rounded-2xl flex items-center justify-center text-gray-400 hover:text-gray-900 hover:shadow-md transition-all">
-                <X size={24} />
+              <button onClick={() => setShowBlueprintModal(false)} className="w-10 h-10 bg-slate-50 rounded-full flex items-center justify-center text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-all">
+                <X size={20} />
               </button>
             </div>
             
-            <div className="p-8 overflow-y-auto max-h-[calc(90vh-180px)] space-y-8 custom-scrollbar">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="p-8 overflow-y-auto flex-1 bg-slate-50/50">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 {previewBlueprintData.blueprint?.sections?.map((section, idx) => (
-                  <div key={idx} className="p-6 bg-gray-50 border border-gray-100 rounded-[30px] hover:border-blue-200 transition-colors group">
+                  <div key={idx} className="p-6 bg-white border border-slate-200/60 shadow-sm rounded-2xl hover:shadow-md transition-shadow">
                     <div className="flex justify-between items-center mb-4">
-                      <div className="px-4 py-1.5 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest">
+                      <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-[11px] font-bold uppercase tracking-wider">
                         Section {section.name}
-                      </div>
-                      <div className="font-black text-gray-900 bg-white px-3 py-1.5 rounded-xl border border-gray-100">
+                      </span>
+                      <span className="font-bold text-slate-900 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100 text-[12px]">
                         {section.marks} Marks
-                      </div>
+                      </span>
                     </div>
-                    <h4 className="text-lg font-black text-gray-900 mb-2 truncate">{section.title}</h4>
+                    <h4 className="text-[16px] font-bold text-slate-900 mb-3 line-clamp-2 leading-tight">{section.title}</h4>
                     <div className="space-y-2">
-                       <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Question Types</p>
-                       <div className="flex flex-wrap gap-2">
+                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Question Types</p>
+                       <div className="flex flex-wrap gap-1.5">
                           {section.question_types?.map((type, tIdx) => (
-                            <span key={tIdx} className="px-2 py-1 bg-white border border-gray-100 rounded-lg text-[10px] font-bold text-gray-600">{type}</span>
+                            <span key={tIdx} className="px-2.5 py-1 bg-slate-50 border border-slate-200/60 rounded-md text-[11px] font-semibold text-slate-600">{type}</span>
                           ))}
                        </div>
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
-
-            <div className="p-8 bg-gray-50/50 border-t border-gray-100 flex justify-end">
-              <button 
-                onClick={() => setShowBlueprintModal(false)}
-                className="px-10 py-4 bg-gray-900 text-white rounded-2xl font-black text-sm uppercase tracking-wider hover:bg-black transition-all"
-              >
-                Close Preview
-              </button>
             </div>
           </div>
         </div>
@@ -943,10 +836,8 @@ function GeneratorContent() {
 
 export default function GeneratorPage() {
   return (
-    <Suspense fallback={<LoadingSpinner message="Pre-configuring AI..." />}>
+    <Suspense fallback={<LoadingSpinner message="Loading AI Studio..." />}>
       <GeneratorContent />
     </Suspense>
   );
 }
-
-

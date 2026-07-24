@@ -8,7 +8,7 @@ import {
   ChevronRight, ExternalLink, GraduationCap,
   Layers, MoreVertical, CheckCircle, Info,
   AlertCircle, FileDown, Eye, X, Edit,
-  CheckSquare, Square, ShieldCheck
+  CheckSquare, Square, ShieldCheck, Sparkles, FolderOpen
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -16,9 +16,9 @@ import SuccessAlert from '@/components/SuccessAlert';
 import CustomSelect from '@/components/CustomSelect';
 
 const VISIBILITY_BADGE = {
-  shared:        { label: 'Shared',      cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-  private:       { label: 'Private',     cls: 'bg-gray-100 text-gray-600 border-gray-200' },
-  institutional: { label: 'All Schools', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  shared:        { label: 'Shared',      cls: 'bg-amber-50 text-amber-700 border-amber-200/60' },
+  private:       { label: 'Private',     cls: 'bg-slate-100 text-slate-600 border-slate-200/60' },
+  institutional: { label: 'All Schools', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200/60' },
 };
 
 export default function MaterialsPage() {
@@ -44,7 +44,6 @@ export default function MaterialsPage() {
     try {
       setLoading(true);
       
-      // Build query params
       const params = new URLSearchParams();
       params.append('page_size', '1000');
       if (isFilter) {
@@ -56,7 +55,6 @@ export default function MaterialsPage() {
       const data = res.data.results || [];
       setMaterials(data);
       
-      // Only update filter options on initial load to avoid options disappearing when filtered
       if (!isFilter) {
         const uniqueClasses = [...new Set(data.map(m => m.class_name))].sort((a, b) => a - b);
         const uniqueSubjects = [...new Set(data.map(m => m.subject))].sort();
@@ -160,260 +158,269 @@ export default function MaterialsPage() {
   };
 
   if (loading && materials.length === 0) return (
-    <div className="min-h-screen mesh-gradient flex items-center justify-center">
-      <div className="w-12 h-12 border-4 border-blue-600/30 border-t-blue-600 rounded-full animate-spin"></div>
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="w-8 h-8 border-2 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div>
     </div>
   );
 
   return (
-    <div className="w-full relative py-2 mb-20 px-4">
+    <div className="w-full pb-20 relative">
+      {/* Decorative background blobs */}
+      <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-indigo-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+      <div className="absolute top-40 right-1/4 w-[400px] h-[400px] bg-purple-400/10 rounded-full blur-3xl pointer-events-none -z-10" />
+
       {/* Header */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-8 mb-12">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 bg-white/80 backdrop-blur-md shadow-2xl shadow-blue-500/10 border border-white/50 rounded-2xl flex items-center justify-center group-hover:rotate-12 transition-all duration-500">
-            <BookOpen size={28} className="text-blue-600" />
+      <div className="mb-10 max-w-7xl mx-auto flex flex-col xl:flex-row xl:items-end justify-between gap-6">
+        <div>
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200/60 shadow-sm rounded-full mb-3">
+            <Sparkles size={14} className="text-indigo-500" strokeWidth={2} />
+            <span className="text-[11px] font-bold text-slate-700 uppercase tracking-widest">Library</span>
           </div>
-          <div>
-            <h1 className="text-3xl font-black text-gray-900 tracking-tight">Materials & Lessons</h1>
-            <p className="text-gray-500 font-medium">Manage and organize your textbook resources</p>
-          </div>
+          <h1 className="text-[32px] font-extrabold text-slate-900 tracking-tight leading-tight mb-2">Materials & Lessons</h1>
+          <p className="text-[15px] text-slate-500 leading-relaxed max-w-lg">Manage and organize your textbook resources for AI processing.</p>
         </div>
         
-        <div className="flex items-center gap-4">
-          <Link href="/materials/upload" className="flex items-center gap-2 bg-blue-600 text-white px-6 py-4 rounded-2xl font-bold text-sm tracking-tight hover:bg-blue-700 transition-all duration-300 shadow-xl shadow-blue-200 hover:shadow-blue-300 hover:-translate-y-1 active:scale-95">
-            <Upload size={18} className="animate-bounce" />
+        <div className="flex items-center gap-3">
+          <Link href="/materials/upload" className="px-6 py-3.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-2xl font-bold text-[13px] shadow-lg shadow-indigo-200/50 transition-all duration-300 flex items-center gap-2 hover:shadow-indigo-300/50 hover:scale-[1.02] active:scale-[0.98]">
+            <Upload size={16} strokeWidth={2.5} />
             Upload Material
           </Link>
         </div>
       </div>
 
-      {error && <ErrorAlert message={error} onClose={() => setError(null)} className="mb-6" />}
-      {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} className="mb-6" />}
+      <div className="max-w-7xl mx-auto">
+        {error && <ErrorAlert message={error} onClose={() => setError(null)} className="mb-6" />}
+        {success && <SuccessAlert message={success} onClose={() => setSuccess(null)} className="mb-6" />}
 
-      {/* Filter Section */}
-      <div className="bg-white/80 backdrop-blur-xl rounded-[32px] shadow-2xl shadow-blue-500/5 border border-white/20 p-8 mb-12 group transition-all duration-500 hover:shadow-blue-500/10">
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-end">
-          <div className="md:col-span-12 lg:col-span-3">
-            <CustomSelect
-              label="Filter by Class"
-              icon={Filter}
-              value={filters.class_name}
-              onChange={(val) => setFilters(prev => ({ ...prev, class_name: val }))}
-              options={classes.map(c => ({ label: `Class ${c}`, value: c }))}
-              placeholder="All Classes"
-            />
-          </div>
-
-          <div className="md:col-span-12 lg:col-span-3">
-            <CustomSelect
-              label="Filter by Subject"
-              icon={BookOpen}
-              value={filters.subject}
-              onChange={(val) => setFilters(prev => ({ ...prev, subject: val }))}
-              options={subjects.map(s => ({ label: s, value: s }))}
-              placeholder="All Subjects"
-            />
-          </div>
-
-          <div className="md:col-span-12 lg:col-span-3">
-            <CustomSelect
-              label="Filter by Scope"
-              icon={ShieldCheck}
-              value={filters.visibility}
-              onChange={(val) => setFilters(prev => ({ ...prev, visibility: val }))}
-              options={[
-                { label: 'Shared (global)', value: 'shared' },
-                { label: 'Private to school', value: 'private' },
-                { label: 'All schools', value: 'institutional' },
-              ]}
-              placeholder="All Scopes"
-            />
-          </div>
-
-          <div className="md:col-span-12 lg:col-span-3 flex items-center gap-3">
-            <button 
-              onClick={() => fetchData(true)}
-              className="flex-1 bg-gray-900 text-white px-6 py-4 rounded-2xl font-bold text-sm tracking-tight hover:bg-black transition-all duration-300 flex items-center justify-center gap-2 group hover:-translate-y-1 active:scale-95 shadow-xl shadow-gray-200/50"
-            >
-              <Search size={18} className="group-hover:scale-110 transition-transform" /> 
-              Search
-            </button>
-            <button 
-              onClick={() => {
-                setFilters({ class_name: '', subject: '', visibility: '' });
-                setSelectedItems([]);
-                fetchData(false);
-              } }
-              className="bg-white text-gray-700 p-4 rounded-2xl font-bold text-sm tracking-tight hover:bg-gray-50 border border-gray-100 transition-all duration-300 flex items-center justify-center gap-2 hover:-translate-y-1 active:scale-95 shadow-lg shadow-gray-100/50"
-              title="Clear Filters"
-            >
-              <X size={20} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Main List Area */}
-      {Object.keys(groupedMaterials).length === 0 ? (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-20 text-center hover:shadow-xl transition-shadow duration-500">
-          <div className="w-16 h-16 bg-gray-50 rounded-2xl border border-gray-100 flex items-center justify-center mx-auto mb-4 animate-bounce-slow">
-            <FileText size={32} className="text-gray-400" />
-          </div>
-          <h3 className="text-xl font-black text-gray-900 mb-2">No materials found</h3>
-          <p className="text-gray-600 mb-8 max-w-sm mx-auto font-medium">Upload textbook chapters or notes to start generating question papers with AI.</p>
-          <Link href="/materials/upload" className="inline-flex items-center gap-2 bg-blue-600 text-white px-8 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest transition-all duration-300 shadow-xl shadow-blue-200 hover:shadow-blue-300 hover:-translate-y-1 active:scale-95">
-            <Upload size={18} />
-            Upload First Material
-          </Link>
-        </div>
-      ) : (
-        <div className="space-y-8">
-          {/* Global Actions */}
-          {selectedItems.length > 0 && (
-            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-5">
-              <div className="bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6">
-                <p className="text-sm font-bold tracking-tight">
-                  <span className="text-blue-400">{selectedItems.length}</span> Material(s) Selected
-                </p>
-                <div className="w-[1px] h-6 bg-gray-700"></div>
-                <div className="flex items-center gap-2">
-                  <button 
-                    onClick={handleBulkDelete}
-                    className="bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2"
-                  >
-                    <Trash2 size={14} /> Bulk Delete
-                  </button>
-                  <button 
-                    onClick={() => setSelectedItems([])}
-                    className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all"
-                  >
-                    Clear Selection
-                  </button>
-                </div>
-              </div>
+        {/* Filter Section */}
+        <div className="relative z-[50] bg-white/80 backdrop-blur-xl rounded-[28px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-200/60 p-6 md:p-8 mb-8 transition-all duration-500">
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-end">
+            <div className="md:col-span-6 lg:col-span-3">
+              <CustomSelect
+                label="Filter by Class"
+                icon={Filter}
+                value={filters.class_name}
+                onChange={(val) => setFilters(prev => ({ ...prev, class_name: val }))}
+                options={classes.map(c => ({ label: `Class ${c}`, value: c }))}
+                placeholder="All Classes"
+              />
             </div>
-          )}
 
-          {Object.entries(groupedMaterials).map(([key, group], groupIdx) => (
-            <div key={key} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden group/card">
-              <div className="p-4 bg-gray-50/50 border-b border-gray-100 flex items-center justify-between">
-                <div className="flex items-center gap-4">
+            <div className="md:col-span-6 lg:col-span-3">
+              <CustomSelect
+                label="Filter by Subject"
+                icon={BookOpen}
+                value={filters.subject}
+                onChange={(val) => setFilters(prev => ({ ...prev, subject: val }))}
+                options={subjects.map(s => ({ label: s, value: s }))}
+                placeholder="All Subjects"
+              />
+            </div>
+
+            <div className="md:col-span-6 lg:col-span-3">
+              <CustomSelect
+                label="Filter by Scope"
+                icon={ShieldCheck}
+                value={filters.visibility}
+                onChange={(val) => setFilters(prev => ({ ...prev, visibility: val }))}
+                options={[
+                  { label: 'Shared (global)', value: 'shared' },
+                  { label: 'Private to school', value: 'private' },
+                  { label: 'All schools', value: 'institutional' },
+                ]}
+                placeholder="All Scopes"
+              />
+            </div>
+
+            <div className="md:col-span-6 lg:col-span-3 flex items-center gap-3 h-[52px]">
+              <button 
+                onClick={() => fetchData(true)}
+                className="flex-1 h-full bg-slate-900 text-white rounded-2xl font-bold text-[13px] hover:bg-slate-800 transition-all flex items-center justify-center gap-2 shadow-sm"
+              >
+                <Search size={16} /> 
+                Search
+              </button>
+              <button 
+                onClick={() => {
+                  setFilters({ class_name: '', subject: '', visibility: '' });
+                  setSelectedItems([]);
+                  fetchData(false);
+                } }
+                className="w-[52px] h-full bg-white text-slate-500 rounded-2xl border border-slate-200 hover:bg-slate-50 hover:text-slate-900 transition-all flex items-center justify-center"
+                title="Clear Filters"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Main List Area */}
+        {Object.keys(groupedMaterials).length === 0 ? (
+          <div className="bg-white/80 backdrop-blur-xl rounded-[28px] border border-slate-200/60 p-16 text-center shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+            <div className="w-16 h-16 bg-white rounded-2xl border border-slate-100 shadow-sm flex items-center justify-center mx-auto mb-5">
+              <FolderOpen size={28} className="text-slate-300" strokeWidth={1.5} />
+            </div>
+            <h3 className="text-[18px] font-bold text-slate-900 mb-2 tracking-tight">No materials found</h3>
+            <p className="text-slate-500 mb-8 max-w-sm mx-auto font-medium text-[13px] leading-relaxed">
+              Upload textbook chapters or notes to start generating question papers with AI.
+            </p>
+            <Link href="/materials/upload" className="inline-flex items-center gap-2 bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-[13px] shadow-sm hover:bg-indigo-700 transition-all active:scale-[0.98]">
+              <Upload size={16} />
+              Upload First Material
+            </Link>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {/* Global Actions Bar (Floating) */}
+            {selectedItems.length > 0 && (
+              <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] animate-in slide-in-from-bottom-5 fade-in duration-300">
+                <div className="bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-5 border border-slate-700/50">
+                  <p className="text-[13px] font-bold tracking-wide">
+                    <span className="text-indigo-400 bg-indigo-900/40 px-2 py-0.5 rounded-md mr-1">{selectedItems.length}</span> Selected
+                  </p>
+                  <div className="w-[1px] h-5 bg-slate-700"></div>
                   <div className="flex items-center gap-2">
-                    <GraduationCap size={18} className="text-blue-500" />
-                    <span className="text-sm font-black text-gray-900 uppercase">Class: <span className="text-blue-600">{group.class_name}</span></span>
-                  </div>
-                  <div className="w-[1px] h-4 bg-gray-200"></div>
-                  <div className="flex items-center gap-2">
-                    <BookOpen size={18} className="text-blue-500" />
-                    <span className="text-sm font-black text-gray-900 uppercase">Subject: <span className="text-blue-600">{group.subject}</span></span>
-                  </div>
-                  <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-black rounded-full border border-blue-200 uppercase">
-                    {group.items.length} lesson{group.items.length !== 1 ? 's' : ''}
-                  </span>
-                </div>
-                
-                <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">Select All</span>
-                    <div 
-                      onClick={() => toggleGroupSelection(key, group.items, !isGroupSelected(group.items))}
-                      className={`w-5 h-5 rounded flex items-center justify-center transition-all ${isGroupSelected(group.items) ? 'bg-[#1e293b] text-white' : 'bg-white border-2 border-gray-200'}`}
+                    <button 
+                      onClick={handleBulkDelete}
+                      className="bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white px-3.5 py-2 rounded-xl text-[12px] font-bold transition-all flex items-center gap-2"
                     >
-                      {isGroupSelected(group.items) && <CheckSquare size={14} />}
-                    </div>
-                  </label>
+                      <Trash2 size={14} /> Bulk Delete
+                    </button>
+                    <button 
+                      onClick={() => setSelectedItems([])}
+                      className="bg-white/10 hover:bg-white/20 text-white px-3.5 py-2 rounded-xl text-[12px] font-bold transition-all"
+                    >
+                      Clear
+                    </button>
+                  </div>
                 </div>
               </div>
+            )}
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead className="bg-white text-[10px] font-black uppercase text-gray-500 tracking-widest border-b border-gray-50">
-                    <tr>
-                      <th className="px-6 py-4 w-12 text-center">
-                        <div 
-                          onClick={() => toggleAllSelections(!isAllSelected())}
-                          className={`w-4 h-4 rounded flex items-center justify-center transition-all mx-auto cursor-pointer ${isAllSelected() ? 'bg-[#1e293b] text-white' : 'bg-white border border-gray-300'}`}
-                        >
-                          {isAllSelected() && <CheckSquare size={12} />}
-                        </div>
-                      </th>
-                      <th className="px-4 py-4 w-12 text-center">#</th>
-                      <th className="px-4 py-4 min-w-[200px]">Lesson/Chapter Name</th>
-                      <th className="px-4 py-4 min-w-[200px]">Title</th>
-                      <th className="px-4 py-4">Type</th>
-                      <th className="px-4 py-4">Scope</th>
-                      <th className="px-4 py-4">Uploaded</th>
-                      <th className="px-6 py-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50 bg-white">
-                    {group.items.map((item, idx) => (
-                      <tr key={item.id} className={`hover:bg-gray-50/50 transition-colors group/row ${selectedItems.includes(item.id) ? 'bg-slate-50' : ''}`}>
-                        <td className="px-6 py-4 text-center">
+            {Object.entries(groupedMaterials).map(([key, group], groupIdx) => (
+              <div key={key} className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-[28px] overflow-hidden shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+                {/* Group Header */}
+                <div className="px-6 py-4 bg-slate-50/50 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center flex-wrap gap-4">
+                    <div className="flex items-center gap-2.5">
+                      <GraduationCap size={16} className="text-indigo-500" strokeWidth={2} />
+                      <span className="text-[13px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Class <span className="font-bold text-slate-900">{group.class_name}</span>
+                      </span>
+                    </div>
+                    <div className="w-1 h-1 rounded-full bg-slate-300 hidden sm:block"></div>
+                    <div className="flex items-center gap-2.5">
+                      <BookOpen size={16} className="text-indigo-500" strokeWidth={2} />
+                      <span className="text-[13px] font-semibold text-slate-500 uppercase tracking-wider">
+                        <span className="font-bold text-slate-900">{group.subject}</span>
+                      </span>
+                    </div>
+                    <span className="px-2.5 py-1 bg-indigo-50 text-indigo-700 text-[10px] font-bold rounded-lg border border-indigo-100/50 uppercase tracking-wider ml-2">
+                      {group.items.length} lesson{group.items.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-2 cursor-pointer select-none group/sel">
+                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider group-hover/sel:text-slate-700 transition-colors">Select All</span>
+                      <div 
+                        onClick={() => toggleGroupSelection(key, group.items, !isGroupSelected(group.items))}
+                        className={`w-5 h-5 rounded-md flex items-center justify-center transition-all ${isGroupSelected(group.items) ? 'bg-indigo-600 text-white' : 'bg-white border-2 border-slate-200 group-hover/sel:border-indigo-400'}`}
+                      >
+                        {isGroupSelected(group.items) && <CheckSquare size={14} />}
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Group Table */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="bg-white text-[11px] font-bold uppercase text-slate-400 tracking-wider border-b border-slate-100">
+                      <tr>
+                        <th className="px-6 py-4 w-12 text-center">
                           <div 
-                            onClick={() => toggleSelection(item.id)}
-                            className={`w-4 h-4 rounded flex items-center justify-center transition-all mx-auto cursor-pointer ${selectedItems.includes(item.id) ? 'bg-[#1e293b] text-white shadow-lg' : 'bg-white border border-gray-300'}`}
+                            onClick={() => toggleAllSelections(!isAllSelected())}
+                            className={`w-4 h-4 rounded flex items-center justify-center transition-all mx-auto cursor-pointer ${isAllSelected() ? 'bg-indigo-600 text-white' : 'bg-slate-100 border border-slate-200'}`}
                           >
-                            {selectedItems.includes(item.id) && <CheckSquare size={12} />}
+                            {isAllSelected() && <CheckSquare size={12} />}
                           </div>
-                        </td>
-                        <td className="px-4 py-4 text-center text-xs font-black text-gray-500">
-                          {idx + 1}
-                        </td>
-                        <td className="px-4 py-4">
-                          <p className="text-sm font-black text-gray-900 uppercase tracking-tight">{item.unit || '-'}</p>
-                        </td>
-                        <td className="px-4 py-4">
-                          <p className="text-sm font-bold text-gray-500 truncate max-w-[250px]">{item.title}</p>
-                        </td>
-                        <td className="px-4 py-4">
-                          <span className="px-2.5 py-1 bg-cyan-50 text-cyan-700 text-[9px] font-black rounded-lg border border-cyan-100 uppercase">
-                            {item.type_display || 'Textbook'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-4">
-                          {(() => {
-                            const v = VISIBILITY_BADGE[item.visibility] || VISIBILITY_BADGE.private;
-                            return (
-                              <span className={`px-2.5 py-1 text-[9px] font-black rounded-lg border uppercase ${v.cls}`}>
-                                {v.label}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td className="px-4 py-4">
-                          <p className="text-[11px] font-bold text-gray-600 uppercase tracking-tight">
-                            {new Date(item.uploaded_at).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })}
-                          </p>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex items-center justify-end gap-1 opacity-0 group-hover/row:opacity-100 transition-opacity">
-                            <Link href={`/materials/edit/${item.id}`} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-white rounded-lg transition-all" title="Edit">
-                              <Edit size={16} />
-                            </Link>
-                            <button 
-                              onClick={() => handleDelete(item.id)}
-                              className="p-2 text-gray-400 hover:text-red-500 hover:bg-white rounded-lg transition-all" 
-                              title="Delete"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                            {item.file && (
-                              <a href={item.file} target="_blank" className="p-2 text-gray-400 hover:text-emerald-500 hover:bg-white rounded-lg transition-all" title="View PDF">
-                                <Eye size={16} />
-                              </a>
-                            )}
-                          </div>
-                        </td>
+                        </th>
+                        <th className="px-4 py-4 min-w-[150px]">Lesson Code</th>
+                        <th className="px-4 py-4 min-w-[250px]">Title</th>
+                        <th className="px-4 py-4">Type</th>
+                        <th className="px-4 py-4">Scope</th>
+                        <th className="px-4 py-4">Uploaded</th>
+                        <th className="px-6 py-4 text-right">Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 bg-white/50">
+                      {group.items.map((item, idx) => (
+                        <tr key={item.id} className={`hover:bg-slate-50/80 transition-colors group/row ${selectedItems.includes(item.id) ? 'bg-indigo-50/30' : ''}`}>
+                          <td className="px-6 py-4 text-center">
+                            <div 
+                              onClick={() => toggleSelection(item.id)}
+                              className={`w-4 h-4 rounded flex items-center justify-center transition-all mx-auto cursor-pointer ${selectedItems.includes(item.id) ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border border-slate-300 hover:border-indigo-400'}`}
+                            >
+                              {selectedItems.includes(item.id) && <CheckSquare size={12} />}
+                            </div>
+                          </td>
+                          <td className="px-4 py-4">
+                            <p className="text-[13px] font-bold text-slate-900 uppercase">{item.unit || '-'}</p>
+                          </td>
+                          <td className="px-4 py-4">
+                            <p className="text-[13px] font-semibold text-slate-600 truncate max-w-[300px]">{item.title}</p>
+                          </td>
+                          <td className="px-4 py-4">
+                            <span className="px-2 py-1 bg-cyan-50 text-cyan-700 text-[10px] font-bold rounded-md border border-cyan-100/50 uppercase tracking-wider">
+                              {item.type_display || 'Textbook'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4">
+                            {(() => {
+                              const v = VISIBILITY_BADGE[item.visibility] || VISIBILITY_BADGE.private;
+                              return (
+                                <span className={`px-2 py-1 text-[10px] font-bold rounded-md border uppercase tracking-wider ${v.cls}`}>
+                                  {v.label}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-4 py-4">
+                            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                              {new Date(item.uploaded_at).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })}
+                            </p>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover/row:opacity-100 transition-opacity">
+                              <Link href={`/materials/edit/${item.id}`} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Edit">
+                                <Edit size={16} />
+                              </Link>
+                              <button 
+                                onClick={() => handleDelete(item.id)}
+                                className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" 
+                                title="Delete"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                              {item.file && (
+                                <a href={item.file} target="_blank" className="p-2 text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 rounded-lg transition-colors" title="View Document">
+                                  <Eye size={16} />
+                                </a>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
