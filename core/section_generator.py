@@ -572,13 +572,39 @@ _LANGUAGE_SUBJECTS = {
 }
 
 
+# Tamil board-exam conventions (Samacheer Kalvi). Appended to the language directive ONLY for
+# Tamil papers — added after a Tamil teacher's review flagged that generated papers ignored the
+# standard grammar question-type stems, the "answer any N" internal choice, and the Thirukkural
+# சீர் (foot) fill-in-the-blank format. Scoped to Tamil so Hindi/Sanskrit papers are unaffected.
+_TAMIL_CONVENTIONS = (
+    "\nTAMIL EXAM CONVENTIONS — MANDATORY (Samacheer Kalvi format):\n"
+    "இலக்கணம் (grammar) questions MUST use the standard Tamil question-type stems, and where the "
+    "spec gives the section an internal choice, list one extra item and word the choice in Tamil:\n"
+    '- "பின்வரும் கோடிட்ட இடங்களை நிரப்புக" (fill in the blanks)\n'
+    '- "இலக்கணக் குறிப்பு தருக" (give the grammatical note — பெயரெச்சம், வினையெச்சம், '
+    "பண்புத்தொகை, வினையாலணையும் பெயர், etc.)\n"
+    '- "சான்று தருக" (give a supporting citation — a real குறள் / பாடல் அடி)\n'
+    '- "கூறியவாறு செய்க" or "பிழை திருத்துக" (do as directed / correct the error)\n'
+    'Word an internal choice as "(எவையேனும் மூன்றனுக்கு மட்டும் விடையளிக்க)" — answer any 3 of the '
+    "listed items — unless the per-question spec says otherwise.\n"
+    "திருக்குறள் questions: when the spec calls for a Kural blank, use the heading "
+    '"பின்வரும் கோடிட்ட இடங்களைத் திருக்குறள் சீர்களால் நிரப்புக". Quote a REAL, complete Thirukkural '
+    "with exactly ONE சீர் (foot) blanked and give four options (a–d) that are all plausible Tamil "
+    "feet. NEVER invent a Kural or a foot — use only authentic Kurals.\n"
+    "செய்யுள் (verse) / உரைநடை (prose) sections: where the section offers an internal choice, word "
+    'verse choices as "(எவையேனும் இரண்டனுக்கு விடை தருக)" (answer any 2) and prose choices as '
+    '"(எவையேனும் மூன்றனுக்கு விடையளிக்க)" (answer any 3), matching the marks in the spec.\n'
+)
+
+
 def _language_directive(subject: str) -> str:
     """If the subject is a language paper (Hindi/Tamil/Sanskrit), return a MANDATORY block
-    instructing the model to write the entire paper in that language/script. Empty otherwise."""
+    instructing the model to write the entire paper in that language/script. Empty otherwise.
+    Tamil papers also get the Samacheer-Kalvi question-type conventions in _TAMIL_CONVENTIONS."""
     s = (subject or "").lower()
     for key, desc in _LANGUAGE_SUBJECTS.items():
         if key in s:
-            return (
+            block = (
                 "LANGUAGE — MANDATORY (read FIRST):\n"
                 f"This is a {desc} paper. Write the ENTIRE output — every question, all four "
                 f"options, every passage, sub-question and answer_explanation — in {desc}. "
@@ -586,6 +612,9 @@ def _language_directive(subject: str) -> str:
                 '("text", "options", "marks", "type", …) stay in English; every human-readable '
                 "VALUE must be in the target language and script.\n"
             )
+            if key == "tamil":
+                block += _TAMIL_CONVENTIONS
+            return block
     return ""
 
 
@@ -937,10 +966,20 @@ MATHEMATICAL NOTATION (strictly follow):
                 json_type = '"type": "CBQ", "subtype": "source_based"'
             elif parts:
                 json_type = '"type": "CBQ"'
+            elif styp == "matching":
+                json_type = '"type": "VSA", "subtype": "matching"'
             else:
                 json_type = _cat_to_json.get(_type_category(styp), '"type": "SA"')
             label = pattern_structure.SLOT_TYPE_LABEL.get(styp, styp or "question")
             line = f"  Question {pos}: {label} — {json_type}, marks={s.get('marks')}"
+            if styp == "matching":
+                line += (
+                    ' | MATCH THE FOLLOWING: lay the two columns in "text" as a Markdown table, '
+                    'NOT as newline-stacked lists — a header row "| Column I | Column II |", a '
+                    'separator "| --- | --- |", then one pair per row like "| (i) … | (A) … |". '
+                    'Scramble the right column so the pairing is not already in order, and give '
+                    'the correct key (e.g. "(i)-B, (ii)-C, (iii)-A") in "answer_explanation"'
+                )
             if s.get("topic"):
                 line += f" | TOPIC: {s['topic']}"
             if s.get("format"):
@@ -2906,6 +2945,79 @@ def generate_la_cbq_individually(wo: SectionWorkOrder) -> tuple[dict, int, int]:
     return section_data, total_in_tok, total_out_tok
 
 
+# ── Match-the-following normalisation ────────────────────────────────────────
+# The pattern slot type "matching" collapses to the VSA category, so a generated
+# match question arrives as type=VSA / subtype=standard with its two columns stacked
+# by newlines ("(i) …\n(ii) …\n(A) …\n(B) …"). _is_matching_question detects such a
+# question and _matching_to_markdown rewrites the body into a two-column Markdown
+# table — render_docx already turns a pipe table into a real side-by-side Word table.
+_MATCH_LEFT_RE = re.compile(r'^\(\s*([ivxl]+)\s*\)\s*(.+)$')   # (i) (ii) (iii) …
+_MATCH_RIGHT_RE = re.compile(r'^\(\s*([A-Z])\s*\)\s*(.+)$')    # (A) (B) (C) …
+
+
+def _split_match_columns(text: str):
+    """Parse a stacked match body into (left, right) lists of (label, value) by label
+    style: lowercase-roman "(i)" → left column, uppercase-letter "(A)" → right column."""
+    left, right = [], []
+    for raw in str(text or "").split("\n"):
+        line = raw.strip()
+        ml = _MATCH_LEFT_RE.match(line)
+        if ml:
+            left.append((f"({ml.group(1)})", ml.group(2).strip()))
+            continue
+        mr = _MATCH_RIGHT_RE.match(line)
+        if mr:
+            right.append((f"({mr.group(1)})", mr.group(2).strip()))
+    return left, right
+
+
+def _has_pipe_table(text: str) -> bool:
+    """True if any line is already a Markdown pipe-table row (starts and ends with '|')."""
+    return any(
+        ln.strip().startswith("|") and ln.strip().endswith("|")
+        for ln in str(text or "").split("\n")
+    )
+
+
+def _is_matching_question(q: dict) -> bool:
+    """True when q is a match-the-following item: declared as such (subtype/type), or a
+    'match the …' stem whose body carries both a (i)/(ii) list and an (A)/(B) list."""
+    if str(q.get("subtype", "")).strip().lower() == "matching":
+        return True
+    if "match" in _type_str(q.get("type", "")):
+        return True
+    if "match the" not in str(q.get("text", "")).lower():
+        return False
+    left, right = _split_match_columns(q.get("text", ""))
+    return len(left) >= 2 and len(right) >= 2
+
+
+def _matching_to_markdown(text: str) -> str:
+    """Rewrite 'stem + stacked (i)/(A) lists' into 'stem + 2-column Markdown table'.
+    Returns text unchanged if it is already a pipe table or two columns can't be parsed."""
+    text = str(text or "")
+    if _has_pipe_table(text):
+        return text
+    left, right = _split_match_columns(text)
+    if len(left) < 2 or len(right) < 2:
+        return text
+    stem_lines = []
+    for raw in text.split("\n"):
+        s = raw.strip()
+        if _MATCH_LEFT_RE.match(s) or _MATCH_RIGHT_RE.match(s):
+            break
+        stem_lines.append(raw)
+    stem = "\n".join(stem_lines).strip()
+    n = max(len(left), len(right))
+    rows = ["| Column I | Column II |", "| --- | --- |"]
+    for i in range(n):
+        lft = f"{left[i][0]} {left[i][1]}" if i < len(left) else ""
+        rgt = f"{right[i][0]} {right[i][1]}" if i < len(right) else ""
+        rows.append(f"| {lft} | {rgt} |")
+    table = "\n".join(rows)
+    return f"{stem}\n{table}" if stem else table
+
+
 def _repair_section_data(section_data: dict) -> dict:
     """
     Deterministic structural repair applied after JSON parse, before validation.
@@ -2989,6 +3101,16 @@ def _repair_section_data(section_data: dict) -> dict:
                 q["subtype"] = "source_based"
             else:
                 q["subtype"] = "standard"
+
+        # ── Match-the-following: retag + reformat to a side-by-side table ─────────
+        # "matching" slots collapse to the VSA category, so the model returns
+        # type=VSA / subtype=standard with the two columns stacked by newlines. Retag
+        # them (so the type identifies a match question) and rewrite the body into a
+        # 2-column Markdown table, which render_docx lays out side by side.
+        if str(q.get("subtype", "")).strip().lower() in ("", "standard", "matching") \
+                and _is_matching_question(q):
+            q["subtype"] = "matching"
+            q["text"] = _matching_to_markdown(str(q.get("text", "")))
 
     return section_data
 

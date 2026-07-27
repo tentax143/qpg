@@ -1175,6 +1175,17 @@ class LanguageSupportTest(TestCase):
         self.assertEqual(_language_directive("Science"), "")
         self.assertEqual(_language_directive("Mathematics"), "")
 
+    def test_tamil_conventions_scoped_to_tamil_only(self):
+        from core.section_generator import _language_directive
+        tamil = _language_directive("Tamil")
+        # Tamil papers carry the Samacheer-Kalvi question-type conventions...
+        self.assertIn("TAMIL EXAM CONVENTIONS", tamil)
+        self.assertIn("இலக்கணக் குறிப்பு தருக", tamil)
+        self.assertIn("சீர்களால் நிரப்புக", tamil)
+        # ...but Hindi/Sanskrit language papers must NOT inherit them.
+        self.assertNotIn("TAMIL EXAM CONVENTIONS", _language_directive("Hindi Course B"))
+        self.assertNotIn("TAMIL EXAM CONVENTIONS", _language_directive("Sanskrit"))
+
     def test_language_directive_injected_into_section_prompt(self):
         from core.section_generator import build_section_prompt, SectionWorkOrder
         wo = SectionWorkOrder(
@@ -1186,6 +1197,73 @@ class LanguageSupportTest(TestCase):
         prompt = build_section_prompt(wo)
         self.assertIn("LANGUAGE — MANDATORY", prompt)
         self.assertIn("Devanagari", prompt)
+
+
+class MatchingQuestionTest(SimpleTestCase):
+    """Match-the-following questions: correct subtype + side-by-side (table) rendering."""
+
+    # The exact shape the base model returns today for a "matching" slot: VSA / standard
+    # with both columns stacked into one text field by newlines.
+    STACKED = (
+        "Match the following family values with their meanings:\n"
+        "(i) Sevā\n(ii) Dāna\n(iii) Tyāga\n"
+        "(A) Sacrifice\n(B) Selfless Service\n(C) Giving"
+    )
+
+    def test_split_columns(self):
+        from core.section_generator import _split_match_columns
+        left, right = _split_match_columns(self.STACKED)
+        self.assertEqual([l[0] for l in left], ["(i)", "(ii)", "(iii)"])
+        self.assertEqual([r[0] for r in right], ["(A)", "(B)", "(C)"])
+        self.assertEqual(left[0][1], "Sevā")
+        self.assertEqual(right[1][1], "Selfless Service")
+
+    def test_to_markdown_builds_two_column_table(self):
+        from core.section_generator import _matching_to_markdown
+        md = _matching_to_markdown(self.STACKED)
+        self.assertIn("| Column I | Column II |", md)
+        self.assertIn("| --- | --- |", md)
+        self.assertIn("| (i) Sevā | (A) Sacrifice |", md)
+        # The stem is preserved above the table; the columns are no longer newline-stacked.
+        self.assertTrue(md.startswith("Match the following family values"))
+        self.assertNotIn("(i) Sevā\n(ii)", md)
+
+    def test_idempotent_on_existing_table(self):
+        from core.section_generator import _matching_to_markdown
+        once = _matching_to_markdown(self.STACKED)
+        self.assertEqual(_matching_to_markdown(once), once)
+
+    def test_repair_retags_and_reformats(self):
+        from core.section_generator import _repair_section_data
+        data = {"questions": [{
+            "qnum": 6, "type": "VSA", "subtype": "standard", "text": self.STACKED,
+            "answer_explanation": "(i)-B, (ii)-C, (iii)-A", "marks": 1.0, "options": {},
+        }]}
+        _repair_section_data(data)
+        q = data["questions"][0]
+        self.assertEqual(q["subtype"], "matching")          # type now identifies a match question
+        self.assertIn("| Column I | Column II |", q["text"])  # columns are a table → side by side
+
+    def test_render_detects_the_table(self):
+        # The rewritten body must be recognised by the DOCX table splitter so it renders
+        # as a real two-column Word table rather than stacked pipe text.
+        from core.section_generator import _matching_to_markdown
+        from core.generator import _md_table_segments
+        segs = _md_table_segments(_matching_to_markdown(self.STACKED))
+        self.assertIsNotNone(segs)
+        self.assertTrue(any(kind == "table" for kind, _ in segs))
+
+    def test_non_matching_vsa_untouched(self):
+        from core.section_generator import _repair_section_data
+        data = {"questions": [{
+            "qnum": 1, "type": "VSA", "subtype": "standard",
+            "text": "Define secularism in one sentence.",
+            "answer_explanation": "…", "marks": 1.0, "options": {},
+        }]}
+        _repair_section_data(data)
+        q = data["questions"][0]
+        self.assertEqual(q["subtype"], "standard")
+        self.assertNotIn("|", q["text"])
 
 
 class MaterialIntelTest(TestCase):
