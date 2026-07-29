@@ -1200,58 +1200,178 @@ class LanguageSupportTest(TestCase):
 
 
 class MatchingQuestionTest(SimpleTestCase):
-    """Match-the-following questions: correct subtype + side-by-side (table) rendering."""
+    """Match-the-following: correct subtype, side-by-side (table) rendering, and the four
+    a/b/c/d pairing choices the question is answered with."""
 
-    # The exact shape the base model returns today for a "matching" slot: VSA / standard
-    # with both columns stacked into one text field by newlines.
+    # The shape the base model returns for a "matching" slot when it ignores the table
+    # instruction: VSA / standard with both columns stacked into one text field by newlines.
+    # Current label convention — Column I "(A)…", Column II "(1)…" — 4 pairs, scrambled.
     STACKED = (
+        "Match the following and choose the correct option:\n"
+        "(A) Chacha\n(B) Bua\n(C) Mausi\n(D) Mama\n"
+        "(1) Mother's sister\n(2) Father's younger brother\n"
+        "(3) Mother's brother\n(4) Father's sister"
+    )
+    KEY = "A-2, B-4, C-1, D-3"
+
+    # Pre-2026 papers stacked roman "(i)" against lettered "(A)" — still parsed.
+    LEGACY_STACKED = (
         "Match the following family values with their meanings:\n"
         "(i) Sevā\n(ii) Dāna\n(iii) Tyāga\n"
         "(A) Sacrifice\n(B) Selfless Service\n(C) Giving"
     )
 
+    def _table(self):
+        from core.section_generator import _matching_to_markdown
+        return _matching_to_markdown(self.STACKED)
+
     def test_split_columns(self):
         from core.section_generator import _split_match_columns
         left, right = _split_match_columns(self.STACKED)
+        self.assertEqual([l[0] for l in left], ["(A)", "(B)", "(C)", "(D)"])
+        self.assertEqual([r[0] for r in right], ["(1)", "(2)", "(3)", "(4)"])
+        self.assertEqual(left[0][1], "Chacha")
+        self.assertEqual(right[1][1], "Father's younger brother")
+
+    def test_split_columns_legacy_roman_convention(self):
+        from core.section_generator import _split_match_columns
+        left, right = _split_match_columns(self.LEGACY_STACKED)
         self.assertEqual([l[0] for l in left], ["(i)", "(ii)", "(iii)"])
         self.assertEqual([r[0] for r in right], ["(A)", "(B)", "(C)"])
-        self.assertEqual(left[0][1], "Sevā")
-        self.assertEqual(right[1][1], "Selfless Service")
 
     def test_to_markdown_builds_two_column_table(self):
-        from core.section_generator import _matching_to_markdown
-        md = _matching_to_markdown(self.STACKED)
+        md = self._table()
         self.assertIn("| Column I | Column II |", md)
         self.assertIn("| --- | --- |", md)
-        self.assertIn("| (i) Sevā | (A) Sacrifice |", md)
+        self.assertIn("| (A) Chacha | (1) Mother's sister |", md)
         # The stem is preserved above the table; the columns are no longer newline-stacked.
-        self.assertTrue(md.startswith("Match the following family values"))
-        self.assertNotIn("(i) Sevā\n(ii)", md)
+        self.assertTrue(md.startswith("Match the following and choose the correct option:"))
+        self.assertNotIn("(A) Chacha\n(B)", md)
 
     def test_idempotent_on_existing_table(self):
         from core.section_generator import _matching_to_markdown
-        once = _matching_to_markdown(self.STACKED)
+        once = self._table()
         self.assertEqual(_matching_to_markdown(once), once)
 
-    def test_repair_retags_and_reformats(self):
+    def test_table_labels_read_back(self):
+        from core.section_generator import _match_table_labels
+        left, right = _match_table_labels(self._table())
+        self.assertEqual(left, ["A", "B", "C", "D"])
+        self.assertEqual(right, ["1", "2", "3", "4"])
+
+    def test_table_labels_ignore_header_and_separator(self):
+        from core.section_generator import _match_table_labels
+        left, _ = _match_table_labels(
+            "| Column I | Column II |\n| --- | --- |\n| (A) x | (1) y |\n| (B) p | (2) q |")
+        self.assertEqual(left, ["A", "B"])
+
+    def test_table_labels_dont_mistake_an_abbreviation_for_a_label(self):
+        # An unlabelled cell must stay unlabelled — "Dr." / "The" are not column labels.
+        from core.section_generator import _match_cell_label
+        self.assertIsNone(_match_cell_label("Dr. B. R. Ambedkar"))
+        self.assertIsNone(_match_cell_label("The capital of India"))
+        self.assertIsNone(_match_cell_label("a small village in Bengal"))
+        self.assertEqual(_match_cell_label("(A) Chacha"), "A")
+        self.assertEqual(_match_cell_label("2. Father's sister"), "2")
+        self.assertEqual(_match_cell_label("B  Statue of Liberty"), "B")
+
+    def test_repair_retags_a_table_the_model_left_as_standard(self):
+        # The model laid out the table correctly but forgot subtype="matching"; without the
+        # retag the question would be validated as a plain VSA and ship with no options.
         from core.section_generator import _repair_section_data
         data = {"questions": [{
-            "qnum": 6, "type": "VSA", "subtype": "standard", "text": self.STACKED,
-            "answer_explanation": "(i)-B, (ii)-C, (iii)-A", "marks": 1.0, "options": {},
+            "qnum": 6, "type": "VSA", "subtype": "standard", "text": self._table(),
+            "answer_explanation": self.KEY, "marks": 1.0, "options": {},
         }]}
         _repair_section_data(data)
         q = data["questions"][0]
-        self.assertEqual(q["subtype"], "matching")          # type now identifies a match question
+        self.assertEqual(q["subtype"], "matching")
+        self.assertEqual(sorted(q["options"]), ["a", "b", "c", "d"])
+
+    def test_parse_match_key_accepts_the_usual_notations(self):
+        from core.section_generator import _parse_match_key
+        self.assertEqual(_parse_match_key("A-2, B-4, C-1, D-3"),
+                         {"A": "2", "B": "4", "C": "1", "D": "3"})
+        self.assertEqual(_parse_match_key("A → 2; B: 4"), {"A": "2", "B": "4"})
+        self.assertEqual(_parse_match_key("(i)-B, (ii)-C"), {"I": "B", "II": "C"})
+
+    def test_repair_retags_reformats_and_builds_four_options(self):
+        from core.section_generator import _repair_section_data, _parse_match_key
+        data = {"questions": [{
+            "qnum": 6, "type": "VSA", "subtype": "standard", "text": self.STACKED,
+            "answer_explanation": self.KEY, "marks": 1.0, "options": {},
+        }]}
+        _repair_section_data(data)
+        q = data["questions"][0]
+        self.assertEqual(q["subtype"], "matching")           # type now identifies a match question
         self.assertIn("| Column I | Column II |", q["text"])  # columns are a table → side by side
+        # Four distinct complete pairings, and 'answer' points at the one holding the key.
+        self.assertEqual(sorted(q["options"]), ["a", "b", "c", "d"])
+        self.assertEqual(len({v for v in q["options"].values()}), 4)
+        for v in q["options"].values():
+            self.assertEqual(sorted(_parse_match_key(v)), ["A", "B", "C", "D"])
+        self.assertIn(q["answer"], ("a", "b", "c", "d"))
+        self.assertEqual(_parse_match_key(q["options"][q["answer"]]),
+                         _parse_match_key(self.KEY))
+
+    def test_repair_is_deterministic(self):
+        from core.section_generator import _repair_section_data
+        def _built():
+            data = {"questions": [{
+                "qnum": 6, "type": "VSA", "subtype": "matching", "text": self.STACKED,
+                "answer_explanation": self.KEY, "marks": 1.0, "options": {},
+            }]}
+            _repair_section_data(data)
+            return data["questions"][0]["options"], data["questions"][0]["answer"]
+        self.assertEqual(_built(), _built())
+
+    def test_repair_fixes_a_mispointed_answer_letter(self):
+        from core.section_generator import _repair_section_data
+        data = {"questions": [{
+            "qnum": 3, "type": "VSA", "subtype": "matching", "text": self.STACKED,
+            "answer_explanation": self.KEY, "marks": 1.0, "answer": "a",
+            "options": {"a": "A-1, B-2, C-3, D-4", "b": self.KEY,
+                        "c": "A-3, B-1, C-4, D-2", "d": "A-4, B-3, C-2, D-1"},
+        }]}
+        _repair_section_data(data)
+        q = data["questions"][0]
+        self.assertEqual(q["answer"], "b")                  # the option that holds the key
+        self.assertEqual(q["options"]["a"], "A-1, B-2, C-3, D-4")   # model's own options kept
+
+    def test_repair_leaves_options_alone_without_a_usable_key(self):
+        # Prose instead of a pairing → nothing to build from; validation asks for the retry.
+        from core.section_generator import _repair_section_data
+        data = {"questions": [{
+            "qnum": 6, "type": "VSA", "subtype": "matching", "text": self.STACKED,
+            "answer_explanation": "Chacha is the father's younger brother.",
+            "marks": 1.0, "options": {},
+        }]}
+        _repair_section_data(data)
+        self.assertEqual(data["questions"][0]["options"], {})
 
     def test_render_detects_the_table(self):
         # The rewritten body must be recognised by the DOCX table splitter so it renders
         # as a real two-column Word table rather than stacked pipe text.
-        from core.section_generator import _matching_to_markdown
         from core.generator import _md_table_segments
-        segs = _md_table_segments(_matching_to_markdown(self.STACKED))
+        segs = _md_table_segments(self._table())
         self.assertIsNotNone(segs)
         self.assertTrue(any(kind == "table" for kind, _ in segs))
+
+    def test_options_survive_the_renderer(self):
+        # process_question must print the pairing choices as an option block — a match
+        # question with no printed options is unanswerable.
+        from core.generator import process_question
+        out = []
+        process_question(out, {
+            "qnum": 6, "type": "VSA", "subtype": "matching", "text": self._table(),
+            "options": {"a": "A-1, B-2, C-3, D-4", "b": self.KEY,
+                        "c": "A-3, B-1, C-4, D-2", "d": "A-4, B-3, C-2, D-1"},
+            "answer": "b", "answer_explanation": self.KEY, "marks": 1.0,
+        }, 6)
+        blocks = [payload for kind, payload in out if kind == "opts_block"]
+        self.assertTrue(blocks, out)
+        self.assertEqual(len(blocks[0]), 4)
+        self.assertIn("(b) A-2, B-4, C-1, D-3", blocks[0])
 
     def test_non_matching_vsa_untouched(self):
         from core.section_generator import _repair_section_data
@@ -1264,6 +1384,86 @@ class MatchingQuestionTest(SimpleTestCase):
         q = data["questions"][0]
         self.assertEqual(q["subtype"], "standard")
         self.assertNotIn("|", q["text"])
+
+
+class MatchingValidationTest(SimpleTestCase):
+    """A match question must ship 4+ pairs and 4 complete pairing choices — a 3-pair match
+    or a bare table with no options is rejected so the section regenerates."""
+
+    def _wo(self):
+        from core import section_generator as sg
+        return sg.SectionWorkOrder(
+            section_name="Section A", section_id="A", title="Objective", marks=1,
+            questions_count=1, marks_per_question=1.0, question_types=[
+                {"type": "VSA", "count": 1, "marks_each": 1.0}],
+            instructions=[], constraints={}, context_text="ctx", difficulty="medium",
+            subject="Social Science", class_name="10", chapters=["Nationalism in Europe"],
+            slots=[{"qnum": 1, "type": "matching", "marks": 1.0}])
+
+    def _q(self, pairs=4, **over):
+        rows = [f"| ({chr(64 + i)}) Column-I entry {i} | ({i}) match {i} |"
+                for i in range(1, pairs + 1)]
+        labels = [chr(64 + i) for i in range(1, pairs + 1)]
+        def _key(vals):
+            return ", ".join(f"{l}-{v}" for l, v in zip(labels, vals))
+        vals = list(range(1, pairs + 1))
+        q = {
+            "qnum": 1, "type": "VSA", "subtype": "matching", "marks": 1.0,
+            "text": "Match the following and choose the correct option:\n"
+                    "| Column I | Column II |\n| --- | --- |\n" + "\n".join(rows),
+            "options": {"a": _key(vals),
+                        "b": _key(vals[1:] + vals[:1]),
+                        "c": _key(vals[::-1]),
+                        "d": _key(vals[2:] + vals[:2])},
+            "answer": "a", "answer_explanation": _key(vals),
+            "competency_type": "recall",
+        }
+        q.update(over)
+        return q
+
+    def _errs(self, q):
+        from core import section_generator as sg
+        return [e for e in sg.validate_section_output({"questions": [q]}, self._wo())
+                if "VSA/matching" in e]
+
+    def test_well_formed_four_pair_match_passes(self):
+        self.assertEqual(self._errs(self._q()), [])
+
+    def test_three_pairs_rejected(self):
+        errs = self._errs(self._q(pairs=3))
+        self.assertTrue(any("AT LEAST 4 pairs" in e for e in errs), errs)
+
+    def test_missing_options_rejected(self):
+        errs = self._errs(self._q(options={}))
+        self.assertTrue(any("EXACTLY 4 options" in e for e in errs), errs)
+
+    def test_partial_pairing_option_rejected(self):
+        q = self._q()
+        q["options"]["c"] = "A-2, B-1"          # only two of the four Column I entries
+        errs = self._errs(q)
+        self.assertTrue(any("do not pair EVERY Column I entry" in e for e in errs), errs)
+
+    def test_duplicate_pairings_rejected(self):
+        q = self._q()
+        q["options"]["d"] = q["options"]["b"]
+        errs = self._errs(q)
+        self.assertTrue(any("4 DIFFERENT pairings" in e for e in errs), errs)
+
+    def test_missing_answer_letter_rejected(self):
+        errs = self._errs(self._q(answer=""))
+        self.assertTrue(any("'answer' must be the correct option letter" in e for e in errs), errs)
+
+    def test_stacked_lists_instead_of_a_table_rejected(self):
+        errs = self._errs(self._q(text=MatchingQuestionTest.STACKED))
+        self.assertTrue(any("two-column Markdown table" in e for e in errs), errs)
+
+    def test_prompt_demands_four_pairs_and_four_options(self):
+        from core import section_generator as sg
+        prompt = sg.build_section_prompt(self._wo())
+        self.assertIn("MATCH THE FOLLOWING", prompt)
+        self.assertIn("EXACTLY 4 pairs", prompt)
+        self.assertIn("A-3, B-1, C-4, D-2", prompt)          # option format shown
+        self.assertIn('"subtype": "matching"', prompt)        # JSON example present
 
 
 class MaterialIntelTest(TestCase):

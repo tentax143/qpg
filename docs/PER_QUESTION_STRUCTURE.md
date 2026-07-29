@@ -98,7 +98,8 @@ pollute the type field. Mapping to the existing `_type_category` categories
 |--------------------------------------------------------------------------------|----------|----------------------------------|
 | `mcq`                                                                           | mcq      | options a–d + answer              |
 | `ar` (assertion-reason)                                                         | mcq (fine: ar) | AR statement pair + options |
-| `fill_blank`, `true_false`, `matching`, `one_word`, `error_correction`, `rewrite`, `punctuation` | vsa | text + answer_explanation |
+| `fill_blank`, `true_false`, `one_word`, `error_correction`, `rewrite`, `punctuation` | vsa | text + answer_explanation |
+| `matching`                                                                      | vsa (subtype `matching`) | 2-column table of ≥4 pairs + options a–d (complete pairings) + answer + answer_explanation |
 | `vsa`                                                                           | vsa      | text + answer_explanation         |
 | `sa`                                                                            | sa       | text + answer_explanation         |
 | `la`                                                                            | la       | text + answer_explanation (+ or_alternative only when slot says internal) |
@@ -278,6 +279,19 @@ printed-vs-storage qnum divergence) for slot papers.
 - Extraction prompt: letter ranges ("Q21 A TO E … MCQ 2 and 3 short") MUST be
   captured as `parts`; with `choice: "internal"` the same parts describe each
   OR alternative (two passages, each with its own sub-questions).
+- `matching` slots are answered like an MCQ, not written out. The question is a
+  stem ("Match the following and choose the correct option:") + a two-column
+  Markdown table of **at least `_MATCH_MIN_PAIRS` (4)** pairs — Column I
+  labelled `(A)…(D)`, Column II labelled `(1)…(4)` and scrambled — plus four
+  a/b/c/d options, each a COMPLETE pairing (`"A-3, B-1, C-4, D-2"`), an `answer`
+  letter, and the correct pairing in `answer_explanation`. Four pairs is the
+  floor because three pairs cannot carry four distinct pairing choices.
+  Demanded in the prompt (matching slot line + a matching JSON example in
+  `_output_schema`), repaired deterministically by `_repair_matching_options`
+  (the key in `answer_explanation` makes the whole option set derivable, so a
+  bare table costs no retry; a mis-pointed `answer` letter is also corrected),
+  and enforced by `_validate_matching`. Column II is scrambled, so table row
+  order is display order only — never the pairing.
 
 ## Out of scope (later)
 

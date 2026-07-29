@@ -302,6 +302,14 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
     is_map  = wo.is_map_work
     needs_img = _needs_image(wo)
     mpq = wo.marks_per_question
+    # Match questions generate under the VSA type, so the plain VSA example above would tell
+    # the model to omit 'options' — and a match question needs the 4 pairing choices it is
+    # answered with. Detected from the slots (the authored type survives there; the derived
+    # question_types entry is just "VSA") so a matching slot always gets its own example.
+    has_matching = any(
+        isinstance(s, dict) and str(s.get("type") or "").strip().lower() == "matching"
+        for s in (wo.slots or [])
+    ) or any("match" in _type_str(t) for t in wo.question_types)
 
     # Helpers to get per-type marks from blueprint (falls back to section average)
     def _m(keyword: str, fallback: float = mpq) -> float:
@@ -309,6 +317,28 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             if keyword in _type_str(qt):
                 return _qt_marks(qt)
         return fallback
+
+    def _matching_example(qn: int) -> str:
+        """JSON example for one match question — a 4-pair table plus the 4 pairing options.
+        Column II is scrambled and the key sits on (c) so the example doesn't bias the
+        answer letter."""
+        return (
+            f'    {{\n'
+            f'      "qnum": {qn}, "type": "VSA", "subtype": "matching",\n'
+            f'      "text": "Match the following and choose the correct option:\\n'
+            f'| Column I | Column II |\\n| --- | --- |\\n'
+            f'| (A) First Column-I entry | (1) match for entry C |\\n'
+            f'| (B) Second Column-I entry | (2) match for entry D |\\n'
+            f'| (C) Third Column-I entry | (3) match for entry A |\\n'
+            f'| (D) Fourth Column-I entry | (4) match for entry B |",\n'
+            f'      "options": {{"a": "A-1, B-2, C-3, D-4", "b": "A-3, B-1, C-4, D-2", '
+            f'"c": "A-3, B-4, C-1, D-2", "d": "A-4, B-3, C-2, D-1"}},\n'
+            f'      "answer": "c",\n'
+            f'      "answer_explanation": "A-3, B-4, C-1, D-2",\n'
+            f'      "marks": {_m("match", _m("vsa", 1.0))}, "chapter_tag": "Chapter name", '
+            f'"competency_type": "recall"\n'
+            f'    }}'
+        )
 
     # ── Pure map-work section ─────────────────────────────────────────────────────
     if is_map and not has_cbq and not has_mcq:
@@ -354,7 +384,8 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
     # ── Mixed / compound section — show an example for EVERY type present ────────
     # This is the most important branch: sections like A (MCQ+VSA+SA+LA+CBQ+Map) must
     # see concrete schema examples for all their types, or the LLM invents wrong types.
-    is_mixed = sum([has_mcq or has_ar, has_cbq, has_la, has_sa, has_vsa, has_map_type]) > 1
+    is_mixed = sum([has_mcq or has_ar, has_cbq, has_la, has_sa, has_vsa, has_map_type,
+                    has_matching]) > 1
     if is_mixed or has_cbq or has_passage:
         examples = []
         qnum = 1
@@ -402,6 +433,10 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
                 f'      "marks": {vsa_m}, "chapter_tag": "Chapter name", "competency_type": "recall"\n'
                 f'    }}'
             )
+            qnum += 1
+
+        if has_matching:
+            examples.append(_matching_example(qnum))
             qnum += 1
 
         if has_sa:
@@ -546,6 +581,22 @@ def _output_schema(wo: SectionWorkOrder, image_vision: dict | None = None) -> st
             '    }\n'
             '  ]\n'
             '}'
+        )
+
+    # ── Pure match-the-following section ─────────────────────────────────────────
+    # Without this the SA/VSA fallback below would show an example with no 'options',
+    # and the match questions would ship without the 4 pairing choices.
+    if has_matching:
+        return (
+            '{\n'
+            f'  "section_id": "{wo.section_id}",\n'
+            f'  "section_name": "{wo.section_name}",\n'
+            '  "questions": [\n'
+            f'{_matching_example(1)}\n'
+            '  ]\n'
+            '}\n'
+            f'— EVERY match question needs at least {_MATCH_MIN_PAIRS} pairs, a SCRAMBLED '
+            'Column II, and 4 different complete pairings in "options".'
         )
 
     # ── Pure SA/VSA section (fallback) ───────────────────────────────────────────
@@ -974,11 +1025,18 @@ MATHEMATICAL NOTATION (strictly follow):
             line = f"  Question {pos}: {label} — {json_type}, marks={s.get('marks')}"
             if styp == "matching":
                 line += (
-                    ' | MATCH THE FOLLOWING: lay the two columns in "text" as a Markdown table, '
-                    'NOT as newline-stacked lists — a header row "| Column I | Column II |", a '
-                    'separator "| --- | --- |", then one pair per row like "| (i) … | (A) … |". '
-                    'Scramble the right column so the pairing is not already in order, and give '
-                    'the correct key (e.g. "(i)-B, (ii)-C, (iii)-A") in "answer_explanation"'
+                    f' | MATCH THE FOLLOWING — EXACTLY {_MATCH_MIN_PAIRS} pairs, never fewer: '
+                    '"text" is the stem "Match the following and choose the correct option:" '
+                    'followed by the two columns as a Markdown table, NOT newline-stacked lists '
+                    '— a header row "| Column I | Column II |", a separator "| --- | --- |", then '
+                    'one pair per row like "| (A) item | (3) its match |", Column I labelled '
+                    f'(A)…({chr(64 + _MATCH_MIN_PAIRS)}) and Column II labelled '
+                    f'(1)…({_MATCH_MIN_PAIRS}) and SCRAMBLED so the pairing is not already in '
+                    'order. This question is ANSWERED LIKE AN MCQ: "options" MUST be 4 DIFFERENT '
+                    'complete pairings — {"a": "A-3, B-1, C-4, D-2", "b": "A-1, B-3, C-4, D-2", '
+                    '"c": "A-3, B-4, C-1, D-2", "d": "A-2, B-4, C-1, D-3"} — with "answer" the '
+                    'letter of the correct one and the same correct pairing in '
+                    '"answer_explanation"'
                 )
             if s.get("topic"):
                 line += f" | TOPIC: {s['topic']}"
@@ -1294,6 +1352,73 @@ def _validate_mcq_options(q: dict, n: int, label: str) -> list:
     return errs
 
 
+def _validate_matching(q: dict, n: int) -> list:
+    """Match-the-following contract: a two-column table of at least _MATCH_MIN_PAIRS pairs,
+    the 4 pairing options the question is answered with, a valid answer letter, and the
+    correct pairing in 'answer_explanation'.
+
+    Four pairs is the CBSE norm and the floor here — a 3-pair match cannot carry four
+    distinct pairing choices, so it is not answerable as a 4-option question.
+    """
+    errs = []
+    label = "VSA/matching"
+    left, right = _match_table_labels(q.get("text", ""))
+    if min(len(left), len(right)) < _MATCH_MIN_PAIRS:
+        errs.append(
+            f"Q{n} [{label}]: needs a two-column Markdown table of AT LEAST "
+            f"{_MATCH_MIN_PAIRS} pairs — a header '| Column I | Column II |', a separator "
+            "'| --- | --- |', then one pair per row like '| (A) item | (3) its match |' "
+            f"(found {len(left)} labelled Column I / {len(right)} labelled Column II rows)."
+        )
+    elif len(left) != len(right):
+        errs.append(
+            f"Q{n} [{label}]: Column I has {len(left)} labelled entries but Column II has "
+            f"{len(right)} — every table row must carry a label in BOTH columns."
+        )
+
+    raw = q.get("options")
+    if isinstance(raw, dict):
+        vals = {str(k).lower().strip(): str(v).strip() for k, v in raw.items()}
+    elif isinstance(raw, list):
+        vals = {"abcd"[i]: str(v).strip() for i, v in enumerate(raw) if i < 4}
+    else:
+        vals = {}
+    filled = {k: v for k, v in vals.items() if v}
+    if len(vals) != 4 or set(filled) != {"a", "b", "c", "d"}:
+        errs.append(
+            f"Q{n} [{label}]: must offer EXACTLY 4 options a/b/c/d, each a COMPLETE pairing "
+            f'like "A-3, B-1, C-4, D-2" (found {len(filled)} non-empty of {len(vals)}).'
+        )
+    elif left:
+        want = sorted(left)
+        keys = {k: _parse_match_key(v) for k, v in sorted(filled.items())}
+        bad = [k for k, m in keys.items() if sorted(m) != want]
+        if bad:
+            errs.append(
+                f"Q{n} [{label}]: option(s) {', '.join(bad)} do not pair EVERY Column I "
+                f"entry ({', '.join(want)}) — each option must read like "
+                '"A-3, B-1, C-4, D-2".'
+            )
+        elif len({tuple(sorted(m.items())) for m in keys.values()}) != 4:
+            errs.append(
+                f"Q{n} [{label}]: the 4 options must be 4 DIFFERENT pairings — "
+                "duplicated choices leave more than one correct answer."
+            )
+
+    ans = str(q.get("answer", "")).lower().strip()
+    if ans not in {"a", "b", "c", "d"}:
+        errs.append(
+            f"Q{n} [{label}]: 'answer' must be the correct option letter a/b/c/d "
+            f"(got {ans!r})."
+        )
+    if not str(q.get("answer_explanation", "")).strip():
+        errs.append(
+            f"Q{n} [{label}]: missing 'answer_explanation' — state the correct pairing "
+            '("A-3, B-1, C-4, D-2").'
+        )
+    return errs
+
+
 def _norm_text(t: str) -> str:
     """Bare lowercase words — whitespace/punctuation-insensitive comparison form."""
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", str(t or "").lower())).strip()
@@ -1490,7 +1615,18 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
     )
     is_ar_type = "assertion" in type_lower or subtype == "assertion_reason" or looks_like_ar
 
-    if is_mcq or is_ar_type:
+    # ── Match the following ───────────────────────────────────────────────────────
+    # Checked before the type branches: a match question generates under the VSA
+    # category but is answered like an MCQ (4 pairing choices + an answer letter), so
+    # neither the plain-VSA nor the MCQ contract describes it.
+    is_matching = subtype == "matching" or (
+        slot is not None and str(slot.get("type") or "").strip().lower() == "matching"
+    )
+
+    if is_matching:
+        errors.extend(_validate_matching(q, n))
+
+    elif is_mcq or is_ar_type:
         if is_ar_type:
             # Full Assertion + Reason text required
             has_a = ("Assertion (A):" in text or "Assertion:" in text or
@@ -2948,27 +3084,151 @@ def generate_la_cbq_individually(wo: SectionWorkOrder) -> tuple[dict, int, int]:
 # ── Match-the-following normalisation ────────────────────────────────────────
 # The pattern slot type "matching" collapses to the VSA category, so a generated
 # match question arrives as type=VSA / subtype=standard with its two columns stacked
-# by newlines ("(i) …\n(ii) …\n(A) …\n(B) …"). _is_matching_question detects such a
+# by newlines ("(A) …\n(B) …\n(1) …\n(2) …"). _is_matching_question detects such a
 # question and _matching_to_markdown rewrites the body into a two-column Markdown
 # table — render_docx already turns a pipe table into a real side-by-side Word table.
-_MATCH_LEFT_RE = re.compile(r'^\(\s*([ivxl]+)\s*\)\s*(.+)$')   # (i) (ii) (iii) …
-_MATCH_RIGHT_RE = re.compile(r'^\(\s*([A-Z])\s*\)\s*(.+)$')    # (A) (B) (C) …
+#
+# A match question is ANSWERED by choosing a pairing, so it also carries the same four
+# a/b/c/d options an MCQ does ("A-3, B-1, C-4, D-2"). That is why Column I is lettered
+# (A)…(D) and Column II numbered (1)…(4): the option strings are written against those
+# labels. _MATCH_MIN_PAIRS pairs are required — three pairs cannot carry four distinct
+# pairing choices, so a 3-row match is not answerable as a 4-option question.
+_MATCH_MIN_PAIRS = 4
+
+_MATCH_ROMAN_RE = re.compile(r'^\(\s*([ivxl]+)\s*\)\s*(.+)$')    # (i) (ii) (iii) …
+_MATCH_ALPHA_RE = re.compile(r'^\(\s*([A-Z])\s*\)\s*(.+)$')      # (A) (B) (C) …
+_MATCH_NUM_RE = re.compile(r'^\(\s*(\d{1,2})\s*\)\s*(.+)$')      # (1) (2) (3) …
+
+# A column label is a single letter, a roman numeral, or a 1-2 digit number — deliberately
+# NOT "any 1-3 letters", which would read "Dr. Ambedkar" as label "DR" and "The capital of
+# India" as label "THE".
+_MATCH_LABEL = r'[A-Za-z]|[ivxIVX]{2,3}|\d{1,2}'
+
+# One cell of a match table: "(A) Chacha" / "A. Chacha" / "3) Mother's sister".
+_MATCH_CELL_RE = re.compile(rf'^\(?\s*({_MATCH_LABEL})\s*[).\]:]\s*(.+)$')
+# Same, with the label separated by whitespace alone ("A  Frederic Sorrieu"). Upper-case and
+# digits only — a lower-case bare label is not a format anyone writes, and allowing it would
+# read an ordinary cell ("a small village in Bengal") as label "A".
+_MATCH_CELL_BARE_RE = re.compile(r'^([A-D]|[1-9]|[IVX]{1,3})\s+(\S.*)$')
+
+# One "left-right" pair inside a pairing string — "A-3", "(i)-B", "A → 3", "C: 1".
+_MATCH_KEY_PAIR_RE = re.compile(
+    rf'\(?\s*({_MATCH_LABEL})\s*\)?\s*(?:-{{1,2}}>?|–|—|→|:|=)\s*\(?\s*({_MATCH_LABEL})\s*\)?'
+)
+
+
+def _is_match_label_line(line: str) -> bool:
+    """True when a stacked-match line opens with any recognised column label."""
+    return any(rx.match(line) for rx in (_MATCH_ROMAN_RE, _MATCH_ALPHA_RE, _MATCH_NUM_RE))
 
 
 def _split_match_columns(text: str):
-    """Parse a stacked match body into (left, right) lists of (label, value) by label
-    style: lowercase-roman "(i)" → left column, uppercase-letter "(A)" → right column."""
-    left, right = [], []
+    """Parse a stacked match body into (left, right) lists of (label, value) by label style.
+
+    Two conventions are recognised: the current lettered/numbered form — Column I "(A)…(D)"
+    ↔ Column II "(1)…(4)", which the pairing options are written against — and the older
+    roman "(i)…" ↔ letter "(A)…" form still present in already-stored papers.
+    """
+    roman, alpha, num = [], [], []
     for raw in str(text or "").split("\n"):
         line = raw.strip()
-        ml = _MATCH_LEFT_RE.match(line)
-        if ml:
-            left.append((f"({ml.group(1)})", ml.group(2).strip()))
+        for rx, bucket in ((_MATCH_ROMAN_RE, roman), (_MATCH_ALPHA_RE, alpha),
+                           (_MATCH_NUM_RE, num)):
+            m = rx.match(line)
+            if m:
+                bucket.append((f"({m.group(1)})", m.group(2).strip()))
+                break
+    if num:
+        return (alpha or roman), num          # (A)…(D) ↔ (1)…(4)
+    return roman, alpha                       # legacy (i)… ↔ (A)…
+
+
+def _match_cell_label(cell: str):
+    """Label of one match-table cell ("(A) Chacha" → "A", "3. Mother's sister" → "3"), or
+    None when the cell carries no label (header and "---" separator rows)."""
+    s = str(cell or "").strip()
+    for rx in (_MATCH_CELL_RE, _MATCH_CELL_BARE_RE):
+        m = rx.match(s)
+        if m:
+            return m.group(1).upper()
+    return None
+
+
+def _match_table_labels(text: str):
+    """(left_labels, right_labels) in ROW order from a 2-column Markdown match table.
+
+    Row order is display order, not the answer — Column II is scrambled — so these are
+    used for the label SETS (how many pairs, which labels an option must cover), never
+    to derive the pairing itself.
+    """
+    left, right = [], []
+    for raw in str(text or "").split("\n"):
+        ln = raw.strip()
+        if not (ln.startswith("|") and ln.endswith("|")):
             continue
-        mr = _MATCH_RIGHT_RE.match(line)
-        if mr:
-            right.append((f"({mr.group(1)})", mr.group(2).strip()))
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        ll, rl = _match_cell_label(cells[0]), _match_cell_label(cells[1])
+        if ll and rl:
+            left.append(ll)
+            right.append(rl)
     return left, right
+
+
+def _parse_match_key(text: str) -> dict:
+    """{left_label: right_label} parsed from a pairing string like "A-3, B-1, C-4, D-2"
+    (also accepts "(i)-B", "A → 3", "C: 1"). Labels are upper-cased, brackets dropped."""
+    out = {}
+    for lft, rgt in _MATCH_KEY_PAIR_RE.findall(str(text or "")):
+        lbl, val = lft.strip().upper(), rgt.strip().upper()
+        if lbl and val and lbl not in out:
+            out[lbl] = val
+    return out
+
+
+def _format_match_key(labels, values) -> str:
+    """Render a pairing as the canonical option/key string "A-3, B-1, C-4, D-2"."""
+    return ", ".join(f"{lbl}-{val}" for lbl, val in zip(labels, values))
+
+
+def _match_option_set(labels, correct, seed: int = 0):
+    """Build the 4 pairing choices for a match question: the correct key plus 3 scrambles.
+
+    Deterministic (fixed transforms, no RNG) so a regenerated paper is reproducible, and
+    `seed` rotates which letter holds the key so several match questions in one section
+    don't all answer (a). Returns ({"a": …, …}, answer_letter), or (None, "") when the
+    pairing is too short to yield 3 distinct distractors.
+    """
+    base = list(correct)
+    n = len(base)
+    if n < 3 or len(labels) != n:
+        return None, ""
+
+    def _swap(i, j):
+        w = list(base)
+        w[i], w[j] = w[j], w[i]
+        return w
+
+    scrambles = []
+    for build in (lambda: _swap(0, 1),
+                  lambda: _swap(n - 2, n - 1),
+                  lambda: base[1:] + base[:1],
+                  lambda: base[2:] + base[:2],
+                  lambda: list(reversed(base))):
+        if len(scrambles) == 3:
+            break
+        w = build()
+        if w != base and w not in scrambles:
+            scrambles.append(w)
+    if len(scrambles) < 3:
+        return None, ""
+
+    idx = seed % 4
+    scrambles.insert(idx, base)
+    letters = ("a", "b", "c", "d")
+    return ({letters[i]: _format_match_key(labels, p) for i, p in enumerate(scrambles[:4])},
+            letters[idx])
 
 
 def _has_pipe_table(text: str) -> bool:
@@ -2989,7 +3249,12 @@ def _is_matching_question(q: dict) -> bool:
     if "match the" not in str(q.get("text", "")).lower():
         return False
     left, right = _split_match_columns(q.get("text", ""))
-    return len(left) >= 2 and len(right) >= 2
+    if len(left) >= 2 and len(right) >= 2:
+        return True
+    # Already laid out as a pipe table (labels sit inside cells, not at line start), which is
+    # what the prompt asks for — the model just forgot to set subtype="matching".
+    tbl_left, tbl_right = _match_table_labels(q.get("text", ""))
+    return len(tbl_left) >= 2 and len(tbl_right) >= 2
 
 
 def _matching_to_markdown(text: str) -> str:
@@ -3004,7 +3269,7 @@ def _matching_to_markdown(text: str) -> str:
     stem_lines = []
     for raw in text.split("\n"):
         s = raw.strip()
-        if _MATCH_LEFT_RE.match(s) or _MATCH_RIGHT_RE.match(s):
+        if _is_match_label_line(s):
             break
         stem_lines.append(raw)
     stem = "\n".join(stem_lines).strip()
@@ -3016,6 +3281,55 @@ def _matching_to_markdown(text: str) -> str:
         rows.append(f"| {lft} | {rgt} |")
     table = "\n".join(rows)
     return f"{stem}\n{table}" if stem else table
+
+
+def _repair_matching_options(q: dict) -> None:
+    """Give a match-the-following question the 4 pairing choices it is answered with.
+
+    A match question is answered by picking the correct pairing, so it needs the same four
+    a/b/c/d options an MCQ does. The correct pairing is already stated in
+    'answer_explanation', which makes the whole option set derivable — build it here rather
+    than spending a retry asking the model for something already determined. Also corrects
+    a mis-pointed 'answer' letter when the model wrote all four options itself.
+
+    Leaves the question untouched when no trustworthy key can be read; validation then asks
+    for the retry. Mutates q in place.
+    """
+    left, right = _match_table_labels(q.get("text", ""))
+    if len(left) < 2 or len(left) != len(right):
+        return
+
+    opts = q.get("options") if isinstance(q.get("options"), dict) else {}
+    opts = {str(k).lower().strip(): str(v).strip() for k, v in opts.items() if str(v).strip()}
+    # An option "counts" only if it pairs EVERY Column I label — a partial pairing
+    # ("A-3, B-1") is not an answerable choice.
+    full = {k: m for k, m in ((k, _parse_match_key(v)) for k, v in opts.items())
+            if sorted(m) == sorted(left)}
+
+    key = _parse_match_key(q.get("answer_explanation", ""))
+    correct = [key.get(lbl, "") for lbl in left]
+    # The key is trustworthy only when it pairs every Column I label with a distinct
+    # Column II label — i.e. it is a permutation of the printed right column.
+    key_ok = sorted(v for v in correct if v) == sorted(right)
+
+    if set(full) == {"a", "b", "c", "d"}:
+        if key_ok:
+            hit = [k for k, m in full.items() if [m.get(lbl) for lbl in left] == correct]
+            if len(hit) == 1 and str(q.get("answer", "")).lower().strip() != hit[0]:
+                q["answer"] = hit[0]
+                print(f"[Repair] Q{q.get('qnum','?')}: matching answer key → '{hit[0]}' "
+                      "(the option matching answer_explanation)")
+        return
+
+    if not key_ok:
+        return
+    built, letter = _match_option_set(left, correct, _as_int(q.get("qnum"), 1) - 1)
+    if built:
+        # answer_explanation is left as the model wrote it — it already states the pairing
+        # (that is what was just parsed) and may add teacher-facing reasoning worth keeping.
+        q["options"], q["answer"] = built, letter
+        print(f"[Repair] Q{q.get('qnum','?')}: built the 4 matching options from the "
+              f"pairing key (answer '{letter}')")
 
 
 def _repair_section_data(section_data: dict) -> dict:
@@ -3106,11 +3420,13 @@ def _repair_section_data(section_data: dict) -> dict:
         # "matching" slots collapse to the VSA category, so the model returns
         # type=VSA / subtype=standard with the two columns stacked by newlines. Retag
         # them (so the type identifies a match question) and rewrite the body into a
-        # 2-column Markdown table, which render_docx lays out side by side.
+        # 2-column Markdown table, which render_docx lays out side by side. Then fill in
+        # the four a/b/c/d pairing choices the question is answered with.
         if str(q.get("subtype", "")).strip().lower() in ("", "standard", "matching") \
                 and _is_matching_question(q):
             q["subtype"] = "matching"
             q["text"] = _matching_to_markdown(str(q.get("text", "")))
+            _repair_matching_options(q)
 
     return section_data
 
