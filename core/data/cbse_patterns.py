@@ -1269,6 +1269,31 @@ UNIT_MARKS_WEIGHTS = {
 }
 
 
+# Which CLASS each table above was compiled for (see the per-table comments). Every table is
+# ONE class's unit-marks distribution, so scoring another class's chapters against it is
+# meaningless — and not harmlessly so: Class 11's "Trigonometric Functions" matched Class 12's
+# "Inverse Trigonometric Functions" under the old two-way substring test and inherited its
+# weight of 8, while its genuine co-chapter "Linear Inequalities" (absent from the Class 12
+# table) fell back to 1. The 8:1 ratio handed one chapter 19 of 21 questions AND ~89% of the
+# retrieval budget on a two-chapter paper.
+#
+# A (subject, class) pair that is absent from this map means "no weightage data for that
+# class" → uniform weighting, which is the correct default for a unit test: the teacher chose
+# the chapters, so they get equal share unless CBSE says otherwise for THIS class.
+UNIT_MARKS_WEIGHT_CLASSES = {
+    "Physics": {"12"},
+    "Chemistry": {"12"},
+    "Mathematics": {"12"},
+    "Biology": {"12"},
+    "Economics": {"12"},
+    "Science": {"9", "10"},
+    "History": {"10"},
+    "Geography": {"10"},
+    "Political Science": {"10"},
+    "Economics Class 10": {"10"},
+}
+
+
 # --- SANSKRIT AADHAAR (322) — Class 11 & 12 ---
 PATTERNS["Sanskrit"] = {
     "code": "322", "classes": ["11", "12"],

@@ -3201,12 +3201,13 @@ def _openai_image_bytes(prompt: str, size: str, _requests) -> bytes:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set in environment")
     model_id = getattr(settings, 'OPENAI_IMAGE_MODEL', 'gpt-image-1')
-    resp = _requests.post(
-        "https://api.openai.com/v1/images/generations",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model_id, "prompt": prompt, "n": 1, "size": size},
-        timeout=180,
-    )
+    with mantle_client.external_call(f"openai-image:{model_id}", f"size={size}"):
+        resp = _requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model_id, "prompt": prompt, "n": 1, "size": size},
+            timeout=180,
+        )
     if not resp.ok:
         raise RuntimeError(f"OpenAI image HTTP {resp.status_code}: {resp.text[:300]}")
     data = resp.json().get("data") or []
@@ -3223,12 +3224,13 @@ def _together_image_bytes(prompt: str, width: int, height: int, _requests) -> by
     if not key:
         raise RuntimeError("TOGETHER_API_KEY not set in environment")
     model_id = getattr(settings, 'TOGETHER_IMAGE_MODEL', 'google/flash-image-2.5')
-    resp = _requests.post(
-        "https://api.together.ai/v1/images/generations",
-        headers={"Authorization": f"Bearer {key}"},
-        json={"model": model_id, "prompt": prompt, "n": 1, "width": width, "height": height},
-        timeout=120,
-    )
+    with mantle_client.external_call(f"together-image:{model_id}", f"{width}x{height}"):
+        resp = _requests.post(
+            "https://api.together.ai/v1/images/generations",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model_id, "prompt": prompt, "n": 1, "width": width, "height": height},
+            timeout=120,
+        )
     if not resp.ok:
         raise RuntimeError(f"Together AI HTTP {resp.status_code}: {resp.text[:300]}")
     data = resp.json().get("data") or []
@@ -3247,8 +3249,9 @@ def _pollinations_image_bytes(prompt: str, _requests) -> bytes:
     pk = os.environ.get("POLLINATIONS_API_KEY", "").strip()
     if pk:
         params["token"] = pk
-    resp = _requests.get(url, params=params, timeout=120)
-    resp.raise_for_status()
+    with mantle_client.external_call("pollinations", "1024x1024"):
+        resp = _requests.get(url, params=params, timeout=120)
+        resp.raise_for_status()
     return resp.content
 
 
@@ -3913,13 +3916,45 @@ Example with extract:
 
     # Language papers (Hindi/Tamil/Sanskrit) must be written in that language/script even on
     # this single-prompt fallback path.
-    from .section_generator import _language_directive
+    from .section_generator import _language_directive, _is_english_subject
     language_block = _language_directive(subject)
+
+    # English grammar and creative writing are composed from the model's own knowledge — the
+    # context material is off-limits for both. The per-section pipeline enforces this by
+    # withholding retrieval from those sections outright; this single-prompt fallback shares one
+    # context for the whole paper, so it can only be stated as a rule. See
+    # section_generator.english_own_slot_kinds.
+    english_grammar_block = ""
+    if _is_english_subject(subject):
+        english_grammar_block = """
+ENGLISH GRAMMAR — ABSOLUTE RULE:
+Every grammar question (gap filling, editing/omission, reordering, tenses, voice, narration,
+articles, prepositions, determiners, modals, subject-verb agreement, clauses and phrases,
+sentence transformation, punctuation, parts of speech) MUST be composed ENTIRELY from your own
+knowledge of English grammar. Take NOTHING from the CONTEXT MATERIAL for a grammar question —
+not a sentence, phrase, wording, name, character, place, chapter title or storyline. Write your
+own example sentences about everyday situations and set their "chapter_tag" to "Grammar".
+
+CREATIVE WRITING — ABSOLUTE RULE:
+Every writing task (article, formal/informal letter, letter to the editor, notice, classified or
+display advertisement, poster, speech, debate, report, story, diary entry, email, invitation,
+analytical or descriptive paragraph, précis, note-making) MUST set a SELF-CONTAINED, real-world
+brief composed ENTIRELY from your own knowledge. Do NOT base the task on, quote, summarise or
+even MENTION a textbook chapter, story, poem, poet, author or character, and never open with
+"After reading ...", "Based on your reading of ..." or "Inspired by the poem ...". The student
+must be able to write the answer without having read any textbook. Use everyday situations from
+school life, the neighbourhood, the environment, health, technology, sport or current affairs,
+and where a question offers an internal choice BOTH options must be independent briefs of this
+kind. Set their "chapter_tag" to "Writing".
+
+The context material is for the reading and literature sections only.
+"""
 
     prompt = f"""You are an expert question paper generator for CBSE {class_name} {subject} examinations.
 {language_block}
 CONTEXT MATERIAL:
 {combined_context}
+{english_grammar_block}
 
 EXAMINATION SPECIFICATIONS:
 - Class: {class_name}

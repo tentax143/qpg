@@ -257,6 +257,56 @@ printed-vs-storage qnum divergence) for slot papers.
   general skip pgvector retrieval entirely (`_slots_all_general` in
   `get_section_context_map` + context blanked on the work order), and STRICT
   RULE 5 flips to "compose from your own knowledge".
+- **English grammar and creative writing are always own-knowledge only** — no
+  grammar question and no composition task on an English paper may use ANY of the
+  retrieved reference material. Two live leaks, one mechanism:
+  - NCERT English readers carry no grammar LESSONS, so `identify_grammar_chapters`
+    found nothing to route a grammar section to and it retrieved prose instead:
+    "gap filling" and "editing" questions came back built out of story sentences,
+    tagged to literature chapters.
+  - A Creative Writing section opened BOTH options of its internal choice with
+    *"After reading 'The Laburnum Top', you are inspired by the theme of nature's
+    vitality. Write an article …"* — a composition brief hung off a retrieved poem.
+    An article, letter, notice or advertisement must stand on its own real-world
+    brief; the student has to be able to answer it without having read any textbook.
+
+  `english_own_scope` decides per section and returns `(kinds, own_only,
+  slot_kinds)`, where `kinds ⊆ ("grammar", "writing")` and `slot_kinds` is
+  `{index: kind}`. A slot counts as **grammar** when its `type` is
+  `error_correction`/`punctuation`/`rewrite` or its `topic`/`format`/`condition`
+  names a grammar skill; as **writing** when its `type` is `writing` or its wording
+  names a composition form. Every slot of a grammar- or writing-NAMED section
+  counts — `_english_own_section_kind` matches "Creative Writing Skills", "Writing
+  Skills", "Composition", "Writing and Grammar", …
+
+  Literature wording (`chapter`, `poem`, `extract`, …) exempts a slot **unless it
+  also names a composition form** — "story writing" is a writing task, not a story
+  question, because an explicit form is the stronger signal. `cbq`/`extract` slots
+  never count, so a hybrid "Literature and Grammar" section keeps the material its
+  literature questions need. Grammar vs writing only decides which prompt rule is
+  stated (both get identical treatment), so that boundary is low-stakes; the one
+  that matters is own-knowledge vs literature.
+
+  Enforcement is three layers deep:
+  1. own-knowledge slots are forced to `source: "general"`, so the machinery above
+     applies verbatim (slot prompt line, chapter-assignment exemption,
+     chapter-name validator — now word-bounded, and it reads `or_alternative` too,
+     which is what catches a leak hiding in the second option of a choice);
+  2. an ALL-own-knowledge section is denied retrieval outright
+     (`get_section_context_map` skips it, `context_text`/`context_by_type` blanked
+     on the work order, no chapter assignment and no chapter list in the prompt)
+     and its prompt carries an explicit `ENGLISH GRAMMAR — ABSOLUTE RULE` and/or
+     `CREATIVE WRITING — ABSOLUTE RULE` block. The writing rule bans "After
+     reading …" / "Based on your reading of …" openers by name and requires BOTH
+     options of an internal choice to be independent briefs;
+  3. `_lifted_span` rejects a question that still copies an 8-word run of the
+     material — the only case layer 2 cannot cover, since a MIXED section keeps its
+     context for the literature slots. Instruction boilerplate shared with a
+     textbook exercise page is excluded by a content-word floor.
+
+  Non-English papers are untouched: Tamil/Hindi/Sanskrit grammar keeps its
+  existing grammar-LESSON routing (`identify_grammar_chapters`) and its context.
+  The single-prompt fallback in `generator.py` states both rules.
 - Internal-choice extract/CBQ slots: `or_alternative` must be a full OBJECT
   (own `source_text`, `text`, `sub_questions` matching the first option's
   count/marks) — demanded in the prompt (slot line + or_rule) and enforced in

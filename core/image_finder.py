@@ -61,60 +61,27 @@ _DIAGRAM_STYLE_PREFIX = (
 )
 
 
-# ─── Mantle key rotation (direct HTTP for vision — mantle_client.converse has no image support) ─
+def _vision_call(prompt: str, image_bytes: bytes, mime: str, max_tokens: int = 700,
+                 stage: str = "vision") -> str:
+    """Mantle Kimi vision call. Returns model text, or "" when it could not be made.
 
-_key_idx = 0
+    Delegates to mantle_client.converse_vision so image traffic shares the text path's key
+    rotation, 401 failover, [Mantle] START/OK/FAIL logging and token counters. This used to be
+    direct HTTP with its own unsynchronised `_key_idx` cursor: two parallel sections could draw
+    the SAME key, a dead key failed the call outright instead of trying its sibling, and success
+    was never logged — so a paper's vision calls were invisible and missing from every total.
 
-def _next_mantle_key() -> str:
-    global _key_idx
-    keys_csv = os.environ.get("MANTLE_API_KEYS", "")
-    keys = [k.strip() for k in keys_csv.split(",") if k.strip()] if keys_csv else []
-    if not keys:
-        for var in ("LLM_API_1_MANTLE_KEY", "LLM_API_2_MANTLE_KEY"):
-            v = os.environ.get(var, "").strip()
-            if v:
-                keys.append(v)
-    if not keys:
-        raise RuntimeError("No Mantle API keys found")
-    key = keys[_key_idx % len(keys)]
-    _key_idx += 1
-    return key
-
-
-def _vision_call(prompt: str, image_bytes: bytes, mime: str, max_tokens: int = 700) -> str:
-    """Direct HTTP to Mantle Kimi K2.5 with a base64-encoded image. Returns model text."""
-    b64      = base64.b64encode(image_bytes).decode()
-    data_uri = f"data:{mime};base64,{b64}"
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": data_uri}},
-        ],
-    }]
-    url = f"{_MANTLE_BASE}/chat/completions"
-    for attempt in range(3):
-        try:
-            resp = requests.post(
-                url,
-                headers={"Authorization": f"Bearer {_next_mantle_key()}",
-                         "Content-Type": "application/json"},
-                json={"model": VISION_MODEL, "messages": messages,
-                      "max_tokens": max_tokens, "temperature": 0.1},
-                timeout=90,
-            )
-            if not resp.ok:
-                logger.warning("[ImageFinder] Kimi %s: %s", resp.status_code, resp.text[:200])
-            resp.raise_for_status()
-            choice = resp.json()["choices"][0]["message"]
-            return (choice.get("content") or choice.get("reasoning_content") or "").strip()
-        except Exception as exc:
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-                continue
-            logger.error("[ImageFinder] vision call failed: %s", exc)
-            return ""
-    return ""
+    Swallowing the exception is deliberate and unchanged: a failed image check degrades the
+    question, it must not fail the paper.
+    """
+    try:
+        text, _in, _out = mantle_client.converse_vision(
+            model_id=VISION_MODEL, prompt=prompt, image_bytes=image_bytes, mime=mime,
+            max_tokens=max_tokens, stage=stage)
+        return (text or "").strip()
+    except Exception as exc:
+        logger.error("[ImageFinder] vision call failed: %s", exc)
+        return ""
 
 
 # ─── Step 0: Router — classify image type + extract what's needed ─────────────
@@ -175,6 +142,7 @@ def _route_and_extract(
             system_prompt=system,
             max_tokens=600,
             temperature=0.1,
+            stage="v9-router",
         )
         m = re.search(r'\{.*\}', raw, re.DOTALL)
         if m:
@@ -286,6 +254,7 @@ def _build_prompt_from_question(
             system_prompt=system,
             max_tokens=400,
             temperature=0.2,
+            stage="v9-build-prompt",
         )
         result = raw.strip().strip('"').strip("'")
         logger.info("[ImageFinder] Fallback prompt: %s", result[:100])
@@ -380,6 +349,7 @@ def _generate_queries_from_question(
             system_prompt=system,
             max_tokens=120,
             temperature=0.2,
+            stage="v9-queries",
         )
         m = re.search(r'\[.*?\]', raw, re.DOTALL)
         if m:
@@ -396,25 +366,27 @@ def _generate_queries_from_question(
 
 
 def _search_wikimedia(query: str, limit: int = 8) -> list[dict]:
-    resp = requests.get(
-        _COMMONS,
-        params={"action": "query", "list": "search", "srnamespace": "6",
-                "srsearch": query, "srlimit": str(limit), "format": "json"},
-        timeout=20, headers={"User-Agent": _UA},
-    )
-    resp.raise_for_status()
+    with mantle_client.external_call("wikimedia-search", f"q={query[:40]!r}"):
+        resp = requests.get(
+            _COMMONS,
+            params={"action": "query", "list": "search", "srnamespace": "6",
+                    "srsearch": query, "srlimit": str(limit), "format": "json"},
+            timeout=20, headers={"User-Agent": _UA},
+        )
+        resp.raise_for_status()
     return resp.json().get("query", {}).get("search", [])
 
 
 def _get_image_info(titles: list[str]) -> dict[str, dict]:
-    resp = requests.get(
-        _COMMONS,
-        params={"action": "query", "titles": "|".join(titles),
-                "prop": "imageinfo", "iiprop": "url|size|mime|extmetadata",
-                "iiurlwidth": "800", "format": "json"},
-        timeout=20, headers={"User-Agent": _UA},
-    )
-    resp.raise_for_status()
+    with mantle_client.external_call("wikimedia-imageinfo", f"{len(titles)} title(s)"):
+        resp = requests.get(
+            _COMMONS,
+            params={"action": "query", "titles": "|".join(titles),
+                    "prop": "imageinfo", "iiprop": "url|size|mime|extmetadata",
+                    "iiurlwidth": "800", "format": "json"},
+            timeout=20, headers={"User-Agent": _UA},
+        )
+        resp.raise_for_status()
     pages = resp.json().get("query", {}).get("pages", {})
     result = {}
     for page in pages.values():
@@ -499,7 +471,8 @@ def _evaluate_wikimedia_candidates(candidates: list[dict]) -> list[dict]:
         try:
             img_bytes = _fetch_bytes(eval_url)
             prompt    = f"Image title: {c['title']}\nEvaluate this image for a CBSE Class 10 exam question paper."
-            raw       = _vision_call(prompt, img_bytes, c["mime"], max_tokens=200)
+            raw       = _vision_call(prompt, img_bytes, c["mime"], max_tokens=200,
+                                     stage="v9-wikimedia-score")
             m         = re.search(r'\{.*\}', raw, re.DOTALL)
             result    = json.loads(m.group()) if m else {}
             result.setdefault("suitable", False)
@@ -533,12 +506,13 @@ def _generate_openai_images(prompt: str, n: int = 1) -> list[tuple[bytes, str]]:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set in environment")
     logger.info("[ImageFinder] OpenAI %s generating %d image(s)...", OPENAI_IMAGE_MODEL, n)
-    resp = requests.post(
-        "https://api.openai.com/v1/images/generations",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "n": max(1, n), "size": "1024x1024"},
-        timeout=180,
-    )
+    with mantle_client.external_call(f"openai-image:{OPENAI_IMAGE_MODEL}", f"n={max(1, n)}"):
+        resp = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "n": max(1, n), "size": "1024x1024"},
+            timeout=180,
+        )
     if not resp.ok:
         raise RuntimeError(f"OpenAI image HTTP {resp.status_code}: {resp.text[:300]}")
     data = resp.json().get("data") or []
@@ -567,8 +541,10 @@ def _generate_pollinations_raw(prompt: str, n: int = 1) -> list[tuple[bytes, str
     for i in range(max(1, n)):
         try:
             params = dict(base_params, seed=str(42 + i * 17))
-            resp = requests.get(base_url, params=params, timeout=120)
-            resp.raise_for_status()
+            with mantle_client.external_call(
+                    f"pollinations:{POLLINATIONS_MODEL}", f"candidate={i + 1}/{max(1, n)}"):
+                resp = requests.get(base_url, params=params, timeout=120)
+                resp.raise_for_status()
             mime = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
             out.append((resp.content, mime))
         except Exception as exc:
@@ -628,7 +604,8 @@ def _rank_images_with_kimi(
             '{"scientific_accuracy": 8, "relevance": 9, "label_clarity": 7, "exam_suitability": 8}'
         )
         try:
-            raw = _vision_call(prompt, img_bytes, mime, max_tokens=150)
+            raw = _vision_call(prompt, img_bytes, mime, max_tokens=150,
+                               stage="v9.1-rank")
             m = re.search(r"\{.*\}", raw, re.DOTALL)
             result = json.loads(m.group()) if m else {}
             total = (
@@ -727,7 +704,8 @@ def _check_scientific_accuracy(
         "score: 1–10 (10=perfectly accurate). issues: list any specific errors found."
     )
     try:
-        raw = _vision_call(prompt, image_bytes, mime, max_tokens=300)
+        raw = _vision_call(prompt, image_bytes, mime, max_tokens=300,
+                       stage="v9.2-accuracy")
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if m:
             result = json.loads(m.group())
@@ -779,7 +757,8 @@ def _verify_and_correct(
         '"notes": "brief summary of corrections made"}'
     )
     logger.info("[ImageFinder] Kimi verifying question against image...")
-    raw = _vision_call(prompt, image_bytes, mime, max_tokens=700)
+    raw = _vision_call(prompt, image_bytes, mime, max_tokens=700,
+                   stage="v9-verify-subquestions")
     m   = re.search(r'\{.*\}', raw, re.DOTALL)
     if not m:
         logger.warning("[ImageFinder] Kimi verification returned no JSON — using originals")

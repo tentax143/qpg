@@ -12,12 +12,18 @@ These lock in two production bugs so they can't silently return:
 Run with:  python manage.py test core
 """
 
+import collections
+import copy
+import json
+from unittest import mock
+
 from django.test import TestCase, TransactionTestCase, SimpleTestCase
 
 from django.contrib.auth.models import User
 
 from core.models import ExamPattern, School, ExamBlueprint
 from core import section_generator as sg
+from core import mantle_client as mc
 from core import generator as sg_gen
 from core import paper_edit as pe
 from api.views import _scoped_blueprints
@@ -917,7 +923,8 @@ class ChapterAllocationTest(TestCase):
         from unittest import mock
         from core import section_generator as sg
         w = {"Heavy": 10, "Light": 1}
-        with mock.patch.object(sg, "_chapter_weight", side_effect=lambda subj, ch: w.get(ch, 1)):
+        # *a absorbs the class_name / default args _chapter_weights passes through.
+        with mock.patch.object(sg, "_chapter_weight", side_effect=lambda subj, ch, *a: w.get(ch, 1)):
             plan = sg._allocate_chapters_to_slots(["Heavy", "Light"], 6, "X", {})
         c = Counter(plan)
         self.assertGreater(c["Heavy"], c.get("Light", 0))
@@ -3904,6 +3911,748 @@ class GeneralSourceSlotTest(TestCase):
         self.assertEqual(cmap["__context_by_type__"]["Writing"], {})
 
 
+class EnglishGrammarOwnKnowledgeTest(TestCase):
+    """English GRAMMAR questions and CREATIVE WRITING tasks must be composed from the model's OWN
+    knowledge — NOTHING may come from the reference material handed to the LLM.
+
+    Two live leaks, one mechanism. NCERT English readers carry no grammar LESSONS, so
+    identify_grammar_chapters found nothing to route a grammar section to and it retrieved prose
+    instead: "gap filling" and "editing" questions came back built out of story sentences and
+    tagged to literature chapters. And a Creative Writing section opened BOTH options of its
+    internal choice with "After reading 'The Laburnum Top', you are inspired by the theme of
+    nature's vitality. Write an article …" — a composition brief hung off a retrieved poem."""
+
+    def _pattern(self, sections):
+        secs = psx.normalize_slots(sections)
+        psx.derive_aggregates_from_slots(secs)
+        return ExamPattern(name="p", subject="English", class_name="10", sections=secs)
+
+    def _grammar_slots(self):
+        return [{"qnum": 3, "type": "fill_blank", "marks": 1, "topic": "Tenses"},
+                {"qnum": 4, "type": "error_correction", "marks": 1},
+                {"qnum": 5, "type": "mcq", "marks": 1, "topic": "Prepositions"}]
+
+    def _writing_slots(self):
+        return [{"qnum": 2, "type": "writing", "marks": 4, "topic": "Article",
+                 "choice": "internal", "alternatives": ["magazine article", "newspaper article"]},
+                {"qnum": 3, "type": "writing", "marks": 4, "topic": "Classified advertisement"},
+                {"qnum": 4, "type": "la", "marks": 4, "topic": "Letter to the editor"}]
+
+    def _wo(self, sections, ctx_map, chapters=("A Letter to God", "Dust of Snow")):
+        p = self._pattern(sections)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(p)
+        return {wo.section_name: wo for wo in sg.build_work_orders(
+            bp, p, ctx_map, "Medium", "10", "English", list(chapters))}
+
+    # ── scope detection ──────────────────────────────────────────────────────────
+    def test_scope_grammar_section_is_own_knowledge_only(self):
+        sd = {"instructions": ["Attempt all questions."], "question_slots": self._grammar_slots()}
+        kinds, only, slot_kinds = sg.english_own_scope(
+            "English", "", "B — Grammar", sd, sd["question_slots"])
+        self.assertEqual(kinds, ("grammar",))
+        self.assertTrue(only)
+        self.assertEqual(slot_kinds, {0: "grammar", 1: "grammar", 2: "grammar"})
+
+    def test_scope_creative_writing_section_is_own_knowledge_only(self):
+        # The reported leak: "After reading 'The Laburnum Top', … write an article" — the whole
+        # Creative Writing section must be fenced off from the retrieved poem.
+        sd = {"instructions": ["Attempt all questions."], "question_slots": self._writing_slots()}
+        kinds, only, slot_kinds = sg.english_own_scope(
+            "English", "", "SECTION – Creative Writing Skills", sd, sd["question_slots"])
+        self.assertEqual(kinds, ("writing",))
+        self.assertTrue(only)
+        self.assertEqual(set(slot_kinds.values()), {"writing"})
+
+    def test_scope_writing_section_names(self):
+        for name in ("SECTION – Creative Writing Skills", "B — Writing", "Writing Skills",
+                     "C — Composition", "Section B — Writing and Grammar"):
+            kinds, only, _ = sg.english_own_scope("English", "", name, {"instructions": []}, [])
+            self.assertTrue(kinds, name)
+            self.assertTrue(only, name)
+
+    def test_scope_literature_section_untouched(self):
+        sd = {"instructions": [], "question_slots": [
+            {"qnum": 8, "type": "extract", "marks": 5, "source": "textbook"},
+            {"qnum": 9, "type": "sa", "marks": 3, "topic": "A Letter to God"}]}
+        self.assertEqual(
+            sg.english_own_scope("English", "", "D — Literature", sd, sd["question_slots"]),
+            ((), False, {}))
+
+    def test_scope_skips_non_english_subjects(self):
+        # Tamil/Hindi grammar keeps its existing grammar-LESSON routing untouched.
+        slots = [{"type": "fill_blank", "marks": 1, "topic": "எழுத்து"}]
+        self.assertEqual(sg.english_own_scope("Tamil", "", "இலக்கணம்", {}, slots), ((), False, {}))
+        self.assertEqual(sg.english_own_scope("Hindi", "", "खंड-ख — व्याकरण (Grammar)", {}, []),
+                         ((), False, {}))
+
+    def test_scope_mixed_grammar_and_writing_section(self):
+        # The reported section held both: an article and an advertisement (writing) alongside a
+        # word-rearrangement and conditional-clause question (grammar). All four are fenced.
+        slots = [{"type": "writing", "marks": 4, "topic": "Article"},
+                 {"type": "writing", "marks": 4, "topic": "Classified advertisement"},
+                 {"type": "rewrite", "marks": 2, "topic": "Rearrange the words"},
+                 {"type": "mcq", "marks": 2, "topic": "Conditional clauses"}]
+        kinds, only, slot_kinds = sg.english_own_scope(
+            "English", "", "SECTION – Creative Writing Skills", {}, slots)
+        self.assertEqual(sorted(kinds), ["grammar", "writing"])
+        self.assertTrue(only)
+        self.assertEqual(slot_kinds,
+                         {0: "writing", 1: "writing", 2: "grammar", 3: "grammar"})
+
+    def test_scope_exempts_literature_wording(self):
+        # A hybrid section must not cost its literature questions the material they need.
+        slots = [{"type": "sa", "marks": 3, "topic": "The poem Dust of Snow"},
+                 {"type": "fill_blank", "marks": 1, "topic": "Articles"}]
+        kinds, only, slot_kinds = sg.english_own_scope(
+            "English", "", "E — Literature and Grammar", {}, slots)
+        self.assertEqual((kinds, only, slot_kinds), (("grammar",), False, {1: "grammar"}))
+        # slot-less (legacy subsection) hybrid: rule applies, context stays
+        self.assertEqual(
+            sg.english_own_scope("English", "", "E — Literature and Grammar", {}, []),
+            (("grammar",), False, {}))
+        # slot-less pure grammar section: no context at all
+        self.assertEqual(
+            sg.english_own_scope("English Core", "", "B — Grammar", {"instructions": []}, []),
+            (("grammar",), True, {}))
+
+    def test_writing_form_beats_a_bare_literature_word(self):
+        # "story writing" is a composition task; "story" alone is a literature topic. An
+        # explicit form is the stronger signal, so it must win the exemption.
+        _, _, kinds = sg.english_own_scope("English", "", "B — Writing", {}, [
+            {"type": "sa", "marks": 5, "topic": "Story writing"},
+            {"type": "sa", "marks": 5, "topic": "The story of Lencho and his cornfield"}])
+        self.assertEqual(kinds.get(0), "writing")
+        self.assertNotIn(1, kinds)      # literature question keeps its context
+
+    # ── retrieval + work order ───────────────────────────────────────────────────
+    def test_context_map_skips_retrieval_for_grammar_section(self):
+        bp = {"B — Grammar": {"question_slots": self._grammar_slots(),
+                              "questions_count": 3, "marks": 3}}
+        cmap = sg.get_section_context_map("10", "English", ["Ch1"], bp, ["MCQ"])
+        self.assertEqual(cmap["B — Grammar"], "")
+        self.assertEqual(cmap["__context_by_type__"]["B — Grammar"], {})
+
+    def test_grammar_wo_gets_no_context_and_general_slots(self):
+        wos = self._wo(
+            [{"id": "SEC_B", "name": "B — Grammar", "marks": 3,
+              "question_slots": self._grammar_slots()}],
+            {"B — Grammar": "Lencho story chunk " * 40,
+             "__context_by_type__": {"B — Grammar": {"mcq": "chunk"}}})
+        wo = wos["B — Grammar"]
+        self.assertTrue(wo.is_english_grammar)
+        self.assertTrue(wo.english_own_only)
+        self.assertEqual(wo.context_text, "")          # withheld even when the map has one
+        self.assertEqual(wo.context_by_type, {})
+        self.assertEqual([s.get("source") for s in wo.slots], ["general"] * 3)
+
+    def test_context_map_skips_retrieval_for_creative_writing_section(self):
+        bp = {"SECTION – Creative Writing Skills": {
+            "question_slots": self._writing_slots(), "questions_count": 3, "marks": 12}}
+        cmap = sg.get_section_context_map("11", "English Core", ["The Laburnum Top"], bp, ["LA"])
+        self.assertEqual(cmap["SECTION – Creative Writing Skills"], "")
+
+    def test_creative_writing_wo_gets_no_context(self):
+        wos = self._wo(
+            [{"id": "SEC_B", "name": "SECTION – Creative Writing Skills", "marks": 12,
+              "question_slots": self._writing_slots()}],
+            {"SECTION – Creative Writing Skills": "The Laburnum Top awake " * 40},
+            chapters=("The Laburnum Top", "The Address"))
+        wo = wos["SECTION – Creative Writing Skills"]
+        self.assertTrue(wo.is_english_writing)
+        self.assertTrue(wo.english_own_only)
+        self.assertEqual(wo.context_text, "")          # withheld even when the map has one
+        self.assertEqual([s.get("source") for s in wo.slots], ["general"] * 3)
+
+    def test_mixed_section_keeps_context_but_fences_own_knowledge_slot(self):
+        # A LITERATURE question alongside a grammar one — the literature side keeps the material
+        # it needs, the grammar side is fenced off per-question.
+        wos = self._wo(
+            [{"id": "SEC_C", "name": "E — Literature and Grammar", "marks": 6,
+              "question_slots": [
+                  {"qnum": 1, "type": "sa", "marks": 5, "topic": "The poem Dust of Snow"},
+                  {"qnum": 2, "type": "rewrite", "marks": 1, "topic": "Passive voice"}]}],
+            {"E — Literature and Grammar": "textbook chunk " * 40})
+        wo = wos["E — Literature and Grammar"]
+        self.assertTrue(wo.is_english_grammar)
+        self.assertFalse(wo.is_english_writing)
+        self.assertFalse(wo.english_own_only)
+        self.assertEqual(wo.context_text, "textbook chunk " * 40)
+        self.assertEqual([s.get("source") for s in wo.slots], [None, "general"])
+
+    # ── prompt ───────────────────────────────────────────────────────────────────
+    def test_grammar_prompt_bans_reference_material_and_chapters(self):
+        wo = self._wo([{"id": "SEC_B", "name": "B — Grammar", "marks": 3,
+                        "question_slots": self._grammar_slots()}], {})["B — Grammar"]
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn("ENGLISH GRAMMAR — ABSOLUTE RULE", prompt)
+        self.assertIn("Take NOTHING from the REFERENCE MATERIAL", prompt)
+        self.assertIn("CHAPTER ASSIGNMENT: NONE", prompt)
+        self.assertNotIn("CHAPTER ASSIGNMENT — MANDATORY", prompt)
+        self.assertIn('its "chapter_tag" to "Grammar"', prompt)
+        # the chapter list must not appear anywhere — naming it re-invites what the rule forbids
+        self.assertNotIn("A Letter to God", prompt)
+        self.assertNotIn("Dust of Snow", prompt)
+
+    def test_creative_writing_prompt_bans_after_reading_openers(self):
+        wo = self._wo(
+            [{"id": "SEC_B", "name": "SECTION – Creative Writing Skills", "marks": 12,
+              "question_slots": self._writing_slots()}], {},
+            chapters=("The Laburnum Top", "The Address"))["SECTION – Creative Writing Skills"]
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn("CREATIVE WRITING — ABSOLUTE RULE", prompt)
+        self.assertIn("SELF-CONTAINED", prompt)
+        self.assertIn('never open with "After reading', prompt)
+        self.assertIn("BOTH options must be independent briefs", prompt)
+        self.assertIn('its "chapter_tag" to "Writing"', prompt)
+        self.assertIn("CHAPTER ASSIGNMENT: NONE", prompt)
+        # the poem the leaked questions were built on must not be named anywhere
+        self.assertNotIn("The Laburnum Top", prompt)
+        self.assertNotIn("The Address", prompt)
+
+    def test_mixed_grammar_and_writing_prompt_carries_both_rules(self):
+        wo = self._wo(
+            [{"id": "SEC_B", "name": "SECTION – Creative Writing Skills", "marks": 12,
+              "question_slots": [
+                  {"qnum": 2, "type": "writing", "marks": 4, "topic": "Article"},
+                  {"qnum": 4, "type": "rewrite", "marks": 2, "topic": "Rearrange the words"}]}],
+            {}, chapters=("The Laburnum Top",))["SECTION – Creative Writing Skills"]
+        prompt = sg.build_section_prompt(wo)
+        self.assertTrue(wo.is_english_writing)
+        self.assertTrue(wo.is_english_grammar)
+        self.assertIn("CREATIVE WRITING — ABSOLUTE RULE", prompt)
+        self.assertIn("ENGLISH GRAMMAR — ABSOLUTE RULE", prompt)
+        self.assertIn("ENGLISH GRAMMAR and CREATIVE WRITING, set from your own knowledge", prompt)
+
+    def test_mixed_prompt_states_the_rule_and_keeps_chapters(self):
+        wo = self._wo(
+            [{"id": "SEC_C", "name": "E — Literature and Grammar", "marks": 6,
+              "question_slots": [
+                  {"qnum": 1, "type": "sa", "marks": 5, "topic": "The poem Dust of Snow"},
+                  {"qnum": 2, "type": "rewrite", "marks": 1, "topic": "Passive voice"}]}],
+            {"E — Literature and Grammar": "textbook chunk " * 40})["E — Literature and Grammar"]
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn("ENGLISH GRAMMAR — ABSOLUTE RULE", prompt)
+        self.assertIn("GENERAL KNOWLEDGE — do NOT take this question", prompt)
+        self.assertIn("A Letter to God", prompt)     # literature slot still needs its chapters
+
+    def test_non_english_grammar_prompt_unchanged(self):
+        wo = sg.SectionWorkOrder(
+            section_name="இலக்கணம்", section_id="C", title="", marks=5, questions_count=5,
+            marks_per_question=1, question_types=["vsa"], instructions=[], constraints={},
+            context_text="tamil grammar chunk", difficulty="Medium", subject="Tamil",
+            class_name="6", chapters=["மொழிமுதல் எழுத்துகள்"], is_grammar=True)
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn("GRAMMAR SECTION — MANDATORY", prompt)
+        self.assertNotIn("ENGLISH GRAMMAR", prompt)
+        self.assertIn("tamil grammar chunk", prompt)
+
+    # ── validation ───────────────────────────────────────────────────────────────
+    def test_lifted_span_ignores_shared_instruction_stems(self):
+        ctx = ("Lencho had said it: the raindrops looked like new silver coins falling from "
+               "the sky, and the boys ran out to collect them.")
+        self.assertTrue(sg._lifted_span(
+            "Rewrite in the passive voice: the raindrops looked like new silver coins "
+            "falling from the sky.", ctx))
+        self.assertIsNone(sg._lifted_span(
+            "Rewrite in the passive voice: The gardener waters the plants every morning.", ctx))
+        # a question stem that also appears on a textbook exercise page is NOT copied material
+        self.assertIsNone(sg._lifted_span(
+            "Fill in the blanks with the correct form of the verb given in brackets.",
+            "Fill in the blanks with the correct form of the verb given in brackets below."))
+        self.assertIsNone(sg._lifted_span("Correct the error.", ctx))
+        self.assertIsNone(sg._lifted_span("anything at all here", ""))
+
+    def test_grammar_question_copying_context_fails_validation(self):
+        ctx = ("Lencho had said it: the raindrops looked like new silver coins falling from "
+               "the sky, and the boys ran out to collect them.")
+        wo = self._wo(
+            [{"id": "SEC_C", "name": "E — Literature and Grammar", "marks": 6,
+              "question_slots": [
+                  {"qnum": 1, "type": "sa", "marks": 5, "topic": "The poem Dust of Snow"},
+                  {"qnum": 2, "type": "rewrite", "marks": 1, "topic": "Passive voice"}]}],
+            {"E — Literature and Grammar": ctx})["E — Literature and Grammar"]
+        lifted = {"type": "VSA", "marks": 1, "answer_explanation": "a",
+                  "text": "Rewrite in the passive voice: the raindrops looked like new "
+                          "silver coins falling from the sky."}
+        clean = {"type": "VSA", "marks": 1, "answer_explanation": "a",
+                 "text": "Rewrite in the passive voice: The gardener waters the plants."}
+        errs = sg._validate_by_subtype(lifted, 2, wo)
+        self.assertTrue(any("copies the reference material" in e for e in errs), errs)
+        self.assertEqual(sg._validate_by_subtype(clean, 2, wo), [])
+
+    def test_writing_task_naming_a_chapter_fails_validation(self):
+        # Exactly the reported leak, as the validator sees it.
+        wo = self._wo(
+            [{"id": "SEC_B", "name": "SECTION – Creative Writing Skills", "marks": 8,
+              "question_slots": [
+                  {"qnum": 2, "type": "writing", "marks": 4, "topic": "Article"},
+                  {"qnum": 3, "type": "writing", "marks": 4, "topic": "Advertisement"}]}],
+            {}, chapters=("The Laburnum Top", "The Address"))[
+                "SECTION – Creative Writing Skills"]
+        leaky = {"type": "LA", "marks": 4, "answer_explanation": "a",
+                 "text": "After reading 'The Laburnum Top', you are inspired by the theme of "
+                         "nature's vitality. Write an article in about 150 words on 'The "
+                         "Healing Power of Nature' for your school magazine."}
+        clean = {"type": "LA", "marks": 4, "answer_explanation": "a",
+                 "text": "Your locality's park has been neglected for months. Write an article "
+                         "in about 150 words on 'Reclaiming Our Green Spaces' for your school "
+                         "magazine."}
+        errs = sg._validate_by_subtype(leaky, 1, wo)
+        self.assertTrue(any("The Laburnum Top" in e for e in errs), errs)
+        self.assertEqual(sg._validate_by_subtype(clean, 1, wo), [])
+
+    def test_chapter_name_check_is_word_bounded(self):
+        wo = self._wo([{"id": "SEC_B", "name": "B — Grammar", "marks": 1, "question_slots": [
+            {"qnum": 1, "type": "fill_blank", "marks": 1, "topic": "Tenses"}]}],
+            {}, chapters=["Water"])["B — Grammar"]
+        hit = {"type": "VSA", "marks": 1, "answer_explanation": "waters",
+               "text": "Fill in the blank: In the chapter Water, she ______ the plants."}
+        miss = {"type": "VSA", "marks": 1, "answer_explanation": "waters",
+                "text": "Fill in the blank: The gardener ______ (watering) the plants."}
+        self.assertTrue(any("chapter 'Water'" in e for e in sg._validate_by_subtype(hit, 1, wo)))
+        self.assertEqual(sg._validate_by_subtype(miss, 1, wo), [])
+
+
+class AccountancySumsCompositionTest(SimpleTestCase):
+    """An Accountancy paper must be 80% SUMS (numerical/practical problems) and 20% QUIZ
+    (definitions, concepts, formats) BY MARKS. The blueprint fixes each section's marks and
+    counts, so the ratio is met by choosing WHICH questions are sums — plan_sums_allocation
+    spends the 20% quiz budget on the cheapest objective questions and declares the rest sums,
+    which is what turns the leftover objective marks into NUMERICAL MCQs."""
+
+    def _wo(self, name, n, mpq, types_list, subject="Accountancy"):
+        return sg.SectionWorkOrder(
+            section_name=name, section_id=name[-1], title="", marks=int(n * mpq),
+            questions_count=n, marks_per_question=mpq, question_types=types_list,
+            instructions=[], constraints={}, context_text="ledger context",
+            difficulty="Medium", subject=subject, class_name="12", chapters=["Partnership"])
+
+    def _official(self):
+        """The real CBSE Accountancy 055 pattern: 80 marks = 20m objective + 60m written."""
+        return [
+            self._wo("Part A — Q1-16", 16, 1, ["MCQ"]),
+            self._wo("Part A — Q17-20", 4, 3, ["Short Answer"]),
+            self._wo("Part A — Q21-22", 2, 4, ["Short Answer"]),
+            self._wo("Part A — Q23-26", 4, 6, ["Long Answer"]),
+            self._wo("Part B — Q27-30", 4, 1, ["MCQ"]),
+            self._wo("Part B — Q31-32", 2, 3, ["Short Answer"]),
+            self._wo("Part B — Q33", 1, 4, ["Short Answer"]),
+            self._wo("Part B — Q34", 1, 6, ["Long Answer"]),
+        ]
+
+    @staticmethod
+    def _paper(spec):
+        """spec: {section: [(marks, 'sums'|'quiz'), ...]} → paper_data with matching wording."""
+        out = {}
+        for sec, items in spec.items():
+            qs = []
+            for i, (mk, nature) in enumerate(items):
+                text = (f"Prepare the Revaluation Account for case {i}. Stock was overvalued by "
+                        f"₹12,000 and furniture undervalued by ₹8,000."
+                        if nature == "sums" else
+                        f"Define the term goodwill as used in case {i}.")
+                qs.append({"qnum": i + 1, "type": "SA", "marks": mk, "text": text,
+                           "answer_explanation": "..."})
+            out[sec] = {"questions": qs}
+        return out
+
+    # ── target + allocation ──────────────────────────────────────────────────────
+    def test_share_lookup_is_accountancy_scoped(self):
+        for subject in ("Accountancy", "accountancy", "Accounts",
+                        "Book Keeping", "Book-Keeping and Accountancy"):
+            self.assertEqual(sg._sums_share_for_subject(subject), 0.80, subject)
+        for subject in ("Mathematics", "English Core", "Economics", "Business Studies", ""):
+            self.assertEqual(sg._sums_share_for_subject(subject), 0.0, subject)
+
+    def test_allocation_hits_80_percent_of_marks(self):
+        wos = sg.plan_sums_allocation(self._official())
+        sums_marks = sum(w.sums_count * w.marks_per_question for w in wos)
+        total = sum(w.questions_count * w.marks_per_question for w in wos)
+        self.assertEqual(total, 80)
+        self.assertAlmostEqual(sums_marks / total, 0.80, delta=0.02)
+        # every WRITTEN question is a sum; the shortfall is made up by numerical MCQs
+        for w in wos:
+            if w.marks_per_question > 1:
+                self.assertEqual(w.sums_count, w.questions_count, w.section_name)
+        objective = [w for w in wos if w.marks_per_question == 1]
+        self.assertTrue(any(w.sums_count for w in objective),
+                        "no numerical MCQs were planned")
+        self.assertTrue(all(w.sums_share == 0.80 for w in wos))
+
+    def test_allocation_spreads_numerical_mcqs_across_objective_sections(self):
+        # Spending the quiz budget section-by-section would leave one objective section pure
+        # theory and another pure numerical; the budget is spent round-robin instead.
+        wos = sg.plan_sums_allocation(self._official())
+        big = next(w for w in wos if w.section_name == "Part A — Q1-16")
+        self.assertGreater(big.sums_count, 0)
+        self.assertLess(big.sums_count, big.questions_count)
+
+    def test_allocation_is_deterministic(self):
+        a = [w.sums_count for w in sg.plan_sums_allocation(self._official())]
+        b = [w.sums_count for w in sg.plan_sums_allocation(self._official())]
+        self.assertEqual(a, b)
+
+    def test_allocation_reads_slot_marks(self):
+        slots = ([{"qnum": i + 1, "type": "mcq", "marks": 1} for i in range(10)]
+                 + [{"qnum": 11, "type": "la", "marks": 6}, {"qnum": 12, "type": "la", "marks": 6}])
+        wo = self._wo("Part A", 12, 1, [])
+        wo.slots = slots
+        plan = sg._question_marks_plan(wo)
+        self.assertEqual([m for m, _ in plan], [1.0] * 10 + [6.0, 6.0])
+        self.assertEqual([o for _, o in plan], [True] * 10 + [False, False])
+        sg.plan_sums_allocation([wo])
+        self.assertGreaterEqual(wo.sums_count, 2)      # both long answers at minimum
+
+    def test_other_subjects_get_no_plan_and_no_prompt_block(self):
+        wos = sg.plan_sums_allocation([self._wo("Section A", 20, 1, ["MCQ"], subject="Mathematics")])
+        self.assertEqual(wos[0].sums_count, 0)
+        self.assertEqual(wos[0].sums_share, 0.0)
+        self.assertNotIn("COMPOSITION — MANDATORY", sg.build_section_prompt(wos[0]))
+
+    # ── classification ───────────────────────────────────────────────────────────
+    def test_question_nature_needs_both_a_verb_and_figures(self):
+        sums = [
+            {"text": "Pass the journal entries: A brought in capital of ₹1,50,000 on 1 April."},
+            {"text": "Prepare the Revaluation Account. Stock was overvalued by ₹12,000."},
+            {"text": "Compute the Current Ratio if current assets are ₹1,20,000 and current "
+                     "liabilities are ₹60,000."},
+            # figures living in the OPTIONS still make it a sum
+            {"text": "Calculate the interest on capital.",
+             "options": {"a": "₹4,000", "b": "₹4,500", "c": "₹5,000", "d": "₹6,000"}},
+            # ...and so do figures in a case passage read by sub-questions
+            {"text": "Read the case and answer.",
+             "source_text": "X and Y share profits 3:2. Z is admitted and brings ₹80,000.",
+             "sub_questions": [{"text": "Calculate the new ratio", "marks": 2}]},
+        ]
+        quiz = [
+            {"text": "Define goodwill."},
+            {"text": "Explain any three features of a partnership firm."},
+            {"text": "State the formula for the Debt-Equity Ratio."},
+            # a preparation VERB with no figures is a format question, not a sum
+            {"text": "Prepare the format of a Balance Sheet as per Schedule III."},
+            {"text": "Which of the following is not a fixed asset?",
+             "options": {"a": "Machinery", "b": "Land", "c": "Debtors", "d": "Buildings"}},
+        ]
+        for q in sums:
+            self.assertEqual(sg._question_nature(q), "sums", q["text"][:60])
+        for q in quiz:
+            self.assertEqual(sg._question_nature(q), "quiz", q["text"][:60])
+
+    # ── prompt ───────────────────────────────────────────────────────────────────
+    def test_prompt_states_this_sections_own_quota(self):
+        by = {w.section_name: w for w in sg.plan_sums_allocation(self._official())}
+        mixed = sg.build_section_prompt(by["Part A — Q1-16"])
+        allsums = sg.build_section_prompt(by["Part A — Q23-26"])
+        self.assertIn(f"EXACTLY {by['Part A — Q1-16'].sums_count} of the 16", mixed)
+        self.assertIn("ALL 4 questions in this section MUST be SUMS", allsums)
+        self.assertIn("80% SUMS and 20% QUIZ by marks", allsums)
+        self.assertIn("actual amounts in ₹", allsums)
+        # an MCQ section that must carry sums is told how a numerical MCQ looks
+        self.assertIn("plausible computed amounts", mixed)
+
+    # ── report ───────────────────────────────────────────────────────────────────
+    def test_report_flags_a_theory_heavy_paper(self):
+        good = self._paper({"A": [(1, "quiz")] * 16 + [(1, "sums")] * 4, "B": [(6, "sums")] * 10})
+        report = sg.validate_sums_distribution(good, "Accountancy")
+        self.assertTrue(report["compliant"])
+        self.assertEqual(report["sums_pct"], 80.0)
+
+        bad = self._paper({"A": [(1, "quiz")] * 20,
+                           "B": [(6, "quiz")] * 5 + [(6, "sums")] * 5})
+        report = sg.validate_sums_distribution(bad, "Accountancy")
+        self.assertFalse(report["compliant"])
+        self.assertIn("theory-heavy", report["violations"][0])
+        # free for every other subject
+        self.assertEqual(sg.validate_sums_distribution(good, "Mathematics"), {})
+
+    # ── enforcement ──────────────────────────────────────────────────────────────
+    def _wos_for_enforce(self):
+        return sg.plan_sums_allocation([self._wo("A", 20, 1, ["MCQ"]),
+                                        self._wo("B", 10, 6, ["Long Answer"])])
+
+    def test_enforcement_converts_theory_questions_to_sums(self):
+        replacement = {"type": "SA", "marks": 6,
+                       "text": "Prepare the Partners' Capital Accounts. A's opening capital was "
+                               "₹2,00,000 and drawings were ₹24,000 during the year.",
+                       "answer_explanation": "Working shown."}
+        paper = self._paper({"A": [(1, "quiz")] * 20,
+                             "B": [(6, "quiz")] * 5 + [(6, "sums")] * 5})
+        before = sg._sums_marks_split(paper)
+        with mock.patch.object(sg.mantle_client, "converse",
+                               return_value=(json.dumps(replacement), 5, 6)):
+            out, in_tok, out_tok = sg.enforce_sums_distribution(
+                paper, self._wos_for_enforce(), "Accountancy")
+        after = sg._sums_marks_split(out)
+        self.assertGreater(after[0], before[0])              # more sums marks than before
+        self.assertEqual(sum(after), sum(before))            # paper total unchanged
+        self.assertEqual([len(s["questions"]) for s in out.values()], [20, 10])
+        self.assertGreater(in_tok + out_tok, 0)
+
+    def test_a_replacement_that_is_still_theory_is_discarded(self):
+        paper = self._paper({"A": [(1, "quiz")] * 20,
+                             "B": [(6, "quiz")] * 5 + [(6, "sums")] * 5})
+        snapshot = copy.deepcopy(paper)
+        theory_again = {"type": "SA", "marks": 6, "text": "Explain the meaning of goodwill.",
+                        "answer_explanation": "..."}
+        with mock.patch.object(sg.mantle_client, "converse",
+                               return_value=(json.dumps(theory_again), 5, 6)) as conv:
+            out, _, _ = sg.enforce_sums_distribution(
+                paper, self._wos_for_enforce(), "Accountancy")
+        self.assertEqual(out, snapshot)   # never make the split worse than it already is
+        # the cap counts ATTEMPTS, not successes — a model that keeps returning theory must not
+        # be retried on every candidate in the paper
+        self.assertLessEqual(conv.call_count, sg.SUMS_MAX_REGENS)
+
+    def test_compliant_paper_and_other_subjects_cost_nothing(self):
+        good = self._paper({"A": [(1, "quiz")] * 16 + [(1, "sums")] * 4, "B": [(6, "sums")] * 10})
+        snapshot = copy.deepcopy(good)
+        with mock.patch.object(sg.mantle_client, "converse") as conv:
+            out, in_tok, out_tok = sg.enforce_sums_distribution(
+                good, self._wos_for_enforce(), "Accountancy")
+        self.assertEqual(conv.call_count, 0)
+        self.assertEqual((in_tok, out_tok), (0, 0))
+        self.assertEqual(out, snapshot)
+
+        maths = self._paper({"A": [(1, "quiz")] * 20})
+        snapshot = copy.deepcopy(maths)
+        maths_wos = sg.plan_sums_allocation(
+            [self._wo("A", 20, 1, ["MCQ"], subject="Mathematics")])
+        with mock.patch.object(sg.mantle_client, "converse") as conv:
+            out, _, _ = sg.enforce_sums_distribution(maths, maths_wos, "Mathematics")
+        self.assertEqual(conv.call_count, 0)
+        self.assertEqual(out, snapshot)
+
+
+class McqAnswerKeyBalanceTest(SimpleTestCase):
+    """Teachers reported answer keys with a visible shape — "aaabbbccc", or every answer (a).
+    STRICT RULE 6 asked the model for a spread and validate_section_output rejects a letter used
+    in >65% of a section, but neither catches a RUN: "aaabbbccc" puts each letter at 33%, so it
+    passed, and "never more than 2 consecutive" was never enforced anywhere. balance_mcq_answer_keys
+    fixes the key deterministically after generation instead."""
+
+    OPTS = ["Chlorophyll traps the light energy", "Mitochondria release the stored energy",
+            "Ribosomes assemble the protein chains", "Vacuoles store the cell sap"]
+
+    def _q(self, i, answer="a", **kw):
+        vals = [f"{v} in case {i}" for v in self.OPTS]
+        q = {"qnum": i + 1, "type": "MCQ", "text": f"Question number {i} about plant cells",
+             "options": dict(zip("abcd", vals)), "answer": answer, "marks": 1,
+             "answer_explanation": f"Option ({answer}) is correct for case {i}."}
+        q.update(kw)
+        return q
+
+    def _paper(self, key):
+        return {"Section A": {"questions": [self._q(i, a) for i, a in enumerate(key)]}}
+
+    @staticmethod
+    def _max_run(s):
+        best = cur = 1
+        for i in range(1, len(s)):
+            cur = cur + 1 if s[i] == s[i - 1] else 1
+            best = max(best, cur)
+        return best if s else 0
+
+    @staticmethod
+    def _repeats_block(s):
+        return any(len(s) % b == 0 and s == s[:b] * (len(s) // b)
+                   for b in range(1, len(s) // 2 + 1))
+
+    def test_balanced_letters_have_no_run_or_block_pattern(self):
+        for seed in (1, 7, 128, 231, 360, 9999):
+            for n in (6, 8, 9, 12, 16, 20):
+                seq = sg._balanced_answer_letters(n, seed)
+                s = "".join(seq)
+                self.assertEqual(len(seq), n)
+                counts = collections.Counter(seq)
+                self.assertLessEqual(max(counts.values()) - min(counts.values()), 1, s)
+                self.assertLessEqual(self._max_run(s), 2, s)
+                # an honest shuffle lands on a repeated block ~1% of the time at n=8 —
+                # those seeds (128/231/360 hit it) must be rejected and reseeded
+                self.assertFalse(self._repeats_block(s), f"seed={seed} n={n}: {s}")
+
+    def test_balanced_letters_are_deterministic_but_paper_specific(self):
+        self.assertEqual(sg._balanced_answer_letters(16, 42), sg._balanced_answer_letters(16, 42))
+        self.assertNotEqual(sg._balanced_answer_letters(16, 42), sg._balanced_answer_letters(16, 43))
+
+    def test_all_a_and_run_patterns_are_broken_up(self):
+        for key in ("aaaaaaaaa", "aaabbbccc", "abcdabcdabcd"):
+            paper = self._paper(key)
+            before = [q["options"][q["answer"]] for q in paper["Section A"]["questions"]]
+            sg.balance_mcq_answer_keys(paper)
+            qs = paper["Section A"]["questions"]
+            after_key = "".join(q["answer"] for q in qs)
+            # the correct answer TEXT must survive untouched — only its letter moves
+            self.assertEqual([q["options"][q["answer"]] for q in qs], before, key)
+            self.assertLessEqual(self._max_run(after_key), 2, f"{key} → {after_key}")
+            self.assertFalse(self._repeats_block(after_key), f"{key} → {after_key}")
+            for q in qs:
+                self.assertEqual(set(q["options"]), set("abcd"))
+                self.assertEqual(len(set(q["options"].values())), 4)
+                self.assertIn(f"({q['answer']})", q["answer_explanation"].lower())
+
+    def test_explanation_naming_all_four_letters_is_remapped_bijectively(self):
+        paper = self._paper("aaaaaaaa")
+        originals = []
+        for q in paper["Section A"]["questions"]:
+            q["answer_explanation"] = ("Option (a) is correct. Option (b), option (c) and "
+                                       "option (d) are all wrong.")
+            originals.append(dict(q["options"]))
+        sg.balance_mcq_answer_keys(paper)
+        for q, orig in zip(paper["Section A"]["questions"], originals):
+            new_of = {v: k for k, v in q["options"].items()}
+            mapping = {old: new_of[val] for old, val in orig.items()}
+            self.assertEqual(q["answer"], mapping["a"])
+            self.assertEqual(
+                q["answer_explanation"],
+                f"Option ({mapping['a']}) is correct. Option ({mapping['b']}), "
+                f"option ({mapping['c']}) and option ({mapping['d']}) are all wrong.")
+
+    def test_order_bound_and_ar_questions_are_left_alone(self):
+        # Assertion-Reason prints four canonical options in a fixed order; "All of the above"
+        # must stay last; an articles MCQ ("a"/"an"/"the") makes an explanation "(a)" ambiguous;
+        # a sorted numeric set keeps the ascending convention.
+        plain = self._q(0)
+        self.assertTrue(sg._mcq_is_permutable(plain))
+        for label, q in (
+            ("AR subtype", self._q(1, subtype="assertion_reason")),
+            ("AR type", self._q(2, type="Assertion-Reason")),
+            ("matching", self._q(3, subtype="matching")),
+            ("all of the above", self._q(4, options=dict(zip("abcd", [
+                "Chlorophyll traps light", "Stomata allow exchange",
+                "Cuticle limits water loss", "All of the above"])))),
+            ("both (a) and (b)", self._q(5, options=dict(zip("abcd", [
+                "Chlorophyll traps light", "Stomata allow exchange",
+                "Both (a) and (b) are true", "Neither is true"])))),
+            ("articles", self._q(6, options=dict(zip("abcd", ["a", "an", "the", "no article"])))),
+            ("sorted numeric", self._q(7, options=dict(zip("abcd", ["2 cm", "4 cm", "6 cm", "8 cm"])))),
+            ("duplicate values", self._q(8, options=dict(zip("abcd", [
+                "Same option text", "Same option text", "Third option text", "Fourth option text"])))),
+        ):
+            self.assertFalse(sg._mcq_is_permutable(q), label)
+        # unsorted numbers are fine to reorder
+        self.assertTrue(sg._mcq_is_permutable(
+            self._q(9, options=dict(zip("abcd", ["6 cm", "2 cm", "8 cm", "4 cm"])))))
+
+    def test_ineligible_questions_pass_through_untouched(self):
+        paper = self._paper("aaaaaa")
+        paper["Section A"]["questions"][2]["subtype"] = "assertion_reason"
+        paper["Section A"]["questions"][4]["options"]["d"] = "All of the above"
+        snapshot = copy.deepcopy([paper["Section A"]["questions"][i] for i in (2, 4)])
+        sg.balance_mcq_answer_keys(paper)
+        self.assertEqual(paper["Section A"]["questions"][2], snapshot[0])
+        self.assertEqual(paper["Section A"]["questions"][4], snapshot[1])
+
+    def test_too_few_mcqs_is_a_noop(self):
+        paper = self._paper("aa")
+        snapshot = copy.deepcopy(paper)
+        sg.balance_mcq_answer_keys(paper)
+        self.assertEqual(paper, snapshot)
+
+    def test_letter_remap_does_not_double_apply_on_a_swap(self):
+        self.assertEqual(
+            sg._remap_answer_letters("Option (a) is right, option (b) is wrong.",
+                                     {"a": "b", "b": "a"}),
+            "Option (b) is right, option (a) is wrong.")
+        self.assertEqual(sg._remap_answer_letters("Option B is correct.", {"b": "d"}),
+                         "Option D is correct.")
+        self.assertEqual(sg._remap_answer_letters("Correct answer: c", {"c": "d"}),
+                         "Correct answer: d")
+        self.assertEqual(sg._remap_answer_letters("Because chlorophyll absorbs light.", {"a": "c"}),
+                         "Because chlorophyll absorbs light.")
+
+
+class CrossSectionDuplicateFixTest(TestCase):
+    """Cross-section duplicates were detected and then only LOGGED — cross_section_validate
+    stored them for the final LLM audit, so a paper asking the same thing in Section A and
+    Section D shipped with both. Sections are generated by independent parallel prompts, so
+    neither can see the other's questions; this is the only place the overlap can be caught."""
+
+    DUP = "Explain the process of photosynthesis in green plants clearly"
+
+    def _wo(self, name):
+        return sg.SectionWorkOrder(
+            section_name=name, section_id=name[-1], title="", marks=2, questions_count=2,
+            marks_per_question=1, question_types=["vsa"], instructions=[], constraints={},
+            context_text="chapter context", difficulty="Medium", subject="Science",
+            class_name="10", chapters=["Life Processes"])
+
+    def _paper(self):
+        def q(n, text):
+            return {"qnum": n, "type": "VSA", "marks": 1, "text": text,
+                    "answer_explanation": "..."}
+        return {
+            "Section A": {"questions": [
+                q(1, self.DUP), q(2, "Describe the structure of the human digestive system")]},
+            "Section D": {"questions": [
+                q(3, self.DUP), q(4, "State three uses of concave mirrors in appliances")]},
+        }
+
+    def test_pairs_finds_cross_section_only(self):
+        pairs = sg._cross_section_dup_pairs(self._paper())
+        self.assertEqual([(a, b, c, d) for a, b, c, d, _ in pairs],
+                         [("Section A", 0, "Section D", 0)])
+        # two identical questions inside ONE section are validate_uniqueness's job, not this one
+        self.assertEqual(sg._cross_section_dup_pairs(
+            {"S": {"questions": [{"qnum": 1, "text": self.DUP}, {"qnum": 2, "text": self.DUP}]}}), [])
+
+    def test_confirmed_duplicate_is_replaced_in_the_later_section(self):
+        replacement = {"type": "VSA", "marks": 1,
+                       "text": "Name the pigment that traps light energy in leaves",
+                       "answer_explanation": "Chlorophyll."}
+
+        def fake(**kw):
+            if "same_concept" in kw.get("prompt", ""):
+                return (json.dumps({"same_concept": True, "reason": "r"}), 3, 4)
+            return (json.dumps(replacement), 5, 6)
+
+        paper = self._paper()
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=fake):
+            out, in_tok, out_tok = sg.fix_cross_section_duplicates(
+                paper, [self._wo("Section A"), self._wo("Section D")])
+        self.assertTrue(out["Section D"]["questions"][0]["text"].startswith("Name the pigment"))
+        self.assertEqual(out["Section A"]["questions"][0]["text"], self.DUP)  # earlier one kept
+        self.assertEqual(out["Section D"]["questions"][0]["qnum"], 3)          # numbering kept
+        self.assertEqual(out["Section D"]["questions"][0]["marks"], 1)         # marks kept
+        self.assertEqual([len(s["questions"]) for s in out.values()], [2, 2])  # count unchanged
+        self.assertGreater(in_tok + out_tok, 0)
+        self.assertNotIn("_cross_section_duplicates", out["Section A"])
+
+    def test_llm_cleared_false_positive_keeps_both(self):
+        paper = self._paper()
+        with mock.patch.object(sg.mantle_client, "converse",
+                               return_value=(json.dumps({"same_concept": False}), 1, 1)):
+            out, _, _ = sg.fix_cross_section_duplicates(
+                paper, [self._wo("Section A"), self._wo("Section D")])
+        self.assertEqual(out["Section A"]["questions"][0]["text"], self.DUP)
+        self.assertEqual(out["Section D"]["questions"][0]["text"], self.DUP)
+        self.assertNotIn("_cross_section_duplicates", out["Section A"])
+
+    def test_cbq_duplicate_is_kept_and_flagged_not_regenerated(self):
+        # A CBQ carries a passage and sub-questions; a single-shot regen can't reproduce them
+        # safely, so both survive and the overlap is reported to the audit instead.
+        def cbq(n):
+            return {"qnum": n, "type": "CBQ", "subtype": "source_based", "marks": 4,
+                    "text": "Read the source and answer",
+                    "source_text": "Photosynthesis in green plants converts light energy",
+                    "sub_questions": [{"text": "Name the pigment", "marks": 4}]}
+        paper = {"Section A": {"questions": [cbq(1)]}, "Section D": {"questions": [cbq(2)]}}
+        with mock.patch.object(sg.mantle_client, "converse",
+                               return_value=(json.dumps({"same_concept": True}), 1, 1)):
+            out, _, _ = sg.fix_cross_section_duplicates(
+                paper, [self._wo("Section A"), self._wo("Section D")])
+        self.assertEqual(len(out["Section A"]["questions"]), 1)
+        self.assertEqual(len(out["Section D"]["questions"]), 1)
+        self.assertTrue(out["Section A"]["_cross_section_duplicates"])
+
+    def test_missing_work_order_drops_nothing(self):
+        paper = self._paper()
+        with mock.patch.object(sg.mantle_client, "converse",
+                               return_value=(json.dumps({"same_concept": True}), 1, 1)):
+            out, _, _ = sg.fix_cross_section_duplicates(paper, [])
+        self.assertEqual([len(s["questions"]) for s in out.values()], [2, 2])
+        self.assertTrue(out["Section A"]["_cross_section_duplicates"])
+
+
 class InternalChoiceCbqValidationTest(TestCase):
     """An internal-choice extract/CBQ slot must ship a COMPLETE or_alternative object
     (own passage + own sub-questions, matching count and marks); sub-question count
@@ -5112,3 +5861,983 @@ class UnitVariantMatchTest(SimpleTestCase):
         stored = ["sermon_at_benares", "13_the_sermon_at_benares", "sermon_at_benares"]
         self.assertEqual(_unit_variants("the_sermon_at_benares", stored),
                          ["13_the_sermon_at_benares", "sermon_at_benares"])
+
+
+class AnswerLeakAuditTest(SimpleTestCase):
+    """Teachers reported Social Science papers where an Assertion-Reason stem stated the answer
+    to a 2-mark question, and where a case-based passage contained the answer to another 2-mark
+    question. Neither is a DUPLICATE, so _cross_section_dup_pairs cannot see them: leakage is
+    asymmetric (the answer to Q7 sits in the STEM of Q3, sharing almost no tokens) and it
+    dilutes (a 2-mark answer inside a 150-word passage scores near zero on overlap normalised
+    across the whole passage). V8 is given only type/chapter summaries and V10 only the
+    accumulated warning strings, so neither paper-level audit ever reads question text either."""
+
+    AR = ("Assertion (A): The Dandi March was a satyagraha launched against the British salt "
+          "tax, which affected the poorest Indians most.\nReason (R): Salt was consumed by every "
+          "household.\n(a) Both A and R are true and R explains A\n(b) Both true, R does not "
+          "explain A\n(c) A true, R false\n(d) A false, R true")
+    AR_OPTS = {"a": "Both A and R are true and R explains A",
+               "b": "Both true, R does not explain A",
+               "c": "A true, R false", "d": "A false, R true"}
+    SALT_Q = "Why did Mahatma Gandhi choose salt as the symbol of his satyagraha in 1930?"
+    SALT_A = ("Salt was taxed by the British and consumed by every household, so the salt tax "
+              "affected the poorest Indians most, making it a powerful unifying symbol.")
+    PASSAGE = (
+        "In the years after 1858 the British reorganised their administration in India. Print "
+        "culture spread rapidly and vernacular newspapers multiplied in every province. The "
+        "Vernacular Press Act of 1878 was passed to control the vernacular press and gave the "
+        "government the power to censor reports and editorials in Indian-language newspapers. "
+        "Despite this, nationalist papers continued to grow in circulation across the country.")
+    PRESS_Q = "State the purpose of the Vernacular Press Act of 1878."
+    PRESS_A = ("It was passed to control the vernacular press and gave the government power to "
+               "censor reports and editorials in Indian-language newspapers.")
+    AR_SPAN = "The Dandi March was a satyagraha launched against the British salt tax"
+    PASSAGE_SPAN = "to control the vernacular press and gave the government the power to censor"
+
+    def _wo(self, name, mpq=2):
+        return sg.SectionWorkOrder(
+            section_name=name, section_id=name[:1], title="", marks=4, questions_count=2,
+            marks_per_question=mpq, question_types=[], instructions=[], constraints={},
+            context_text="", difficulty="Medium", subject="Social Science", class_name="10",
+            chapters=["Nationalism"])
+
+    def _wos(self):
+        return [self._wo(n) for n in ("Section A", "Section B", "Section C")]
+
+    def _paper(self):
+        return {
+            "Section A": {"marks": 2, "questions": [
+                {"qnum": 1, "type": "MCQ", "subtype": "assertion_reason", "marks": 1,
+                 "text": self.AR, "options": dict(self.AR_OPTS), "answer": "a",
+                 "answer_explanation": "Both statements are true and R explains A."},
+                {"qnum": 2, "type": "MCQ", "marks": 1,
+                 "text": "In which year was the Rowlatt Act passed?",
+                 "options": {"a": "1919", "b": "1920", "c": "1921", "d": "1922"},
+                 "answer": "a", "answer_explanation": "The Rowlatt Act was passed in 1919."}]},
+            "Section B": {"marks": 4, "questions": [
+                {"qnum": 3, "type": "SA", "marks": 2, "text": self.SALT_Q,
+                 "answer_explanation": self.SALT_A},
+                {"qnum": 4, "type": "SA", "marks": 2, "text": self.PRESS_Q,
+                 "answer_explanation": self.PRESS_A}]},
+            "Section C": {"marks": 4, "passage": self.PASSAGE, "questions": [
+                {"qnum": 5, "type": "CBQ", "marks": 4,
+                 "text": "Read the passage above and answer the following:",
+                 "sub_questions": [
+                     {"text": "Name the Act mentioned in the passage.", "marks": 1,
+                      "answer_explanation": "The Vernacular Press Act of 1878."},
+                     {"text": "How did nationalist papers respond?", "marks": 3,
+                      "answer_explanation": "They continued to grow in circulation."}]}]},
+        }
+
+    def _audit(self, *leaks):
+        return json.dumps({"leaks": list(leaks)})
+
+    def _leak(self, victim, leaker, span, why="w"):
+        return {"victim": victim, "leaker": leaker, "leaked_span": span, "why": why}
+
+    # ── surfaces ──────────────────────────────────────────────────────────────────────
+    def test_inventory_ids_are_positional_and_passage_is_its_own_surface(self):
+        inv = sg._leak_inventory(self._paper())
+        self.assertEqual([it["id"] for it in inv],
+                         ["S1Q1", "S1Q2", "S2Q1", "S2Q2", "S3P", "S3Q1"])
+        by = {it["id"]: it for it in inv}
+        self.assertEqual(by["S3P"]["kind"], "p")
+        self.assertEqual(by["S1Q1"]["cat"], "ar")
+        self.assertEqual(by["S3Q1"]["cat"], "cbq")
+        # ids are POSITIONAL, so cross_section_validate's renumbering cannot invalidate them
+        self.assertEqual(by["S2Q2"]["qnum"], 4)
+
+    def test_short_passage_is_not_a_surface(self):
+        paper = self._paper()
+        paper["Section C"]["passage"] = "Too short."
+        self.assertNotIn("S3P", [it["id"] for it in sg._leak_inventory(paper)])
+
+    def test_answer_key_is_protected_but_never_a_disclosure_surface(self):
+        # A marking key is never printed for students, so a key restating another question's
+        # answer cannot help anyone in the exam hall — including it would flood the audit.
+        q = {"text": "Name the Act.", "answer_explanation": "The Vernacular Press Act of 1878."}
+        self.assertNotIn("1878", sg._disclosure_text(q))
+        self.assertIn("1878", sg._victim_answer_text(q))
+
+    def test_mcq_correct_option_text_is_the_protected_answer(self):
+        inv = {it["id"]: it for it in sg._leak_inventory(self._paper())}
+        self.assertIn("1919", inv["S1Q2"]["answer"])       # the letter 'a' alone reveals nothing
+        self.assertIn("salt tax", inv["S1Q1"]["disclosure"])
+        self.assertIn("circulation", inv["S3Q1"]["answer"])  # CBQ sub-answers count too
+
+    def test_disclosure_covers_options_or_alternative_and_sub_questions(self):
+        text = sg._disclosure_text({
+            "text": "Stem here", "or_alternative": "Alternative brief",
+            "options": {"a": "First option", "b": "Second option"},
+            "source_text": "Source paragraph", "sub_questions": [{"text": "Sub one"}, "Sub two"]})
+        for part in ("Stem here", "Alternative brief", "First option", "Second option",
+                     "Source paragraph", "Sub one", "Sub two"):
+            self.assertIn(part, text)
+
+    # ── by-design exclusions ──────────────────────────────────────────────────────────
+    def test_passage_never_leaks_to_its_own_section(self):
+        by = {it["id"]: it for it in sg._leak_inventory(self._paper())}
+        # V6 REQUIRES every sub-question to be answerable from the passage alone
+        self.assertFalse(sg._leak_pair_allowed(by["S3Q1"], by["S3P"]))
+        self.assertFalse(sg._leak_pair_allowed(by["S2Q1"], by["S2Q1"]))
+        self.assertFalse(sg._leak_pair_allowed(by["S3P"], by["S1Q1"]))   # passage has no answer
+        self.assertTrue(sg._leak_pair_allowed(by["S2Q2"], by["S3P"]))    # cross-section IS a leak
+        self.assertTrue(sg._leak_pair_allowed(by["S2Q1"], by["S1Q1"]))
+
+    # ── prefilter ─────────────────────────────────────────────────────────────────────
+    def test_prefilter_finds_verbatim_leak_but_not_the_paraphrased_one(self):
+        hits = {v: lk for v, lk, _ in sg._leak_prefilter(sg._leak_inventory(self._paper()))}
+        self.assertEqual(hits.get("S2Q2"), "S3P")
+        # The reported A-R case PARAPHRASES, which is exactly why the scan is a hint and never
+        # a gate — gating on it would miss the defect that prompted this whole check.
+        self.assertNotIn("S2Q1", hits)
+
+    # ── span verification: the load-bearing guard ─────────────────────────────────────
+    def test_audit_confirms_both_reported_leaks(self):
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(self._audit(
+                self._leak("S2Q1", "S1Q1", self.AR_SPAN),
+                self._leak("S2Q2", "S3P", self.PASSAGE_SPAN)), 9, 9)):
+            found, in_tok, out_tok = sg.run_answer_leak_audit(
+                self._paper(), "10", "Social Science")
+        self.assertEqual([(f["victim"], f["leaker"]) for f in found],
+                         [("S2Q1", "S1Q1"), ("S2Q2", "S3P")])
+        self.assertGreater(in_tok + out_tok, 0)
+
+    def test_hallucinated_span_is_dropped(self):
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(self._audit(
+                self._leak("S2Q1", "S1Q1",
+                           "Gandhi chose salt because it united rich and poor alike")), 1, 1)):
+            self.assertEqual(
+                sg.run_answer_leak_audit(self._paper(), "10", "Social Science")[0], [])
+
+    def test_span_quoted_from_an_answer_key_is_dropped(self):
+        # The key is not printed, so it cannot be the vehicle of a leak.
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(self._audit(
+                self._leak("S2Q1", "S1Q1",
+                           "Both statements are true and R explains A")), 1, 1)):
+            self.assertEqual(
+                sg.run_answer_leak_audit(self._paper(), "10", "Social Science")[0], [])
+
+    def test_short_unknown_and_by_design_findings_are_dropped(self):
+        for leak in (self._leak("S2Q1", "S1Q1", "salt tax"),
+                     self._leak("S9Q9", "S1Q1", self.AR_SPAN),
+                     self._leak("S2Q1", "S9P", self.AR_SPAN),
+                     self._leak("S3Q1", "S3P",
+                                "nationalist papers continued to grow in circulation")):
+            with mock.patch.object(sg.mantle_client, "converse",
+                                   return_value=(self._audit(leak), 1, 1)):
+                self.assertEqual(
+                    sg.run_answer_leak_audit(self._paper(), "10", "Social Science")[0], [],
+                    f"should have been dropped: {leak}")
+
+    def test_span_verification_ignores_case_whitespace_and_punctuation(self):
+        # Collapsing whitespace BEFORE stripping punctuation turns 'press, and' into a double
+        # space and loses the match, throwing away a real leak over one comma.
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(self._audit(
+                self._leak("S2Q2", "S3P", "TO CONTROL   the Vernacular Press, and gave the "
+                                          "government the power to censor")), 1, 1)):
+            self.assertEqual(
+                len(sg.run_answer_leak_audit(self._paper(), "10", "Social Science")[0]), 1)
+
+    def test_duplicate_findings_are_collapsed(self):
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(self._audit(
+                self._leak("S2Q1", "S1Q1", self.AR_SPAN),
+                self._leak("S2Q1", "S1Q1", self.AR_SPAN)), 1, 1)):
+            self.assertEqual(
+                len(sg.run_answer_leak_audit(self._paper(), "10", "Social Science")[0]), 1)
+
+    def test_paper_with_one_question_makes_no_llm_call(self):
+        with mock.patch.object(sg.mantle_client, "converse") as m:
+            self.assertEqual(sg.run_answer_leak_audit(
+                {"S": {"questions": [{"qnum": 1, "type": "SA", "marks": 2, "text": "x",
+                                      "answer_explanation": "y"}]}}, "10", "Science"),
+                ([], 0, 0))
+            m.assert_not_called()
+
+    def test_unparseable_response_changes_nothing(self):
+        with mock.patch.object(sg.mantle_client, "converse",
+                               return_value=("I could not find any leaks, sorry.", 1, 1)):
+            self.assertEqual(
+                sg.run_answer_leak_audit(self._paper(), "10", "Social Science")[0], [])
+
+    # ── model selection ───────────────────────────────────────────────────────────────
+    def test_audit_prefers_audit_model_and_falls_back_to_gen_model(self):
+        self.assertNotEqual(sg.mantle_client.AUDIT_MODEL, sg.GEN_MODEL)  # self-audit is weaker
+        seen = []
+
+        def fake(**kw):
+            seen.append(kw["model_id"])
+            if len(seen) == 1:
+                raise RuntimeError("HTTP 404 model not found")
+            return ('{"leaks": []}', 1, 1)
+
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=fake):
+            sg.run_answer_leak_audit(self._paper(), "10", "Social Science")
+        self.assertEqual(seen, [sg.mantle_client.AUDIT_MODEL, sg.GEN_MODEL])
+
+    def test_total_model_outage_leaves_the_paper_untouched(self):
+        paper = self._paper()
+        with mock.patch.object(sg.mantle_client, "converse",
+                               side_effect=RuntimeError("endpoint down")):
+            out, _, _ = sg.fix_answer_leaks(paper, self._wos(), "10", "Social Science")
+        self.assertEqual(out["Section A"]["questions"][0]["text"], self.AR)
+        self.assertEqual(out["Section B"]["questions"][0]["text"], self.SALT_Q)
+        self.assertNotIn("_answer_leaks", out["Section B"])
+
+    # ── the fixer's target policy ─────────────────────────────────────────────────────
+    def _fixer(self, audit_responses, replacement):
+        """Serve the queued audit responses in order, and `replacement` for every regen call."""
+        queue = list(audit_responses)
+
+        def fake(**kw):
+            if "answer-leak auditor" in kw.get("prompt", ""):
+                return (queue.pop(0) if queue else '{"leaks": []}', 5, 5)
+            return (json.dumps(replacement), 3, 3)
+        return fake
+
+    def test_cheaper_leaker_is_rewritten_and_the_passage_is_never_touched(self):
+        new_sa = {"type": "SA", "marks": 2,
+                  "text": "Describe two features of the growth of vernacular newspapers.",
+                  "answer_explanation": "Rapid multiplication; rising circulation."}
+        paper = self._paper()
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=self._fixer(
+                [self._audit(self._leak("S2Q2", "S3P", self.PASSAGE_SPAN))], new_sa)):
+            out, in_tok, out_tok = sg.fix_answer_leaks(
+                paper, self._wos(), "10", "Social Science")
+        # A passage is section-level scaffolding every question beside it depends on, so the
+        # VICTIM is rewritten instead — and the passage survives byte-identical.
+        self.assertIn("vernacular newspapers", out["Section B"]["questions"][1]["text"])
+        self.assertEqual(out["Section C"]["passage"], self.PASSAGE)
+        self.assertEqual(out["Section B"]["questions"][1]["qnum"], 4)     # numbering kept
+        self.assertEqual(out["Section B"]["questions"][1]["marks"], 2)    # marks kept
+        self.assertEqual([len(s["questions"]) for s in out.values()], [2, 2, 1])
+        self.assertNotIn("_answer_leaks", out["Section B"])
+        self.assertGreater(in_tok + out_tok, 0)
+
+    def test_one_mark_leaker_is_preferred_over_the_two_mark_victim(self):
+        new_ar = {"type": "MCQ", "subtype": "assertion_reason", "marks": 1,
+                  "text": ("Assertion (A): The Non-Cooperation Movement was withdrawn in 1922.\n"
+                           "Reason (R): Violence broke out at Chauri Chaura.\n"
+                           "(a) Both A and R are true and R explains A\n(b) Both true, R does "
+                           "not explain A\n(c) A true, R false\n(d) A false, R true"),
+                  "options": dict(self.AR_OPTS), "answer": "a",
+                  "answer_explanation": "Chauri Chaura caused the withdrawal."}
+        paper = self._paper()
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=self._fixer(
+                [self._audit(self._leak("S2Q1", "S1Q1", self.AR_SPAN))], new_ar)):
+            out, _, _ = sg.fix_answer_leaks(paper, self._wos(), "10", "Social Science")
+        self.assertIn("Chauri Chaura", out["Section A"]["questions"][0]["text"])
+        self.assertEqual(out["Section B"]["questions"][0]["text"], self.SALT_Q)  # victim kept
+        self.assertEqual(out["Section A"]["questions"][0]["marks"], 1)
+
+    def test_regen_prompt_carries_the_right_rule_for_each_side(self):
+        prompts = []
+
+        def fake(**kw):
+            p = kw.get("prompt", "")
+            if "answer-leak auditor" in p:
+                return (self._audit(self._leak("S2Q2", "S3P", self.PASSAGE_SPAN)), 5, 5)
+            prompts.append(p)
+            return (json.dumps({"type": "SA", "marks": 2, "text": "A fresh 2-mark question here",
+                                "answer_explanation": "Key points."}), 3, 3)
+
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=fake):
+            sg.fix_answer_leaks(self._paper(), self._wos(), "10", "Social Science")
+        self.assertTrue(prompts)
+        self.assertIn("must test DIFFERENT knowledge", prompts[0])   # victim rule
+        self.assertIn(self.PASSAGE_SPAN[:40], prompts[0])
+
+    def test_unfixable_leak_is_reported_rather_than_dropped(self):
+        def fake(**kw):
+            if "answer-leak auditor" in kw.get("prompt", ""):
+                return (self._audit(self._leak("S2Q1", "S1Q1", self.AR_SPAN)), 5, 5)
+            raise RuntimeError("regen endpoint down")
+
+        paper = self._paper()
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=fake):
+            out, _, _ = sg.fix_answer_leaks(paper, self._wos(), "10", "Social Science")
+        leaks = out["Section B"]["_answer_leaks"]
+        self.assertTrue(any("S2Q1 answered by S1Q1" in x for x in leaks))
+        self.assertEqual(out["Section A"]["questions"][0]["text"], self.AR)  # both survive
+
+    def test_missing_work_order_flags_instead_of_crashing(self):
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=self._fixer(
+                [self._audit(self._leak("S2Q1", "S1Q1", self.AR_SPAN))], {})):
+            out, _, _ = sg.fix_answer_leaks(self._paper(), [], "10", "Social Science")
+        self.assertTrue(out["Section B"]["_answer_leaks"])
+        self.assertEqual([len(s["questions"]) for s in out.values()], [2, 2, 1])
+
+    def test_surviving_leak_is_caught_by_the_single_re_audit(self):
+        new_sa = {"type": "SA", "marks": 2, "text": "A fresh 2-mark question about the press.",
+                  "answer_explanation": "Key points."}
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=self._fixer(
+                [self._audit(self._leak("S2Q2", "S3P", self.PASSAGE_SPAN)),
+                 self._audit(self._leak("S2Q1", "S1Q1", self.AR_SPAN))], new_sa)):
+            out, _, _ = sg.fix_answer_leaks(self._paper(), self._wos(), "10", "Social Science")
+        self.assertTrue(any("still answered by" in x
+                            for x in out["Section A"]["_answer_leaks"]))
+
+    def test_regen_cap_is_honoured_and_the_excess_is_flagged(self):
+        new_sa = {"type": "SA", "marks": 2, "text": "A fresh 2-mark question about the press.",
+                  "answer_explanation": "Key points."}
+        audit = self._audit(self._leak("S2Q1", "S3P", self.PASSAGE_SPAN),
+                            self._leak("S2Q2", "S3P", self.PASSAGE_SPAN))
+        with mock.patch.object(sg.mantle_client, "converse",
+                               side_effect=self._fixer([audit], new_sa)):
+            with mock.patch.object(sg, "ANSWER_LEAK_MAX_REGENS", 1):
+                out, _, _ = sg.fix_answer_leaks(
+                    self._paper(), self._wos(), "10", "Social Science")
+        self.assertEqual(len(out["Section B"]["_answer_leaks"]), 1)
+
+    def test_clean_paper_costs_exactly_one_call_and_changes_nothing(self):
+        calls = []
+
+        def fake(**kw):
+            calls.append(kw["model_id"])
+            return ('{"leaks": []}', 5, 5)
+
+        paper = self._paper()
+        with mock.patch.object(sg.mantle_client, "converse", side_effect=fake):
+            out, _, _ = sg.fix_answer_leaks(paper, self._wos(), "10", "Social Science")
+        self.assertEqual(len(calls), 1)              # no re-audit when nothing was replaced
+        self.assertEqual(out["Section A"]["questions"][0]["text"], self.AR)
+        self.assertNotIn("_answer_leaks", out["Section A"])
+
+    def test_leak_warnings_reach_the_final_audit(self):
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(json.dumps({
+                "quality_score": 6, "ready_to_issue": "needs-minor-fix", "top_issues": [],
+                "verdict": "v"}), 1, 1)):
+            report = sg.run_final_paper_audit(
+                {"S1": {"questions": [{"qnum": 1, "marks": 1}],
+                        "_answer_leaks": ["S2Q1 answered by S1Q1: assertion states the answer"]}},
+                "10", "Social Science", "Medium")
+        self.assertEqual(report["total_warnings"], 1)
+
+
+class MantleObservabilityTest(SimpleTestCase):
+    """Celery logs must say which model is doing what, on which key, and how far a run got.
+
+    The load-bearing test here is the first one: an API key must NEVER reach the log. Keys are
+    identified by position plus a 4-hex SHA-256 fingerprint, which is enough to tell which key is
+    throttled or dead and to correlate that across lines, but useless to anyone who reads the log
+    or ships it to support.
+    """
+
+    K1 = "sk-mantle-NEVERLOGGED-key-one-abcdef123456"
+    K2 = "sk-mantle-NEVERLOGGED-key-two-987654fedcba"
+
+    def setUp(self):
+        self.env = mock.patch.dict(
+            __import__("os").environ, {"MANTLE_API_KEYS": f"{self.K1},{self.K2}"})
+        self.env.start()
+        mc.reset_run_stats()
+
+    def tearDown(self):
+        self.env.stop()
+        mc.reset_run_stats()
+
+    # ── plumbing ──────────────────────────────────────────────────────────────────────
+    class _Resp:
+        def __init__(self, status, payload):
+            self.status_code, self._p = status, payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise mc.requests.exceptions.HTTPError(response=self)
+
+        def json(self):
+            return self._p
+
+    @classmethod
+    def _ok(cls, out_tokens=120, in_tokens=3120):
+        return cls._Resp(200, {"choices": [{"message": {"content": '{"ok": true}'}}],
+                               "usage": {"prompt_tokens": in_tokens,
+                                         "completion_tokens": out_tokens}})
+
+    def _run(self, responses, **kw):
+        """Drive converse() against a scripted list of responses/exceptions, capturing stdout."""
+        import contextlib, io
+        queue = list(responses)
+
+        def post(url, headers=None, json=None, timeout=None):
+            # The key must be on the wire...
+            self.assertTrue(headers["Authorization"].startswith("Bearer sk-mantle-"))
+            r = queue.pop(0) if queue else self._ok()
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        buf = io.StringIO()
+        with mock.patch.object(mc.requests, "post", side_effect=post):
+            with contextlib.redirect_stdout(buf):
+                try:
+                    mc.converse(model_id=kw.pop("model_id", "test-model"),
+                                prompt=kw.pop("prompt", "p" * 500), **kw)
+                except Exception:
+                    pass
+        return buf.getvalue()
+
+    # ── the invariant that must never regress ─────────────────────────────────────────
+    def test_no_api_key_is_ever_printed(self):
+        import re
+        out = "".join((
+            self._run([self._ok()], stage="ok-path"),
+            self._run([self._Resp(401, {}), self._ok()], stage="dead-key"),
+            self._run([self._Resp(429, {}), self._ok()], stage="throttled"),
+            self._run([ConnectionError("TLS handshake timed out")], retries=1, stage="dead"),
+        ))
+        self.assertNotIn(self.K1, out)
+        self.assertNotIn(self.K2, out)
+        self.assertNotIn("NEVERLOGGED", out)
+        # ...and no key-shaped substring survives anywhere in the log
+        self.assertIsNone(re.search(r"sk-mantle-\w{4,}", out))
+        # but the key is still identifiable
+        self.assertRegex(out, r"key=[12]/2:[0-9a-f]{4}")
+
+    def test_both_keys_get_distinct_fingerprints(self):
+        import re
+        out = self._run([self._Resp(401, {}), self._ok()], stage="s")
+        self.assertEqual(len(set(re.findall(r"key=([12]/2:[0-9a-f]{4})", out))), 2)
+
+    def test_keys_summary_never_shows_a_key(self):
+        s = mc.keys_summary()
+        self.assertIn("2 key(s) rotating", s)
+        self.assertNotIn("NEVERLOGGED", s)
+        self.assertRegex(s, r"1/2:[0-9a-f]{4}")
+
+    def test_keys_summary_says_so_when_none_configured(self):
+        with mock.patch.dict(__import__("os").environ, {"MANTLE_API_KEYS": ""}, clear=False):
+            with mock.patch.object(mc, "_get_keys", return_value=[]):
+                self.assertIn("NO KEYS CONFIGURED", mc.keys_summary())
+
+    # ── "what is going on currently" ──────────────────────────────────────────────────
+    def test_start_is_logged_before_the_request_so_a_hang_is_visible(self):
+        # A stalled call used to produce no log line at all until it finally failed.
+        out = self._run([ConnectionError("stalled")], retries=1, stage="hang")
+        self.assertIn("[Mantle] START", out)
+        self.assertIn("stage=hang", out)
+        self.assertIn("[Mantle] FAIL", out)
+        self.assertLess(out.index("START"), out.index("FAIL"))
+
+    def test_retry_failover_and_failure_are_each_labelled(self):
+        self.assertIn("RETRY", self._run([self._Resp(429, {}), self._ok()], stage="s"))
+        self.assertIn("KEYDEAD", self._run([self._Resp(401, {}), self._ok()], stage="s"))
+        self.assertIn("FAIL", self._run([self._Resp(500, {})], retries=1, stage="s"))
+
+    def test_truncation_is_flagged_when_output_hits_the_cap(self):
+        self.assertIn("TRUNCATED?", self._run(
+            [self._ok(out_tokens=900)], max_tokens=900, stage="s"))
+        self.assertNotIn("TRUNCATED?", self._run(
+            [self._ok(out_tokens=100)], max_tokens=900, stage="s"))
+
+    # ── stage labels ──────────────────────────────────────────────────────────────────
+    def test_stage_labels_compose_and_carry_no_whitespace(self):
+        # Section names and pipeline titles contain spaces; an unquoted space inside a key=value
+        # field makes the whole line unsplittable, so labels are slugged.
+        with mc.stage("Section D — Literature"):
+            with mc.stage("cbq"):
+                out = self._run([self._ok()], stage="v6-cbq-passage")
+        label = out.split("stage=")[1].split(" ")[0]
+        self.assertEqual(label, "Section_D_—_Literature/cbq/v6-cbq-passage")
+        self.assertNotIn(" ", label)
+
+    def test_stage_argument_alone_is_not_placeholder_prefixed(self):
+        self.assertEqual(mc.current_stage(), "-")
+        out = self._run([self._ok()], stage="v10-final")
+        self.assertIn("stage=v10-final ", out)
+        self.assertNotIn("stage=-/", out)
+
+    def test_stage_stack_unwinds_even_when_the_body_raises(self):
+        with self.assertRaises(ValueError):
+            with mc.stage("a"):
+                raise ValueError("boom")
+        self.assertEqual(mc.current_stage(), "-")
+
+    def test_stage_is_thread_local_so_parallel_sections_never_mix(self):
+        # Sections are generated on a ThreadPoolExecutor; a shared global would scramble labels.
+        from concurrent.futures import ThreadPoolExecutor
+        import re
+        seen = {}
+
+        def worker(name):
+            with mc.stage(name):
+                seen[name] = re.findall(r"stage=(\S+)", self._run([self._ok()], stage="gen"))
+
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            list(ex.map(worker, ["Section A", "Section B", "Section C"]))
+        for name, labels in seen.items():
+            self.assertEqual(set(labels), {name.replace(" ", "_") + "/gen"})
+
+    # ── per-paper accounting ──────────────────────────────────────────────────────────
+    def test_run_stats_tally_by_model_key_and_stage(self):
+        self._run([self._ok(out_tokens=500)], model_id="model-x", stage="a")
+        self._run([self._ok(out_tokens=700)], model_id="model-y", stage="b")
+        s = mc.run_stats()
+        self.assertEqual(s["calls"], 2)
+        self.assertEqual(s["out"], 1200)
+        self.assertEqual(set(s["by_model"]), {"model-x", "model-y"})
+        self.assertEqual(set(s["by_stage"]), {"a", "b"})
+        self.assertEqual(len(s["by_key"]), 2)          # rotation actually spread the load
+        self.assertFalse(any(" " in k for k in s["by_stage"]))
+
+    def test_errors_are_attributed_to_the_key_that_caused_them(self):
+        self._run([self._Resp(401, {}), self._ok()], stage="s")
+        by_key = mc.run_stats()["by_key"]
+        self.assertEqual(sum(v["errors"] for v in by_key.values()), 1)
+
+    def test_reset_run_stats_makes_the_tally_per_paper(self):
+        self._run([self._ok()], stage="s")
+        self.assertEqual(mc.run_stats()["calls"], 1)
+        mc.reset_run_stats()
+        s = mc.run_stats()
+        self.assertEqual((s["calls"], s["in"], s["out"]), (0, 0, 0))
+        self.assertEqual(s["by_model"], {})
+
+    def test_run_stats_lines_are_printable_and_leak_nothing(self):
+        self._run([self._Resp(429, {}), self._ok()], model_id="model-x", stage="a")
+        lines = mc.run_stats_lines()
+        self.assertTrue(any("calls=1" in x for x in lines))
+        self.assertTrue(any("by model:" in x for x in lines))
+        self.assertTrue(any("by key:" in x for x in lines))
+        self.assertNotIn("NEVERLOGGED", " ".join(lines))
+
+    def test_models_summary_names_all_three_roles(self):
+        s = mc.models_summary()
+        for part in ("gen=", "val=", "audit="):
+            self.assertIn(part, s)
+
+
+class PipelineStepLogTest(SimpleTestCase):
+    """_StepLog turns the paper-assembly passes into a numbered progress trace with per-pass LLM
+    cost, and makes each pass the mantle stage so every '[Mantle]' line inside is attributable."""
+
+    def _capture(self, fn):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_step_prints_start_and_done_with_numbering(self):
+        step = sg._StepLog(total=3)
+
+        def run():
+            with step("First pass"):
+                pass
+            with step("Second pass", "detail here"):
+                pass
+
+        out = self._capture(run)
+        self.assertIn("[Pipeline] 1/3 First pass — START", out)
+        self.assertIn("[Pipeline] 2/3 Second pass — START detail here", out)
+        self.assertIn("2/3 Second pass — done", out)
+        self.assertIn("no llm", out)          # nothing called out, so say so explicitly
+
+    def test_step_sets_the_mantle_stage_for_calls_inside_it(self):
+        step = sg._StepLog(total=1)
+        seen = []
+
+        def run():
+            with step("Answer-leak audit (V11)"):
+                seen.append(mc.current_stage())
+
+        self._capture(run)
+        self.assertEqual(seen, ["Answer-leak_audit_(V11)"])
+        self.assertEqual(mc.current_stage(), "-")     # popped afterwards
+
+    def test_step_reports_a_raising_pass_and_re_raises(self):
+        step = sg._StepLog(total=1)
+
+        def run():
+            with self.assertRaises(RuntimeError):
+                with step("Explodes"):
+                    raise RuntimeError("no work orders")
+
+        out = self._capture(run)
+        self.assertIn("Explodes — RAISED RuntimeError", out)
+        self.assertIn("no work orders", out)
+        self.assertEqual(mc.current_stage(), "-")     # stage still unwinds
+
+    def test_step_attributes_llm_cost_to_the_pass(self):
+        # run_stats is read once on entry and once on exit; the DELTA is what this pass spent.
+        step = sg._StepLog(total=1)
+
+        def run():
+            with step("Costly pass"):
+                pass
+
+        with mock.patch.object(mc, "run_stats", side_effect=[
+                {"calls": 5, "in": 1000, "out": 500},
+                {"calls": 7, "in": 4000, "out": 1500}]):
+            out = self._capture(run)
+        self.assertIn("2 llm call(s) in=3.0k out=1.0k", out)
+
+
+class VisionAndExternalCallLoggingTest(SimpleTestCase):
+    """Image traffic used to be invisible. image_finder._vision_call was direct HTTP with its own
+    unsynchronised `_key_idx` cursor: it logged only failures, kept its own key rotation (so two
+    parallel sections could draw the SAME key), had no 401 failover, and its tokens were absent
+    from every total. It now delegates to mantle_client.converse_vision, which shares the text
+    path's key rotation, failover, logging and counters."""
+
+    K1 = "sk-mantle-NEVERLOGGED-vision-one-abcdef123456"
+    K2 = "sk-mantle-NEVERLOGGED-vision-two-987654fedcba"
+
+    def setUp(self):
+        self.env = mock.patch.dict(
+            __import__("os").environ, {"MANTLE_API_KEYS": f"{self.K1},{self.K2}"})
+        self.env.start()
+        mc.reset_run_stats()
+
+    def tearDown(self):
+        self.env.stop()
+        mc.reset_run_stats()
+
+    class _Resp:
+        def __init__(self, status, payload):
+            self.status_code, self._p = status, payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise mc.requests.exceptions.HTTPError(response=self)
+
+        def json(self):
+            return self._p
+
+    @classmethod
+    def _ok(cls, out_tokens=260):
+        return cls._Resp(200, {"choices": [{"message": {"content": "verified"}}],
+                               "usage": {"prompt_tokens": 3120,
+                                         "completion_tokens": out_tokens}})
+
+    def _drive(self, responses, fn):
+        import contextlib, io
+        queue = list(responses)
+        sent = []
+
+        def post(url, headers=None, json=None, timeout=None):
+            sent.append(json)
+            r = queue.pop(0) if queue else self._ok()
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        buf = io.StringIO()
+        with mock.patch.object(mc.requests, "post", side_effect=post):
+            with contextlib.redirect_stdout(buf):
+                try:
+                    result = fn()
+                except Exception:
+                    result = None
+        return buf.getvalue(), sent, result
+
+    def test_vision_call_is_logged_on_success(self):
+        out, sent, res = self._drive([self._ok()], lambda: mc.converse_vision(
+            model_id="moonshotai.kimi-k2.5", prompt="Does the diagram show stomata?",
+            image_bytes=b"\x89PNG" + b"z" * 40000, mime="image/png", stage="v9-verify"))
+        self.assertIn("[Mantle] START", out)
+        self.assertIn("[Mantle] OK", out)
+        self.assertIn("kind=vision", out)
+        self.assertIn("img=39kb", out)                     # the image size is visible
+        self.assertIn("stage=v9-verify", out)
+        self.assertRegex(out, r"key=[12]/2:[0-9a-f]{4}")
+        self.assertEqual(res, ("verified", 3120, 260))
+
+    def test_vision_never_logs_a_key(self):
+        import re
+        out = "".join((
+            self._drive([self._ok()], lambda: mc.converse_vision(
+                model_id="m", prompt="p", image_bytes=b"x" * 10, stage="s"))[0],
+            self._drive([self._Resp(401, {}), self._ok()], lambda: mc.converse_vision(
+                model_id="m", prompt="p", image_bytes=b"x" * 10, stage="s"))[0],
+            self._drive([ConnectionError("down")], lambda: mc.converse_vision(
+                model_id="m", prompt="p", image_bytes=b"x" * 10, retries=1, stage="s"))[0],
+        ))
+        self.assertNotIn("NEVERLOGGED", out)
+        self.assertIsNone(re.search(r"sk-mantle-\w{4,}", out))
+
+    def test_vision_counts_toward_the_paper_totals(self):
+        self._drive([self._ok(out_tokens=260)], lambda: mc.converse_vision(
+            model_id="moonshotai.kimi-k2.5", prompt="p", image_bytes=b"x" * 10, stage="s"))
+        s = mc.run_stats()
+        self.assertEqual((s["calls"], s["out"]), (1, 260))
+        self.assertIn("moonshotai.kimi-k2.5", s["by_model"])
+        self.assertEqual(len(s["by_key"]), 1)
+
+    def test_vision_fails_over_on_a_dead_key(self):
+        # The old _vision_call had NO failover — a 401 just failed the image check outright.
+        import re
+        out, _, res = self._drive([self._Resp(401, {}), self._ok()], lambda: mc.converse_vision(
+            model_id="m", prompt="p", image_bytes=b"x" * 10, stage="s"))
+        self.assertIn("KEYDEAD", out)
+        self.assertIn("[Mantle] OK", out)
+        self.assertEqual(len(set(re.findall(r"key=([12]/2:[0-9a-f]{4})", out))), 2)
+        self.assertIsNotNone(res)
+
+    def test_vision_sends_a_data_uri_image_part(self):
+        _, sent, _ = self._drive([self._ok()], lambda: mc.converse_vision(
+            model_id="m", prompt="describe", image_bytes=b"\x89PNG123", mime="image/png",
+            stage="s"))
+        content = sent[0]["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "describe"})
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_image_finder_vision_call_delegates_and_swallows_errors(self):
+        from core import image_finder
+        with mock.patch.object(mc, "converse_vision",
+                               return_value=("  scored 9  ", 10, 5)) as m:
+            self.assertEqual(
+                image_finder._vision_call("prompt", b"img", "image/png", max_tokens=200,
+                                          stage="v9-wikimedia-score"),
+                "scored 9")
+        self.assertEqual(m.call_args.kwargs["model_id"], image_finder.VISION_MODEL)
+        self.assertEqual(m.call_args.kwargs["stage"], "v9-wikimedia-score")
+        # A failed image check must degrade the question, never fail the paper.
+        with mock.patch.object(mc, "converse_vision", side_effect=RuntimeError("endpoint down")):
+            self.assertEqual(image_finder._vision_call("p", b"i", "image/png"), "")
+
+    def test_image_finder_no_longer_keeps_its_own_key_rotation(self):
+        # The duplicate cursor was unlocked and failover-less; it must be gone, not just unused.
+        from core import image_finder
+        self.assertFalse(hasattr(image_finder, "_next_mantle_key"))
+        self.assertFalse(hasattr(image_finder, "_key_idx"))
+
+    # ── external_call: non-model HTTP ────────────────────────────────────────────────
+    def test_external_call_logs_start_and_ok(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with mc.stage("Section C"):
+                with mc.external_call("pollinations:ideogram", "candidate=1/3"):
+                    pass
+        out = buf.getvalue()
+        self.assertIn("[HTTP] START stage=Section_C target=pollinations:ideogram candidate=1/3",
+                      out)
+        self.assertIn("[HTTP] OK    stage=Section_C target=pollinations:ideogram", out)
+
+    def test_external_call_logs_failure_and_re_raises(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with self.assertRaises(TimeoutError):
+                with mc.external_call("wikimedia-search"):
+                    raise TimeoutError("read timed out")
+        self.assertIn("[HTTP] FAIL", buf.getvalue())
+        self.assertIn("TimeoutError", buf.getvalue())
+
+    def test_external_call_does_not_touch_the_llm_counters(self):
+        # Pollinations/Wikimedia/Ollama are not completions — they carry no tokens.
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            with mc.external_call("ollama-embed:nomic-embed-text", "32 chunk(s)"):
+                pass
+        self.assertEqual(mc.run_stats()["calls"], 0)
+
+
+class AnswerLeakNormalisationTest(SimpleTestCase):
+    """Two bugs found by replaying the V11 audit against a real Class 11 Mathematics paper
+    (paper 235). Both were invisible in English-language tests.
+
+    1. `_leak_norm` kept only [a-z0-9]. Every Tamil/Hindi/Sanskrit span normalised to the EMPTY
+       string, so every finding on those papers was dropped as "span too short" — V11 was a
+       silent no-op for a large part of the catalogue. On Maths it stripped Greek letters and
+       superscripts, collapsing 'cot θ = cos θ / sin θ' to 'cot cos sin'.
+    2. `_leak_prefilter` emitted hints below the floor the audit itself applies, so it pointed the
+       auditor at shared notation. On the live paper BOTH hints were false positives.
+    """
+
+    def test_norm_preserves_non_latin_scripts(self):
+        for s in ("இலக்கணம் பாடம் ஒன்று விடை", "खंड-ख व्याकरण संधि विच्छेद कीजिए"):
+            self.assertTrue(sg._leak_norm(s), f"{s!r} normalised to empty")
+            # combining marks kept, so words are not fragmented into syllable pieces
+            self.assertEqual(len(sg._leak_norm(s).split()), len(s.replace("-", " ").split()))
+
+    def test_norm_preserves_greek_and_superscripts(self):
+        self.assertEqual(sg._leak_norm("cot θ = cos θ / sin θ"), "cot θ cos θ sin θ")
+        self.assertEqual(sg._leak_norm("sin²x + cos²x = 1"), "sin²x cos²x 1")
+
+    def test_span_verification_works_on_a_tamil_paper(self):
+        span = "இந்தப் பாடலின் கருத்தை விளக்குக என்று கேட்கப்பட்டது"
+        self.assertIn(sg._leak_norm(span), sg._leak_norm("முன்னுரை " + span + " முடிவு"))
+        self.assertNotIn(sg._leak_norm(span), sg._leak_norm("வேறு தொடர்பில்லாத வாக்கியம்"))
+        # and it now clears the word floor instead of being dropped as empty
+        self.assertGreaterEqual(len(sg._leak_norm(span).split()), sg._LEAK_MIN_SPAN_WORDS)
+
+    def test_norm_still_ignores_punctuation_and_dashes(self):
+        self.assertIn(sg._leak_norm("to control the vernacular press, and gave the government"),
+                      sg._leak_norm("passed to control the vernacular press and gave the "
+                                    "government power"))
+        self.assertEqual(sg._leak_norm("Section A — Multiple Choice"), "section a multiple choice")
+
+    def test_prefilter_ignores_shared_mathematical_notation(self):
+        # Verbatim from paper 235: the answer to a 'solve 2sin²x + sin x - 1 <= 0' question and an
+        # MCQ on 'sin x = -1/2 in [0, 2π)' share only notation. Not a leak.
+        inv = sg._leak_inventory({
+            "Section B": {"questions": [
+                {"qnum": 1, "type": "SA", "marks": 2,
+                 "text": "Solve the inequality: 2 sin² x + sin x - 1 ≤ 0, where 0 ≤ x < 2π.",
+                 "answer_explanation": "Let t = sin x. Then -1 ≤ sin x ≤ 1/2, so the solution "
+                                       "set is sin x = -1/2 in [0, 2π) together with x = 3π/2."}]},
+            "Section A": {"questions": [
+                {"qnum": 2, "type": "MCQ", "marks": 1,
+                 "text": "The principal solution of the equation sin x = -1/2 in [0, 2π) are:",
+                 "options": {"a": "π/6, 5π/6", "b": "5π/6, 7π/6", "c": "π/6, 11π/6",
+                             "d": "7π/6, 11π/6"}, "answer": "d",
+                 "answer_explanation": "7π/6 and 11π/6."}]},
+        })
+        self.assertEqual(sg._leak_prefilter(inv), [])
+
+    def test_prefilter_never_emits_a_hint_the_audit_would_reject(self):
+        # Any hint it does emit must clear the audit's own span floor, or it is pointing the
+        # auditor at something the verifier will throw away.
+        inv = sg._leak_inventory({
+            "S1": {"questions": [
+                {"qnum": 1, "type": "SA", "marks": 2,
+                 "text": "State the purpose of the Vernacular Press Act of 1878.",
+                 "answer_explanation": "It was passed to control the vernacular press and gave "
+                                       "the government power to censor Indian-language papers."}]},
+            "S2": {"questions": [
+                {"qnum": 2, "type": "MCQ", "marks": 1,
+                 "text": "The Act was passed to control the vernacular press and gave the "
+                         "government power to censor reports. In which year?",
+                 "options": {"a": "1878", "b": "1879", "c": "1880", "d": "1881"}, "answer": "a",
+                 "answer_explanation": "1878."}]},
+        })
+        hits = sg._leak_prefilter(inv)
+        self.assertTrue(hits, "a genuine verbatim leak must still be hinted")
+        for _v, _l, span in hits:
+            self.assertGreaterEqual(len(sg._leak_norm(span).split()), sg._LEAK_MIN_SPAN_WORDS)
+
+
+class ChapterWeightScopingTest(SimpleTestCase):
+    """Chapter WEIGHTS decide both how many questions a chapter gets and how much of the
+    retrieval budget it gets, so a bad weight starves a chapter twice over.
+
+    Found by replaying paper 235 (Class 11 Mathematics, Trigonometric Functions + Linear
+    Inequalities) against temp.log. The plan was Trig x19 / LinearIneq x2 out of 21 questions,
+    and Linear Inequalities received 900 of 7618 context chars — the teacher picked two
+    chapters and got one. Three separate defects combined to produce it.
+    """
+
+    def test_key_must_be_contained_in_the_chapter_not_the_reverse(self):
+        # THE paper-235 bug: the two-way substring test let the SHORTER chapter name inherit a
+        # longer key's weight, so Class 11's 'Trigonometric Functions' collected the weight of
+        # Class 12's 'Inverse Trigonometric Functions' (8) and outranked its co-chapter 8:1.
+        self.assertEqual(sg._chapter_weight("Mathematics", "Trigonometric Functions", "11"), 1)
+        self.assertEqual(sg._chapter_weight("Mathematics", "Trigonometric Functions"), 1)
+        self.assertEqual(
+            sg._chapter_weight("Mathematics", "Inverse Trigonometric Functions", "12"), 8)
+
+    def test_catalog_key_inside_a_longer_chapter_name_still_matches(self):
+        # The table is deliberately written as short fragments of the real NCERT titles, so
+        # key-inside-chapter is the direction that must keep working.
+        self.assertEqual(sg._chapter_weight("Mathematics", "Matrices and Determinants", "12"), 10)
+        self.assertEqual(
+            sg._chapter_weight("Physics", "Ray Optics and Optical Instruments", "12"), 18)
+        self.assertEqual(
+            sg._chapter_weight("Science", "Chemical Reactions and Equations", "10"), 10)
+
+    def test_longest_matching_key_wins(self):
+        # Dict order used to decide: 'Applications of Integrals' hit the key 'Integrals' (8)
+        # before reaching its own entry (5).
+        self.assertEqual(sg._chapter_weight("Mathematics", "Applications of Integrals", "12"), 5)
+        self.assertEqual(sg._chapter_weight("Mathematics", "Integrals", "12"), 8)
+
+    def test_weights_are_scoped_to_the_class_the_table_was_compiled_for(self):
+        self.assertEqual(sg._chapter_weight("Physics", "Current Electricity", "12"), 17)
+        self.assertEqual(sg._chapter_weight("Physics", "Current Electricity", "11"), 1)
+        # The Science table covers both 9 and 10; an absent class is unscoped, not blocked.
+        self.assertEqual(sg._chapter_weight("Science", "Light", "9"), 8)
+        self.assertEqual(sg._chapter_weight("Science", "Light"), 8)
+
+    def test_unlisted_chapter_inherits_the_mean_not_1(self):
+        # A weight of 1 beside CBSE weights of 3-18 is not a light weight, it is a penalty of
+        # up to 18x for not being in the catalog — applied to question slots AND context chars.
+        w = sg._chapter_weights("Physics", ["Electromagnetic Waves", "Ray Optics", "Custom"], "12")
+        self.assertEqual(w["Custom"], 11.0)                       # mean of 4 and 18
+        self.assertEqual((w["Electromagnetic Waves"], w["Ray Optics"]), (4.0, 18.0))
+
+    def test_no_weightage_data_for_the_class_means_uniform(self):
+        w = sg._chapter_weights("Mathematics",
+                                ["Trigonometric Functions", "Linear Inequalities"], "11")
+        self.assertEqual(set(w.values()), {1.0})
+
+    def test_class_key_reads_any_label_form(self):
+        for label in ("11", "Class 11", " class-11 ", "11th"):
+            self.assertEqual(sg._class_key(label), "11")
+        self.assertEqual(sg._class_key(""), "")       # no number -> unscoped, not class ''
+        self.assertEqual(sg._class_key(None), "")
+
+
+class Paper235ChapterBalanceTest(SimpleTestCase):
+    """End-to-end replay of the allocation that produced the 'questions only come from one part
+    of the textbook' complaints, using paper 235's real section counts from temp.log."""
+
+    SECTIONS = [10, 4, 3, 2, 2]                       # 21 questions
+    CHAPTERS = ["Trigonometric Functions", "Linear Inequalities"]
+
+    def _plan(self):
+        covered, totals = {}, collections.Counter()
+        for n in self.SECTIONS:
+            totals.update(sg._allocate_chapters_to_slots(
+                self.CHAPTERS, n, "Mathematics", covered, "11"))
+        return totals
+
+    def test_two_chapter_paper_is_split_evenly(self):
+        totals = self._plan()
+        self.assertEqual(sum(totals.values()), 21)
+        self.assertEqual(len(totals), 2)
+        # Was 19:2. Neither chapter may fall below ~80% of the other.
+        self.assertGreaterEqual(min(totals.values()) / max(totals.values()), 0.8)
+
+    def test_full_portion_paper_still_follows_cbse_weightage(self):
+        # The fix must not flatten a real board-pattern paper into uniform coverage.
+        chapters = ["Electric Charges and Fields", "Current Electricity",
+                    "Moving Charges and Magnetism", "Electromagnetic Waves",
+                    "Ray Optics and Optical Instruments", "Semiconductor Electronics"]
+        c = collections.Counter(
+            sg._allocate_chapters_to_slots(chapters, 30, "Physics", {}, "12"))
+        self.assertEqual(len(c), len(chapters))                    # every chapter covered
+        self.assertGreater(c["Ray Optics and Optical Instruments"],  # 18m unit
+                           c["Electromagnetic Waves"])              # 4m unit
+
+
+class ContextSpreadOrderTest(SimpleTestCase):
+    """_spread_order: the prompt context must sample the WHOLE chapter, not the similarity
+    cluster. Adjacent textbook chunks are near-identical in embedding space, so top-k retrieval
+    returns a contiguous run — paper 235 sent every section the identical 7618-char block, so
+    all 21 questions came from ~8 adjacent excerpts."""
+
+    # Similarity order: positions 0-7 are one cluster, the rest is the remaining chapter.
+    CANDS = [(1, i, f"chunk{i}") for i in
+             [3, 4, 5, 2, 6, 1, 0, 7, 31, 30, 44, 52, 12, 19, 25, 38]]
+
+    def test_prefix_spans_the_chapter(self):
+        first4 = [c[1] for c in sg._spread_order(self.CANDS)[:4]]
+        # The similarity top-4 spanned chunk idx 2..5; the spread prefix must reach far wider.
+        self.assertGreater(max(first4) - min(first4), 40)
+
+    def test_most_relevant_chunk_is_still_first(self):
+        self.assertEqual(sg._spread_order(self.CANDS)[0], self.CANDS[0])
+
+    def test_nothing_is_dropped_or_duplicated(self):
+        out = sg._spread_order(self.CANDS)
+        self.assertEqual(sorted(out), sorted(self.CANDS))
+
+    def test_deterministic(self):
+        self.assertEqual(sg._spread_order(self.CANDS), sg._spread_order(list(self.CANDS)))
+
+    def test_degenerate_inputs_pass_through(self):
+        self.assertEqual(sg._spread_order([]), [])
+        self.assertEqual(sg._spread_order([(1, 5, "a")]), [(1, 5, "a")])
+        two = [(1, 5, "a"), (1, 9, "b")]
+        self.assertEqual(sg._spread_order(two), two)
+
+    def test_positions_from_different_materials_do_not_collide(self):
+        # Two books on the same chapter both numbered from 0 — ranking by (material, index)
+        # keeps them apart instead of treating m1#0 and m2#0 as the same place.
+        cands = [(1, 0, "a"), (1, 1, "b"), (2, 0, "c"), (2, 1, "d")]
+        out = sg._spread_order(cands)
+        self.assertEqual(out[0], cands[0])
+        self.assertEqual(out[1][0], 2)             # jumps to the other material, not the neighbour
+        self.assertEqual(sorted(out), sorted(cands))

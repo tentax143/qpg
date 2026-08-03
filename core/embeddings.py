@@ -4,6 +4,10 @@ from PyPDF2 import PdfReader
 from PyPDF2.errors import PdfReadError
 import concurrent.futures
 
+# Only for external_call() logging. mantle_client imports nothing from core, so this cannot
+# introduce an import cycle.
+from . import mantle_client
+
 # ── OpenRouter ────────────────────────────────────────────────────────────────
 OPENROUTER_API_KEY    = os.environ.get('OPENROUTER_API_KEY', '')
 OPENROUTER_MODEL      = 'nvidia/llama-nemotron-embed-vl-1b-v2:free'
@@ -48,13 +52,15 @@ def _openrouter_embed_batch(texts: list) -> list:
     if not OPENROUTER_API_KEY:
         return [[0.0] * OPENROUTER_DIM for _ in texts]
     try:
-        r = requests.post(
-            'https://openrouter.ai/api/v1/embeddings',
-            headers={'Authorization': f'Bearer {OPENROUTER_API_KEY}', 'Content-Type': 'application/json'},
-            json={'model': OPENROUTER_MODEL, 'input': texts},
-            timeout=60,
-        )
-        r.raise_for_status()
+        with mantle_client.external_call(
+                f"openrouter-embed:{OPENROUTER_MODEL}", f"{len(texts)} chunk(s)"):
+            r = requests.post(
+                'https://openrouter.ai/api/v1/embeddings',
+                headers={'Authorization': f'Bearer {OPENROUTER_API_KEY}', 'Content-Type': 'application/json'},
+                json={'model': OPENROUTER_MODEL, 'input': texts},
+                timeout=60,
+            )
+            r.raise_for_status()
         data = sorted(r.json()['data'], key=lambda x: x['index'])
         return [item['embedding'] for item in data]
     except Exception as e:
@@ -75,12 +81,14 @@ def _embed_openrouter(texts: list) -> list:
 def _ollama_embed_sub_batch(texts: list) -> list:
     """Single Ollama request for a sub-batch of texts."""
     try:
-        r = requests.post(
-            f'{OLLAMA_BASE_URL}/v1/embeddings',
-            json={'model': OLLAMA_MODEL, 'input': texts},
-            timeout=120,
-        )
-        r.raise_for_status()
+        with mantle_client.external_call(
+                f"ollama-embed:{OLLAMA_MODEL}", f"{len(texts)} chunk(s)"):
+            r = requests.post(
+                f'{OLLAMA_BASE_URL}/v1/embeddings',
+                json={'model': OLLAMA_MODEL, 'input': texts},
+                timeout=120,
+            )
+            r.raise_for_status()
         data = sorted(r.json()['data'], key=lambda x: x['index'])
         return [item['embedding'] for item in data]
     except Exception as e:
@@ -451,8 +459,13 @@ def query(class_name, subject, unit, query_text, n_results=5, provider='local', 
     # the original content, so printed extracts still match the book exactly.
     docs  = [(r.content_clean or r.content) for r in rows]
     dists = [float(getattr(r, "distance", 0.0) or 0.0) for r in rows]
+    # chunk_index is the chunk's position in its source material, i.e. WHERE IN THE CHAPTER
+    # this excerpt came from. Consumers use it to spread the prompt context across the whole
+    # chapter instead of taking the similarity-ordered top-k, which clusters into one region
+    # (neighbouring chunks are near-identical in embedding space).
     metas = [{"class": cls, "subject": subj, "unit": u, "title": r.title or "",
-              "type": r.material_type, "material_id": r.material_id} for r in rows]
+              "type": r.material_type, "material_id": r.material_id,
+              "chunk_index": r.chunk_index} for r in rows]
     def _vec(v):
         if v is None:
             return []

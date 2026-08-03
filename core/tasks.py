@@ -1,9 +1,10 @@
 from celery import shared_task
 from .models import QuestionPaper, ExamPattern, School
-from . import generator, embeddings
+from . import generator, embeddings, mantle_client
 from django.conf import settings
 from django.db.models import F
 import os
+import time
 import threading as _threading
 
 
@@ -690,6 +691,17 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
     paper.status_detail = ""         # clear any prior failure reason / warning
     paper.save()
 
+    # Per-paper LLM tally, so the running totals on every [Mantle] line and the closing
+    # by-model / by-key breakdown describe THIS paper and not everything this worker has done.
+    _t_task = time.time()
+    mantle_client.reset_run_stats()
+    print(f"[Task] ===== generate_paper_task paper={paper_id} task={self.request.id} =====")
+    print(f"[Task] class={paper.class_name} subject={paper.subject} "
+          f"difficulty={paper.difficulty} chapters={len(paper.chapters or [])} "
+          f"pattern={getattr(paper.pattern, 'id', None)} model_source={model_source}")
+    print(f"[Task] {mantle_client.models_summary()}")
+    print(f"[Task] {mantle_client.keys_summary()}")
+
     try:
         # Extract section from class_name if present (e.g., "11-A" -> section="A")
         class_name = paper.class_name
@@ -812,6 +824,15 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         paper.status_detail = " ".join(notes)
         paper.save()
 
+        print(f"[Task] DONE paper={paper_id} in {time.time() - _t_task:.0f}s — "
+              f"cost={total_cost:.4f}INR in={input_tokens} out={output_tokens} "
+              f"file={'yes' if paper.file.name else 'MISSING'}")
+        for _line in mantle_client.run_stats_lines():
+            print(f"[Task] {_line}")
+        if notes:
+            for _n in notes:
+                print(f"[Task] note: {_n}")
+
         # Count AI images in this paper so we can attribute them to the school below.
         try:
             from .paper_audit import count_paper_images
@@ -853,8 +874,14 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
         paper.status_detail = str(e)[:500]
         paper.save()
 
-        # Log the error and let the task fail once
-        print(f"[Task Failed] Paper ID {paper_id}: {str(e)}")
+        # Log the error and let the task fail once. The LLM breakdown goes out here too — a
+        # failed paper is exactly when you need to know which model and which key were involved
+        # and how far the run got before it died.
+        print(f"[Task Failed] Paper ID {paper_id} after {time.time() - _t_task:.0f}s: {str(e)}")
+        for _line in mantle_client.run_stats_lines():
+            print(f"[Task Failed] {_line}")
+        import traceback as _tb
+        print(_tb.format_exc())
         raise
 
     finally:

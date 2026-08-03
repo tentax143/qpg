@@ -15,18 +15,63 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import traceback
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace as dc_replace
 from typing import Optional
 
 from . import embeddings, mantle_client, pattern_structure
-from .data.cbse_patterns import UNIT_MARKS_WEIGHTS
+from .data.cbse_patterns import UNIT_MARKS_WEIGHTS, UNIT_MARKS_WEIGHT_CLASSES
 from .data.science_split import classify_chapter   # Science chapter → Physics/Chemistry/Biology
 
 GEN_MODEL = mantle_client.GEN_MODEL   # deepseek.v3.2
 MAX_PARALLEL_SECTIONS = 3
 MAX_SECTION_RETRIES = 2
+
+
+def _k(n) -> str:
+    n = int(n or 0)
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+class _StepLog:
+    """Sequential numbering and per-pass cost for one paper's assembly, so the Celery log reads
+    as a progress trace instead of an undifferentiated wall of validator output.
+
+    Each step also becomes the mantle_client stage, so every '[Mantle]' line emitted inside it
+    says which pass it belongs to without any call site passing a label.
+    """
+
+    def __init__(self, total: int, tag: str = "Pipeline"):
+        self.i = 0
+        self.total = total
+        self.tag = tag
+        self.t0 = time.time()
+
+    @contextmanager
+    def __call__(self, label: str, detail: str = ""):
+        self.i += 1
+        n = f"{self.i}/{self.total}"
+        before = mantle_client.run_stats()
+        t = time.time()
+        print(f"[{self.tag}] {n} {label} — START{(' ' + detail) if detail else ''}")
+        try:
+            with mantle_client.stage(label):
+                yield
+        except Exception as e:
+            print(f"[{self.tag}] {n} {label} — RAISED {type(e).__name__} after "
+                  f"{time.time() - t:.1f}s: {e}")
+            raise
+        else:
+            a = mantle_client.run_stats()
+            calls = a["calls"] - before["calls"]
+            cost = (f" | {calls} llm call(s) in={_k(a['in'] - before['in'])} "
+                    f"out={_k(a['out'] - before['out'])}") if calls else " | no llm"
+            print(f"[{self.tag}] {n} {label} — done {time.time() - t:.1f}s{cost}"
+                  f" | elapsed {time.time() - self.t0:.0f}s")
 
 # Standard Assertion-Reason options — identical for every AR question in CBSE papers
 _AR_STANDARD_OPTIONS = {
@@ -117,6 +162,11 @@ class SectionWorkOrder:
     chapter_plan: list = field(default_factory=list)     # one chapter name per question slot (weighted allocation)
     slots: list = field(default_factory=list)            # question_slots (per-question structure) — see docs/PER_QUESTION_STRUCTURE.md
     is_grammar: bool = False                             # grammar (இலக்கணம்/व्याकरण) section — chapters routed to grammar lessons only
+    is_english_grammar: bool = False                     # holds English grammar questions — composed from the model's OWN grammar knowledge, never from retrieved context
+    is_english_writing: bool = False                     # holds English composition tasks (article/letter/notice/advertisement…) — the student's own writing, never built on textbook content
+    english_own_only: bool = False                       # the ENTIRE section is own-knowledge (grammar and/or writing) — no RAG context, no chapter assignment
+    sums_count: int = 0                                  # Accountancy: how many of this section's questions MUST be numerical problems ("sums") — see plan_sums_allocation
+    sums_share: float = 0.0                              # paper-wide sums MARKS share this section was planned against (0.0 = not a sums subject)
     disable_images: bool = False                         # superadmin cut AI image generation for this school — skip image_finder entirely
 
 
@@ -733,6 +783,11 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
         if str(s.get("source") or "").strip().lower() == "general"
     )
     _all_general = bool(wo.slots) and _general_count == len(wo.slots)
+    # An all-grammar / all-writing English section is in the same position as an all-general one:
+    # nothing in it may come from the textbook, so it gets the same no-chapter-assignment
+    # treatment. Kept separate from _all_general, which still governs the per-slot exemption
+    # below (a slot-less section — legacy subsection blueprints — has no slots to mark general).
+    _no_textbook = _all_general or wo.english_own_only
 
     if wo.context_text:
         ctx = wo.context_text
@@ -745,13 +800,19 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
                  f"Class {wo.class_name} knowledge — no reference material is provided")
     rule7 = ("7. Do NOT reference the textbook, its chapters, stories or characters "
              "anywhere in this section."
-             if _all_general else
+             if _no_textbook else
              "7. Questions MUST come from different chapters — no chapter monopoly.")
     diff_block = _difficulty_block(wo.difficulty)
 
     # C-01: use section-specific sub-subject when set (compound papers)
     effective_subject = wo.section_subject or wo.subject
-    chapters_str = ", ".join(wo.chapters) if wo.chapters else "all topics"
+    # A section that may draw on NO textbook content must not be handed the chapter list in its
+    # spec either — naming the chapters re-invites exactly what its rules forbid.
+    chapters_str = (
+        "none — this section draws on no textbook chapter"
+        if _no_textbook else
+        (", ".join(wo.chapters) if wo.chapters else "all topics")
+    )
     chapter_count = len(wo.chapters) if wo.chapters else 1
     per_chapter = max(1, round(wo.questions_count / chapter_count)) if wo.questions_count else 1
 
@@ -763,12 +824,18 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
     # straight back into the textbook the teacher just banned (a Grammar section shipped a
     # 'Wit and Humour' comprehension question this way), so all-general sections replace the
     # block outright and mixed sections exempt their general questions.
-    if _all_general:
+    if _no_textbook:
+        _own = [k for k, on in (("GRAMMAR", wo.is_english_grammar),
+                                ("CREATIVE WRITING", wo.is_english_writing)) if on]
+        _kind = (f"ENGLISH {' and '.join(_own)}, set from your own knowledge"
+                 if (wo.english_own_only and _own) else "GENERAL KNOWLEDGE")
+        _tag = ("Grammar" if _own == ["GRAMMAR"] else
+                "Writing" if _own == ["CREATIVE WRITING"] else "General")
         chapter_block = (
-            "CHAPTER ASSIGNMENT: NONE — every question in this section is GENERAL KNOWLEDGE.\n"
+            f"CHAPTER ASSIGNMENT: NONE — every question in this section is {_kind}.\n"
             "Do NOT draw questions from, reference, or name any textbook chapter, story or "
             "character. Write each question on its stated TOPIC at the class level and set "
-            'its "chapter_tag" to "General".'
+            f'its "chapter_tag" to "{_tag}".'
         )
     elif wo.chapter_plan:
         from collections import Counter
@@ -797,13 +864,62 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
     # LESSONS (see identify_grammar_chapters), but the model must also be told to test
     # grammar CONCEPTS — otherwise it happily writes literature-comprehension questions
     # about whatever text appears in the retrieved excerpts.
-    if wo.is_grammar and not _all_general:
+    if wo.is_grammar and not _no_textbook:
         chapter_block += (
             "\nGRAMMAR SECTION — MANDATORY: this section tests GRAMMAR only. Every question "
             "must test a grammar concept (letters/sounds, spelling, joining/sandhi rules, "
             "word forms and classes, sentence structure) as taught in the grammar lessons "
             "listed above. Do NOT ask reading-comprehension or literature questions here — "
             "no story/poem content, characters, authors or poem lines."
+        )
+    # English grammar is composed from the model's OWN grammar knowledge — the reference
+    # material is off-limits for it. Stated unconditionally, unlike the block above: an
+    # all-grammar section arrives with _no_textbook already set, which is exactly the case that
+    # needs this rule most. See the notes above english_own_slot_kinds for the why.
+    if wo.is_english_grammar:
+        _scope = ("Every question in this section is a grammar question."
+                  if wo.english_own_only else
+                  "This applies to every grammar question in this section — the ones marked "
+                  "GENERAL KNOWLEDGE in the per-question specification.")
+        chapter_block += (
+            "\nENGLISH GRAMMAR — ABSOLUTE RULE (overrides every other instruction): "
+            f"{_scope} A grammar question tests an ENGLISH GRAMMAR concept — tenses, voice, "
+            "narration/reported speech, articles, prepositions, determiners, modals, "
+            "subject-verb agreement, clauses and phrases, sentence transformation, gap "
+            "filling, editing/omission, reordering, punctuation, parts of speech — and MUST be "
+            "composed ENTIRELY from your own knowledge of English grammar.\n"
+            "Take NOTHING from the REFERENCE MATERIAL for a grammar question: not a sentence, "
+            "phrase, wording, name, character, place, event, chapter title or storyline. Write "
+            "your OWN example sentences about everyday situations. Never ask a "
+            "reading-comprehension or literature question here, and set every grammar "
+            'question\'s "chapter_tag" to "Grammar".'
+        )
+    # Creative writing is the STUDENT's composition — the brief must stand on its own. A
+    # generated section opened both options of its internal choice with "After reading 'The
+    # Laburnum Top', you are inspired by…", hanging the article on a retrieved poem, which is
+    # exactly what this forbids. Stated unconditionally, for the same reason as the block above.
+    if wo.is_english_writing:
+        _wscope = ("Every question in this section is a writing task."
+                   if wo.english_own_only else
+                   "This applies to every writing task in this section — the ones marked "
+                   "GENERAL KNOWLEDGE in the per-question specification.")
+        chapter_block += (
+            "\nCREATIVE WRITING — ABSOLUTE RULE (overrides every other instruction): "
+            f"{_wscope} Each one sets a SELF-CONTAINED, real-world brief in the stated format "
+            "(article, formal or informal letter, letter to the editor, notice, classified or "
+            "display advertisement, poster, speech, debate, report, story, diary entry, email, "
+            "invitation, analytical or descriptive paragraph, précis, note-making) and MUST be "
+            "composed ENTIRELY from your own knowledge.\n"
+            "Take NOTHING from the REFERENCE MATERIAL: do NOT base the task on, quote, "
+            "summarise or even MENTION a textbook chapter, story, poem, poet, author or "
+            "character, and never open with \"After reading …\", \"Based on your reading of …\" "
+            "or \"Inspired by the poem …\". The student must be able to write the answer "
+            "without having read any textbook.\n"
+            "Give the brief the everyday situation, role and details it needs — who the student "
+            "is, what happened, the word limit — on topics from school life, the neighbourhood, "
+            "the environment, health, technology, sport or current affairs. Where a question "
+            "offers an internal choice, BOTH options must be independent briefs of this kind. "
+            'Set every writing question\'s "chapter_tag" to "Writing".'
         )
 
     # QUESTION TYPE — MANDATORY. The STRICT RULES below are MCQ-heavy, and uniform non-MCQ
@@ -844,6 +960,38 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
             )
     else:
         type_directive = ""
+
+    # Accountancy composition: the paper is 80% sums by marks, and plan_sums_allocation has
+    # already decided how many of THIS section's questions carry that. State the count, not the
+    # paper-wide ratio — a section prompt cannot see the rest of the paper.
+    sums_block = ""
+    if wo.sums_share and wo.questions_count:
+        _n, _k = wo.questions_count, max(0, min(wo.sums_count, wo.questions_count))
+        if _k == _n:
+            _split = f"ALL {_n} questions in this section MUST be SUMS."
+        elif _k == 0:
+            _split = (f"All {_n} questions in this section are QUIZ questions — no sums here.")
+        else:
+            _split = (f"EXACTLY {_k} of the {_n} questions in this section MUST be SUMS; "
+                      f"the other {_n - _k} are QUIZ questions.")
+        sums_block = (
+            f"\n{effective_subject.upper()} COMPOSITION — MANDATORY:\n"
+            f"This paper is {wo.sums_share:.0%} SUMS and {1 - wo.sums_share:.0%} QUIZ by marks. "
+            f"{_split}\n"
+            "A SUM supplies figures/transactions and asks the student to WORK SOMETHING OUT — "
+            "journalise, pass entries, prepare (ledger / trial balance / Trading and Profit & "
+            "Loss / Balance Sheet / Revaluation / Realisation / Partners' Capital or Current "
+            "accounts / Cash Flow Statement), calculate, ascertain, distribute or apportion, "
+            "value goodwill, or compute a ratio FROM GIVEN FIGURES. Every sum MUST print the "
+            "actual amounts in ₹ (and the dates/names) the student needs — a sum with no "
+            "figures is unanswerable.\n"
+            "A QUIZ question tests a definition, concept, rule, principle, format name or "
+            "reason, and needs no computation.\n"
+            "Where a question is marked a SUM, do NOT substitute a theory question. This "
+            "applies to MCQs too: a SUM in MCQ form gives the figures and makes all four "
+            "options plausible computed amounts (e.g. \"₹4,000\", \"₹4,500\", \"₹5,000\", "
+            "\"₹6,000\"), with the working stated in \"answer_explanation\"."
+        )
 
     math_notation_block = ""
     if any(kw in effective_subject.lower() for kw in ("math", "physics", "chemistry", "science")):
@@ -1199,7 +1347,7 @@ SECTION SPECIFICATION:
 {type_directive}
 {qpos_block}{slot_block}
 {chapter_block}
-{avoid_block}{diff_block}
+{avoid_block}{diff_block}{sums_block}
 {math_notation_block}
 {ctx_label}:
 ---
@@ -1505,6 +1653,49 @@ def _text_overlaps_context(src: str, ctx: str) -> bool:
     return hits / len(sample) >= 0.3
 
 
+# Boilerplate that a grammar question STEM and a textbook exercise page share word for word
+# ("fill in the blanks with the correct form of the verb given in brackets"). A verbatim run
+# made mostly of these words is a shared instruction, not copied material.
+_STEM_WORDS = frozenset("""
+a an the and or of to in on at for with from by as is are was were be been being do does did
+have has had this that these those there their they them he she it his her its you your i we
+our not no any all each one two three four five six following correct incorrect option options
+answer answers question questions blank blanks fill choose complete rewrite change identify
+underlined given brackets bracket sentence sentences word words form forms error errors below
+above suitable appropriate most best use using make write put insert select match true false
+verb verbs voice tense tenses passive active plural singular adjective adjectives adverb
+adverbs noun nouns pronoun pronouns preposition prepositions article articles conjunction
+clause clauses phrase phrases direct indirect reported speech correctly grammatically
+sin cos tan cot sec cosec sinh cosh tanh log ln exp lim theta alpha beta pi degrees degree
+radian radians interval solution solutions equation equations identity identities inequality
+inequalities prove show solve find value values simplify evaluate hence graph graphically
+where lies quadrant function functions period principal general
+""".split())
+
+
+def _lifted_span(src: str, ctx: str, span: int = 8, content_floor: int = 5):
+    """First `span`-word run of `src` that appears verbatim in `ctx`, or None.
+
+    Used to prove a question was NOT built out of the reference material. A run must carry at
+    least `content_floor` words outside _STEM_WORDS to count, so a question stem that happens
+    to match a textbook exercise heading ("fill in the blanks with the correct form of the
+    verb") does not read as copied material — only real prose lifted from the chapter does.
+    Both sides normalise to bare lowercase words first.
+    """
+    c = _norm_text(ctx)
+    if not c:
+        return None
+    words = _norm_text(src).split()
+    for i in range(len(words) - span + 1):
+        run = words[i:i + span]
+        if sum(1 for w in run if w not in _STEM_WORDS) < content_floor:
+            continue
+        joined = " ".join(run)
+        if joined in c:
+            return joined
+    return None
+
+
 def _extract_text_issue(src: str):
     """Reason a literature-extract passage is unusable, or None.
 
@@ -1581,7 +1772,9 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
     # General-knowledge slots must not reference textbook chapters: the teacher banned
     # textbook content outright, yet a chapter-assigned model happily writes "In the
     # story X from the chapter Y…". Deterministic name check across the visible text.
-    if slot and str(slot.get("source") or "").strip().lower() == "general":
+    # English grammar slots are forced to source='general' upstream, so they land here too.
+    _is_general_slot = bool(slot) and str(slot.get("source") or "").strip().lower() == "general"
+    if _is_general_slot or (wo.english_own_only and not wo.slots):
         blobs = [text]
         _oa = q.get("or_alternative")
         for _oa_entry in (_oa if isinstance(_oa, list) else [_oa]):
@@ -1594,12 +1787,30 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
         blob = " ".join(blobs).lower()
         for ch in (wo.chapters or []):
             chl = str(ch).strip().lower()
-            if len(chl) >= 4 and chl in blob:
+            # Word-boundary match: a short title ("Fire and Ice") must not be flagged out of an
+            # unrelated grammar sentence, and a substring hit on a longer word is never a
+            # chapter reference either.
+            if len(chl) >= 4 and re.search(rf"\b{re.escape(chl)}\b", blob):
                 errors.append(
                     f"Q{n}: this question is GENERAL KNOWLEDGE — it must not reference the "
                     f"textbook chapter '{ch}'; write an original question on the stated topic"
                 )
                 break
+
+    # English grammar, third layer: an all-grammar section carries no context at all, but a
+    # MIXED section keeps its context for the literature/comprehension slots — so a grammar
+    # question there can still lift a line out of it. Reject any verbatim span. Scoped to the
+    # general-marked slots (which is what every English grammar slot becomes upstream) — the
+    # section's literature questions are SUPPOSED to quote the material.
+    if (wo.is_english_grammar or wo.is_english_writing) and wo.context_text and _is_general_slot:
+        _lifted = _lifted_span(text, wo.context_text)
+        if _lifted:
+            _what = "writing task" if wo.is_english_writing else "grammar question"
+            errors.append(
+                f"Q{n}: this {_what} copies the reference material (\"{_lifted}\") — English "
+                f"{'writing briefs' if wo.is_english_writing else 'grammar questions'} must be "
+                "composed from your own knowledge; write your own instead"
+            )
 
     # ── MCQ ──────────────────────────────────────────────────────────────────────
     is_mcq = ("mcq" in type_lower or "objective" in type_lower or "multiple" in type_lower)
@@ -2254,6 +2465,66 @@ _STOP_WORDS = {
 }
 
 
+# ── Sums vs quiz classification (Accountancy) ────────────────────────────────────
+# Deterministic, so it works on a paper the model never tagged and on one a teacher has since
+# edited. A question counts as a SUM only when it BOTH asks for work to be done AND supplies
+# the figures to do it with: "Prepare the format of a Balance Sheet" carries a preparation verb
+# but no amounts, and is a format question, not a sum.
+
+_SUMS_VERB_RE = re.compile(
+    r"(?i)\b(?:journalis\w*|journaliz\w*|pass\s+the\s+(?:necessary\s+)?(?:journal\s+)?entr\w*|"
+    r"prepar\w*|draw\s+up|calculat\w*|comput\w*|ascertain\w*|determine|find\s+(?:out\s+)?the|"
+    r"work\s+out|distribut\w*|apportion\w*|allocat\w*|value\s+(?:the\s+)?goodwill|amortis\w*|"
+    r"amortiz\w*|record\s+the|post\s+the|show\s+the|rectif\w*|close\s+the|transfer\s+the|"
+    r"revalu\w*|realis\w*|realiz\w*|adjust\w*)\b"
+)
+# ₹1,20,000 / Rs. 50000 / 4,000 / 12.5% — evidence the question carries workable figures.
+_AMOUNT_RE = re.compile(r"(?:₹|rs\.?|inr)\s*[\d,]+|\b\d{1,3}(?:,\d{2,3})+\b|\b\d{3,}\b|\b\d+(?:\.\d+)?\s*%")
+
+
+def _question_nature(q: dict) -> str:
+    """'sums' when this question is a numerical/practical problem, else 'quiz'.
+
+    Requires a computation verb AND workable figures, so a definition, a format question or a
+    "state the formula" prompt all land in 'quiz'. Reads options, sub-questions and any passage
+    too — an MCQ whose figures live in its options ("Calculate interest on capital: ₹4,000 …")
+    is a sum in MCQ clothing and must count as one.
+    """
+    if not isinstance(q, dict):
+        return "quiz"
+    parts = [str(q.get("text", "")), str(q.get("source_text") or q.get("passage") or "")]
+    opts = q.get("options")
+    if isinstance(opts, dict):
+        parts.extend(str(v) for v in opts.values())
+    for sq in (q.get("sub_questions") or []):
+        parts.append(str(sq.get("text", "")) if isinstance(sq, dict) else str(sq))
+    oa = q.get("or_alternative")
+    for entry in (oa if isinstance(oa, list) else [oa]):
+        if isinstance(entry, dict):
+            parts.append(str(entry.get("text", "")))
+        elif isinstance(entry, str):
+            parts.append(entry)
+    blob = " ".join(p for p in parts if p)
+    if _SUMS_VERB_RE.search(blob) and _AMOUNT_RE.search(blob):
+        return "sums"
+    return "quiz"
+
+
+def _sums_marks_split(paper_data: dict) -> tuple:
+    """(sums_marks, quiz_marks) across the whole paper, by _question_nature."""
+    sums = quiz = 0.0
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__") or not isinstance(sec_data, dict):
+            continue
+        for q in sec_data.get("questions", []):
+            m = _as_float(q.get("marks"), 0.0)
+            if _question_nature(q) == "sums":
+                sums += m
+            else:
+                quiz += m
+    return sums, quiz
+
+
 def _map_locations_text(txt: str) -> str:
     """Comparable text for a map question: the part AFTER the boilerplate stem — i.e. the
     location list of 'On the given outline map of India, locate and label: (a) … (b) …'.
@@ -2410,6 +2681,7 @@ def verify_and_fix_semantic_duplicates(
                 prompt=confirm_prompt,
                 max_tokens=100,
                 temperature=0.1,
+                stage="v5-semantic-dup",
             )
             raw = raw.strip()
             m2 = re.search(r"\{.*\}", raw, re.S)
@@ -2434,61 +2706,82 @@ def verify_and_fix_semantic_duplicates(
 
         print(f"[V5L2] Confirmed duplicate Q{i+1} ↔ Q{j+1} — regenerating Q{replace_idx+1}")
 
-        orig_q = updated_questions[replace_idx]
-        orig_cat = _fine_category(orig_q.get("type", ""), str(orig_q.get("subtype", "")))
-        if orig_cat in ("cbq", "map"):
-            # Structurally heavy (sub-questions / map locations) — a single-shot regen can't
-            # reproduce them safely. Keep the original near-duplicate (valid + right type).
-            print(f"[V5L2] Q{replace_idx+1} is {orig_cat.upper()} — skipping regen, keeping original")
-            continue
-
-        type_instr, skel = _regen_question_skeleton(
-            orig_q, replace_idx + 1, orig_q.get("marks", wo.marks_per_question))
-        regen_prompt = (
-            f"Generate ONE CBSE Class {wo.class_name} {wo.subject} question.\n"
-            f"{type_instr}\n"
-            f"Marks: {orig_q.get('marks', wo.marks_per_question)}\n"
-            f"Difficulty: {wo.difficulty}\n"
-            f"Chapters: {', '.join(str(c) for c in wo.chapters)}\n\n"
-            "IMPORTANT: The following concept is ALREADY covered — do NOT repeat it:\n"
-            f"  ✗ {keep_text}\n\n"
-            "Context:\n"
-            f"{wo.context_text[:2500]}\n\n"
-            "Output JSON only (single question object):\n"
-            f"{skel}"
-        )
-        try:
-            rraw, _, _ = mantle_client.converse(
-                model_id=GEN_MODEL,
-                prompt=regen_prompt,
-                max_tokens=500,
-                temperature=0.85,
-            )
-            new_q = extract_single_question_json(rraw, replace_idx, wo.marks_per_question)
-            new_q.setdefault("subtype", orig_q.get("subtype", "standard"))
-            # Preserve original qnum and marks
-            new_q["qnum"] = orig_q.get("qnum", replace_idx + 1)
-            new_q["marks"] = orig_q.get("marks", wo.marks_per_question)
-            # Guard: the replacement MUST be the SAME coarse type as the original AND structurally
-            # valid. A type-drifted replacement (e.g. an SA where the original was an MCQ) is later
-            # stripped by enforce_section_question_types, silently shrinking the section below its
-            # required count. When the regen drifts or is invalid, keep the original near-duplicate —
-            # a flagged near-dup beats a missing question.
-            new_cat = _fine_category(new_q.get("type", ""), str(new_q.get("subtype", "")))
-            regen_errs = _validate_by_subtype(new_q, replace_idx + 1, wo)
-            if new_cat != orig_cat or regen_errs:
-                print(f"[V5L2] Q{replace_idx+1} regen drifted ({orig_cat}→{new_cat}) or invalid "
-                      f"({regen_errs[:1]}) — keeping original near-duplicate")
-            else:
-                updated_questions[replace_idx] = new_q
-                print(f"[V5L2] Q{replace_idx+1} replaced — chapter='{new_q.get('chapter_tag', '?')}'")
-                # Remove the now-resolved warning
-                remaining_warnings = [w for w in remaining_warnings
-                                      if f"Q{i+1} and Q{j+1}" not in w and f"Q{j+1} and Q{i+1}" not in w]
-        except Exception as e:
-            print(f"[V5L2] Regen failed for Q{replace_idx+1}: {e}")
+        new_q, _, _ = _regen_replacement_question(
+            updated_questions[replace_idx], replace_idx, wo, keep_text, tag="V5L2")
+        if new_q:
+            updated_questions[replace_idx] = new_q
+            # Remove the now-resolved warning
+            remaining_warnings = [w for w in remaining_warnings
+                                  if f"Q{i+1} and Q{j+1}" not in w and f"Q{j+1} and Q{i+1}" not in w]
 
     return updated_questions, remaining_warnings
+
+
+def _regen_replacement_question(orig_q: dict, idx: int, wo: SectionWorkOrder,
+                                avoid_text: str = "", tag: str = "Regen",
+                                extra_rule: str = "") -> tuple:
+    """Regenerate ONE question to replace a bad one. Returns
+    (new_question | None, in_tokens, out_tokens); None means keep the original.
+
+    Shared by the within-section (V5L2) and cross-section duplicate fixers and the Accountancy
+    sums enforcer, so all three carry the same guards: structurally heavy types are never
+    regenerated, and a replacement that drifts type or fails validation is discarded. A flagged
+    bad question beats a missing one — a type-drifted replacement is later stripped by
+    enforce_section_question_types, silently shrinking the section below its required count.
+
+    `avoid_text` names a concept the replacement must NOT repeat (duplicate fixers);
+    `extra_rule` is an additional MANDATORY requirement on the replacement (sums enforcer).
+    """
+    orig_cat = _fine_category(orig_q.get("type", ""), str(orig_q.get("subtype", "")))
+    if orig_cat in ("cbq", "map"):
+        # Sub-questions / map locations — a single-shot regen can't reproduce them safely.
+        print(f"[{tag}] Q{idx+1} is {orig_cat.upper()} — skipping regen, keeping original")
+        return None, 0, 0
+
+    marks = orig_q.get("marks", wo.marks_per_question)
+    type_instr, skel = _regen_question_skeleton(orig_q, idx + 1, marks)
+    ctx_block = (
+        f"Context:\n{wo.context_text[:2500]}\n\n" if wo.context_text else
+        "Compose the question from your own knowledge of the subject at this class level.\n\n"
+    )
+    avoid_block = (
+        "IMPORTANT: The following concept is ALREADY covered — do NOT repeat it:\n"
+        f"  ✗ {avoid_text}\n\n" if avoid_text else ""
+    )
+    regen_prompt = (
+        f"Generate ONE CBSE Class {wo.class_name} {wo.subject} question.\n"
+        f"{type_instr}\n"
+        f"Marks: {marks}\n"
+        f"Difficulty: {wo.difficulty}\n"
+        f"Chapters: {', '.join(str(c) for c in wo.chapters)}\n\n"
+        f"{avoid_block}"
+        f"{(extra_rule + chr(10) + chr(10)) if extra_rule else ''}"
+        f"{ctx_block}"
+        "Output JSON only (single question object):\n"
+        f"{skel}"
+    )
+    try:
+        rraw, in_tok, out_tok = mantle_client.converse(
+            model_id=GEN_MODEL, prompt=regen_prompt, max_tokens=500, temperature=0.85, stage="regen")
+    except Exception as e:
+        print(f"[{tag}] Regen call failed for Q{idx+1}: {e}")
+        return None, 0, 0
+    try:
+        new_q = extract_single_question_json(rraw, idx, wo.marks_per_question)
+        new_q.setdefault("subtype", orig_q.get("subtype", "standard"))
+        new_q["qnum"] = orig_q.get("qnum", idx + 1)      # preserve numbering and marks
+        new_q["marks"] = marks
+        new_cat = _fine_category(new_q.get("type", ""), str(new_q.get("subtype", "")))
+        regen_errs = _validate_by_subtype(new_q, idx + 1, wo)
+        if new_cat != orig_cat or regen_errs:
+            print(f"[{tag}] Q{idx+1} regen drifted ({orig_cat}→{new_cat}) or invalid "
+                  f"({regen_errs[:1]}) — keeping original near-duplicate")
+            return None, in_tok, out_tok
+        print(f"[{tag}] Q{idx+1} replaced — chapter='{new_q.get('chapter_tag', '?')}'")
+        return new_q, in_tok, out_tok
+    except Exception as e:
+        print(f"[{tag}] Regen parse failed for Q{idx+1}: {e}")
+        return None, in_tok, out_tok
 
 
 def run_content_quality_critic(questions: list, class_name: str, subject: str, difficulty: str) -> list:
@@ -2535,6 +2828,7 @@ def run_content_quality_critic(questions: list, class_name: str, subject: str, d
             prompt=prompt,
             max_tokens=2048,
             temperature=0.1,
+            stage="v2-critic",
         )
         raw = raw.strip()
         m = re.search(r"\[.*\]", raw, re.S)
@@ -2601,7 +2895,7 @@ def _blind_answer_mcqs(items: list, class_name: str, subject: str) -> dict:
         )
         try:
             raw, _, _ = mantle_client.converse(
-                model_id=mantle_client.VAL_MODEL, prompt=prompt, max_tokens=300, temperature=0.1)
+                model_id=mantle_client.VAL_MODEL, prompt=prompt, max_tokens=300, temperature=0.1, stage="v4-mcq-verify")
             m = re.search(r"\[.*\]", raw.strip(), re.S)
             llm_answers = json.loads(m.group()) if m else []
         except Exception as e:
@@ -2666,6 +2960,240 @@ def verify_mcq_answers(questions: list, class_name: str, subject: str) -> list:
             "confidence": conf, "suspect": suspect, "corrected": corrected,
         })
     return results
+
+
+# ─────────────────────────────────────────────
+# MCQ answer-key balancing (deterministic, no LLM)
+# ─────────────────────────────────────────────
+# Teachers reported answer keys with a visible shape — "aaabbbccc", or every answer (a). The
+# prompt has always asked for a spread (STRICT RULE 6) and validate_section_output rejects a
+# letter used in >65% of a section's MCQs, but neither catches a RUN pattern: "aaabbbccc" puts
+# each letter at 33%, so it sails through, and rule 6's "never more than 2 consecutive" was
+# never enforced anywhere. A patterned key is a real exam-integrity defect — a student who
+# spots it scores without reading the questions.
+#
+# Asking the model again does not fix this reliably, so the key is fixed deterministically
+# AFTER generation instead: permute each MCQ's option VALUES so its correct answer lands on a
+# letter drawn from a balanced, run-free, paper-specific target sequence. An MCQ's options are
+# an unordered set, so this changes nothing a student is being tested on.
+#
+# No RNG — the shuffle is seeded from the paper's own text (same reasoning as
+# _match_option_set: a regenerated paper must come out identical), while still differing from
+# paper to paper so two classes don't share an answer pattern.
+
+_LETTERS4 = ("a", "b", "c", "d")
+
+# Option wording that makes the option SET order-dependent — permuting these breaks the
+# question ("All of the above" must stay last; "Both (a) and (b)" names its own siblings).
+_ORDER_BOUND_OPTION_MARKERS = (
+    "of the above", "of these", "all the above", "none the above",
+    "both a", "both (a", "both b", "both (b", "a and b", "(a) and", "(b) and",
+    "(i) and", "and (ii", "only a", "only (a", "only b", "only (b",
+    "either", "neither", "above statements", "both statements",
+)
+
+# Letter references inside an answer_explanation ("option (b)", "Option C", "answer: d").
+_ANS_LETTER_REF_RE = re.compile(
+    r"(?i)option\s*\(?([a-d])\)?|\(([a-d])\)|(?:answer|correct)\s*(?:is\s*|:\s*)\(?([a-d])\)?"
+)
+
+# An option value that IS a bare letter or article makes a "(a)" in the explanation ambiguous —
+# it may be the ANSWER TEXT rather than an option reference — so the letter remap cannot be
+# trusted. Chiefly an articles MCQ: options "a" / "an" / "the" / "no article".
+_LETTERISH_OPTION_VALUES = frozenset(
+    ("a", "an", "the", "b", "c", "d", "i", "ii", "iii", "iv", "no article", "none", "no change")
+)
+
+# A value that is essentially JUST a number, optionally with a unit or currency symbol
+# ("2", "4.5", "6 cm", "₹250", "30%", "100 m/s"). Deliberately tight: an option like
+# "Statement 3 of the passage" is prose, not a numeric choice.
+_NUMERIC_OPTION_RE = re.compile(
+    r"[₹$€]?\s*(-?\d+(?:\.\d+)?)\s*(?:%|°[CF]?|[²³]|[a-zA-Zµ°Ω]{1,6}(?:/[a-zA-Z]{1,4})?)?"
+)
+
+
+def _seeded_shuffle(items: list, seed: int) -> list:
+    """Fisher-Yates driven by splitmix32 — deterministic for a given seed, and no `random`
+    module (which would make a regenerated paper come out different).
+
+    splitmix32 rather than a plain LCG: an LCG's low bits are barely random, and `state % n`
+    reads exactly those bits — the first version of this produced "cdabcdab", i.e. it swapped
+    one visible pattern for another. splitmix32 avalanches, so the low bits are usable.
+    """
+    out = list(items)
+    state = (seed or 1) & 0xFFFFFFFF
+    for i in range(len(out) - 1, 0, -1):
+        state = (state + 0x9E3779B9) & 0xFFFFFFFF
+        z = state
+        z = ((z ^ (z >> 16)) * 0x21F0AAAD) & 0xFFFFFFFF
+        z = ((z ^ (z >> 15)) * 0x735A2D97) & 0xFFFFFFFF
+        z ^= z >> 15
+        j = z % (i + 1)
+        out[i], out[j] = out[j], out[i]
+    return out
+
+
+def _repeats_a_block(seq: list) -> bool:
+    """True when the sequence is just one block repeated ("abab", "dbacdbac", "aaaa")."""
+    n = len(seq)
+    for blk in range(1, n // 2 + 1):
+        if n % blk == 0 and seq == seq[:blk] * (n // blk):
+            return True
+    return False
+
+
+def _repair_runs(seq: list) -> list:
+    """Break every run of 3+ identical letters by swapping the offender with a later letter
+    that differs from both of its new neighbours. Bounded, and leaves the counts untouched."""
+    for i in range(2, len(seq)):
+        if seq[i] != seq[i - 1] or seq[i] != seq[i - 2]:
+            continue
+        for j in range(i + 1, len(seq)):
+            if seq[j] == seq[i]:
+                continue
+            if seq[j] != seq[i - 1] and (j + 1 >= len(seq) or seq[j + 1] != seq[i]):
+                seq[i], seq[j] = seq[j], seq[i]
+                break
+    return seq
+
+
+def _balanced_answer_letters(n: int, seed: int) -> list:
+    """`n` answer letters: equal counts of a/b/c/d (±1), shuffled, no run longer than 2, and
+    not a repeated block.
+
+    Equal counts alone are not enough — "aaabbbccc" is perfectly balanced and still an obvious
+    pattern — so the multiset is shuffled and run-repaired. A rotation ("abcdabcd") is equally
+    a pattern, and an honest shuffle still lands on one about 1% of the time at n=8, so a
+    sequence that repeats a block is rejected and reseeded. Deterministic throughout: the same
+    paper always produces the same sequence.
+    """
+    if n <= 0:
+        return []
+    pool = [_LETTERS4[i % 4] for i in range(n)]          # equal counts, ±1
+    seq = _repair_runs(_seeded_shuffle(pool, seed))
+    attempt = 0
+    while _repeats_a_block(seq) and attempt < 8 and n > 2:
+        attempt += 1
+        seq = _repair_runs(_seeded_shuffle(pool, (seed + attempt * 0x9E3779B1) & 0xFFFFFFFF))
+    return seq
+
+
+def _mcq_is_permutable(q: dict) -> bool:
+    """True when this MCQ's four options may be reordered safely.
+
+    Excluded, because reordering would change or break the question:
+      - Assertion-Reason — CBSE prints its four options in one canonical order;
+      - matching — _match_option_set already rotates which letter holds the key;
+      - order-bound wording ("All of the above", "Both (a) and (b)");
+      - an already-sorted numeric set (2/4/6/8), where ascending order is the convention;
+      - letter-ish option VALUES ("a", "an", "the") — an articles question, where a "(a)" in
+        the explanation may be the ANSWER TEXT rather than an option reference, so the letter
+        remap cannot be trusted.
+    """
+    opts = q.get("options")
+    if not isinstance(opts, dict) or set(opts) != set(_LETTERS4):
+        return False
+    vals = [str(opts[k]).strip() for k in _LETTERS4]
+    if not all(vals) or len(set(vals)) != 4:
+        return False
+    if str(q.get("answer", "")).lower().strip() not in _LETTERS4:
+        return False
+    subtype = str(q.get("subtype", "")).strip().lower()
+    if subtype in ("assertion_reason", "matching"):
+        return False
+    if "assertion" in _type_str(q.get("type", "")):
+        return False
+    if any(v.strip("'\"() ").lower() in _LETTERISH_OPTION_VALUES for v in vals):
+        return False
+    low = " ".join(vals).lower()
+    if any(m in low for m in _ORDER_BOUND_OPTION_MARKERS):
+        return False
+    nums = [float(m.group(1))
+            for m in (_NUMERIC_OPTION_RE.fullmatch(v) for v in vals) if m]
+    if len(nums) == 4 and (nums == sorted(nums) or nums == sorted(nums, reverse=True)):
+        return False
+    return True
+
+
+def _remap_answer_letters(text: str, mapping: dict) -> str:
+    """Rewrite option-letter references in an explanation through `mapping` (old→new).
+
+    re.sub scans left to right and never re-examines what it wrote, so an a↔b swap cannot
+    double-remap. Only the letter character is replaced; surrounding wording and case are
+    left exactly as the model wrote them.
+    """
+    if not text:
+        return text
+
+    def _sub(m):
+        s = m.group(0)
+        old = next((g for g in m.groups() if g), "").lower()
+        new = mapping.get(old, old)
+        if not old or new == old:
+            return s
+        i = s.lower().rfind(old)
+        return s[:i] + (new.upper() if s[i].isupper() else new) + s[i + 1:]
+
+    return _ANS_LETTER_REF_RE.sub(_sub, str(text))
+
+
+def balance_mcq_answer_keys(paper_data: dict) -> dict:
+    """Spread MCQ correct answers over a/b/c/d with no run longer than 2, paper-wide.
+
+    Permutes each eligible MCQ's option values so its answer sits on a target letter, updates
+    "answer", and remaps letter references in "answer_explanation". Deterministic and
+    LLM-free. Questions _mcq_is_permutable rejects are left exactly as generated, so their
+    letters still count toward the sequence the eligible ones are fitted around.
+    """
+    eligible, fixed = [], []
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__") or not isinstance(sec_data, dict):
+            continue
+        for q in sec_data.get("questions", []):
+            if not isinstance(q, dict) or not isinstance(q.get("options"), dict):
+                continue
+            (eligible if _mcq_is_permutable(q) else fixed).append(q)
+    if len(eligible) < 3:
+        return paper_data          # too few to carry a pattern worth rewriting
+
+    # Seed from the paper's own question text: stable across regenerations of the same paper,
+    # different for a different paper, so two classes never share an answer pattern.
+    seed = zlib.crc32(" ".join(
+        str(q.get("text", ""))[:120] for q in (eligible + fixed)
+    ).encode("utf-8", "ignore"))
+
+    before = "".join(str(q.get("answer", "?")).lower().strip()[:1] for q in eligible)
+    targets = _balanced_answer_letters(len(eligible), seed)
+
+    moved = 0
+    for q, target in zip(eligible, targets):
+        opts = q["options"]
+        cur = str(q["answer"]).lower().strip()
+        if cur == target:
+            continue
+        correct_val = opts[cur]
+        others = [opts[k] for k in _LETTERS4 if k != cur]
+        new_opts, mapping, it = {}, {}, iter(others)
+        for letter in _LETTERS4:
+            if letter == target:
+                new_opts[letter] = correct_val
+                mapping[cur] = letter
+            else:
+                new_opts[letter] = next(it)
+        # mapping for the three distractors, derived from where each value ended up
+        old_of = {v: k for k, v in opts.items()}
+        for letter, val in new_opts.items():
+            mapping.setdefault(old_of.get(val, letter), letter)
+        q["options"] = new_opts
+        q["answer"] = target
+        if q.get("answer_explanation"):
+            q["answer_explanation"] = _remap_answer_letters(q["answer_explanation"], mapping)
+        moved += 1
+
+    after = "".join(str(q.get("answer", "?")).lower().strip()[:1] for q in eligible)
+    print(f"[MCQ-Balance] {moved}/{len(eligible)} key(s) moved "
+          f"({len(fixed)} left as-is: AR/matching/order-bound): {before} → {after}")
+    return paper_data
 
 
 def _is_dedicated_cbq_section(wo: SectionWorkOrder) -> bool:
@@ -2756,6 +3284,7 @@ def check_ncert_grounding(questions: list, context_text: str, class_name: str, s
             prompt=prompt,
             max_tokens=1024,
             temperature=0.1,
+            stage="v3-grounding",
         )
         raw = raw.strip()
         m = re.search(r"\[.*\]", raw, re.S)
@@ -2833,6 +3362,7 @@ def validate_cbq_passage(section_data: dict, wo: SectionWorkOrder) -> list:
             prompt=prompt,
             max_tokens=512,
             temperature=0.1,
+            stage="v6-cbq-passage",
         )
         raw = raw.strip()
         m = re.search(r"\{.*\}", raw, re.S)
@@ -2966,6 +3496,26 @@ def build_single_question_prompt(wo: SectionWorkOrder, qtype_str: str, q_index: 
 
     language_directive = _language_directive(wo.section_subject or wo.subject)
 
+    # English grammar and creative writing never draw on the reference material (see
+    # english_own_slot_kinds) — withhold the material outright and invert the provenance rule.
+    if wo.english_own_only:
+        context = ""
+        if wo.is_english_writing:
+            source_rule = (
+                "- Set a SELF-CONTAINED, real-world writing brief composed ENTIRELY from your "
+                "own knowledge\n"
+                "- Take NOTHING from any textbook chapter, story, poem or character, and never "
+                'open with "After reading …" — set "chapter_tag" to "Writing"\n'
+            )
+        else:
+            source_rule = (
+                "- Compose this question ENTIRELY from your own knowledge of English grammar\n"
+                "- Take NOTHING from any textbook chapter, story, poem or character — write "
+                'your own example sentence, and set "chapter_tag" to "Grammar"\n'
+            )
+    else:
+        source_rule = "- Draw content ONLY from the reference material above\n"
+
     return (
         f"Generate exactly ONE CBSE Class {wo.class_name} {wo.subject} {qtype_str} question.\n"
         f"{language_directive}"
@@ -2976,7 +3526,7 @@ def build_single_question_prompt(wo: SectionWorkOrder, qtype_str: str, q_index: 
         "REFERENCE MATERIAL:\n"
         f"{context[:4000]}\n\n"
         "RULES:\n"
-        "- Draw content ONLY from the reference material above\n"
+        f"{source_rule}"
         "- Do not repeat concepts from the avoid list\n"
         "- Write at CBSE board exam quality\n\n"
         "OUTPUT — return ONLY this JSON (no markdown fences):\n"
@@ -3049,6 +3599,7 @@ def generate_la_cbq_individually(wo: SectionWorkOrder) -> tuple[dict, int, int]:
                 prompt=prompt,
                 max_tokens=params["budget_per_q"],
                 temperature=params["temp"],
+                stage="gen-single",
             )
             total_in_tok += in_tok
             total_out_tok += out_tok
@@ -3507,6 +4058,7 @@ def _post_process_assertion_reason(section_data: dict, wo: SectionWorkOrder) -> 
             try:
                 raw, in_tok, out_tok = mantle_client.converse(
                     model_id=GEN_MODEL, prompt=prompt, max_tokens=400, temperature=0.7,
+                    stage="ar-repair",
                 )
                 total_in += in_tok
                 total_out += out_tok
@@ -3606,7 +4158,8 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
             if cl and (cl in tag or tag in cl):
                 covered[(eff_subject, ch)] = covered.get((eff_subject, ch), 0) + 1
                 break
-    topup_plan = _allocate_chapters_to_slots(wo.chapters, missing, eff_subject, covered)
+    topup_plan = _allocate_chapters_to_slots(wo.chapters, missing, eff_subject, covered,
+                                             wo.class_name)
 
     # Reuse the normal section prompt, but for just the missing count, then forbid repeats.
     sub_wo = dc_replace(wo, questions_count=missing, provided_count=None,
@@ -3624,6 +4177,7 @@ def _top_up_short_section(section_data: dict, wo: SectionWorkOrder) -> tuple:
         raw, in_tok, out_tok = mantle_client.converse(
             model_id=GEN_MODEL, prompt=prompt,
             max_tokens=estimate_token_budget(sub_wo), temperature=0.8,
+            stage="top-up",
         )
         new_data = _repair_section_data(extract_section_json(raw))
     except Exception as e:
@@ -3853,6 +4407,7 @@ def generate_section(wo: SectionWorkOrder):
             prompt=prompt,
             max_tokens=token_budget,
             temperature=0.8,
+            stage="gen",
         )
         total_in_tok += in_tok
         total_out_tok += out_tok
@@ -4017,6 +4572,7 @@ def _validate_context_quality(context: str, section_name: str, questions_count: 
             prompt=prompt,
             max_tokens=100,
             temperature=0.1,
+            stage="ctx-precheck",
         )
         raw = raw.strip()
         m = re.search(r"\{.*\}", raw, re.S)
@@ -4054,20 +4610,108 @@ def _query_hints_for_types(question_types: list, subject: str) -> list:
     return list(dict.fromkeys(hints))
 
 
-def _chapter_weight(subject: str, chapter: str) -> int:
-    """
-    Return the CBSE unit marks weight for a chapter, used to scale n_results.
-    Matches chapter name against UNIT_MARKS_WEIGHTS by substring (case-insensitive).
-    Falls back to 1 if no match found.
+def _class_key(class_name) -> str:
+    """The bare class number from any label form ('11', 'Class 11', 'XI ' → '11'). '' when the
+    label carries no number, which means "don't class-scope" (legacy callers)."""
+    m = re.search(r"\d{1,2}", str(class_name or ""))
+    return m.group() if m else ""
+
+
+def _chapter_weight(subject: str, chapter: str, class_name: str = "", default: int = 1) -> int:
+    """CBSE unit marks weight for a chapter, used to scale retrieval budget and the
+    per-question chapter allocation. Returns `default` when the chapter has no entry.
+
+    Two fixes over the original substring lookup, both of which cost real papers questions:
+
+    1. ANCHORED matching — the catalog key must be contained in the CHAPTER name, never the
+       reverse. The old two-way test let a shorter chapter name inherit a longer key's weight,
+       so Class 11 'Trigonometric Functions' matched Class 12's 'Inverse Trigonometric
+       Functions'.
+    2. LONGEST key wins — dict order used to decide. 'Applications of Integrals' matched the
+       key 'Integrals' (8) before reaching its own entry (5).
+
+    Also scoped by class (UNIT_MARKS_WEIGHT_CLASSES): each table is one class's syllabus, so a
+    Class 11 paper is no longer scored against the Class 12 distribution. class_name '' keeps
+    the legacy unscoped lookup.
     """
     weights = UNIT_MARKS_WEIGHTS.get(subject, {})
     if not weights or not chapter:
-        return 1
+        return default
+    cls = _class_key(class_name)
+    if cls:
+        allowed = UNIT_MARKS_WEIGHT_CLASSES.get(subject)
+        if allowed and cls not in allowed:
+            return default
     chapter_lower = chapter.strip().lower()
+    best_key, best_weight = "", default
     for unit_key, weight in weights.items():
-        if unit_key.lower() in chapter_lower or chapter_lower in unit_key.lower():
-            return weight
-    return 1
+        uk = unit_key.strip().lower()
+        if uk and uk in chapter_lower and len(uk) > len(best_key):
+            best_key, best_weight = uk, weight
+    return best_weight
+
+
+def _chapter_weights(subject: str, chapters: list, class_name: str = "") -> dict:
+    """Per-chapter weights for ONE paper, normalised so an unlisted chapter is not starved.
+
+    `_chapter_weight` returns 1 for a chapter with no weightage entry. Where some of the
+    paper's chapters ARE listed (CBSE unit weights run 3-18) and others are not, that 1 is not
+    a modest weight — it is a penalty of up to 18× for the crime of not being in the catalog,
+    and it is applied twice over: to the chapter's share of question slots AND to its share of
+    the retrieval character budget. An unlisted chapter therefore inherits the MEAN of the
+    listed ones, so weighting still follows CBSE where CBSE has an opinion about this class and
+    falls back to uniform where it does not.
+    """
+    chs = list(chapters or [])
+    # `default=0` marks "no weightage entry" distinctly from a genuine light weight.
+    raw = {ch: float(_chapter_weight(subject, ch or "", class_name, 0)) for ch in chs}
+    listed = [ch for ch in chs if raw[ch] > 0]
+    if listed and len(listed) < len(chs):
+        mean = sum(raw[ch] for ch in listed) / len(listed)
+        for ch in chs:
+            if raw[ch] <= 0:
+                raw[ch] = mean
+    return {ch: max(1.0, raw[ch]) for ch in chs}
+
+
+def _spread_order(cands: list) -> list:
+    """Reorder retrieval candidates so any PREFIX of the list is spread across the whole
+    chapter instead of clustered in one part of it.
+
+    Retrieval returns chunks in similarity order and the character budget then keeps only the
+    first few. Neighbouring chunks of a textbook are near-identical in embedding space, so that
+    top-k is typically a contiguous run — one region of one chapter. On a real Class 11 Maths
+    paper every section received the identical 7618-char block, i.e. all 21 questions were
+    written from ~8 adjacent excerpts. That is the "questions only come from one part of the
+    textbook" complaint, and it is a ranking artefact, not a shortage of material.
+
+    Farthest-point traversal over printed position: keep the single most relevant chunk first
+    (relevance still decides what the paper is about), then repeatedly take the candidate
+    furthest — in printed order — from everything already taken. Whatever prefix the budget can
+    afford is therefore spread over the chapter, with no need to know that length up front, and
+    it degrades gracefully: room for one excerpt still yields the most relevant one. Ties break
+    toward the more relevant candidate, so the result stays deterministic.
+
+    `cands` are (material_id, chunk_index, text) in similarity order.
+    """
+    if len(cands) <= 2:
+        return list(cands)
+    # Rank by printed position (material first, then index within it) so distances stay
+    # comparable when several materials are attached to the same chapter.
+    order = sorted(range(len(cands)), key=lambda i: (cands[i][0], cands[i][1], i))
+    pos = {ci: rank for rank, ci in enumerate(order)}
+    picked = [0]
+    mind = {i: abs(pos[i] - pos[0]) for i in range(1, len(cands))}
+    while mind:
+        nxt = min(mind, key=lambda i: (-mind[i], i))
+        picked.append(nxt)
+        at = pos[nxt]
+        del mind[nxt]
+        for i in mind:
+            d = abs(pos[i] - at)
+            if d < mind[i]:
+                mind[i] = d
+    return [cands[i] for i in picked]
 
 
 def get_section_context(class_name: str, subject: str, chapters: list, query_hints: list, max_chars: int = 8000, school_id=None) -> str:
@@ -4087,8 +4731,10 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
     # by passing unit=None — embeddings.query omits the where filter when unit is falsy.
     query_units = chapters if chapters else [None]
 
-    # Compute total weight for proportional allocation
-    chapter_weights = {ch: _chapter_weight(subject, ch or "") for ch in query_units}
+    # Compute total weight for proportional allocation. Class-scoped, and an unlisted chapter
+    # inherits the mean of the listed ones rather than 1 — otherwise a chapter missing from the
+    # CBSE catalog is starved of retrieval budget as well as questions (_chapter_weights).
+    chapter_weights = _chapter_weights(subject, query_units, class_name)
     total_weight = sum(chapter_weights.values()) or 1
     # Base pool: 48 chunks across all chapters; each chapter gets a share proportional to its CBSE marks weight
     base_pool = max(48, 12 * len(query_units))
@@ -4109,12 +4755,21 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
                     school_id=school_id,
                 )
                 if results and results.get("documents"):
-                    for doc_list in results["documents"]:
+                    doc_lists = results["documents"]
+                    meta_lists = results.get("metadatas") or []
+                    for li, doc_list in enumerate(doc_lists):
                         docs = doc_list if isinstance(doc_list, list) else [doc_list]
-                        for doc in docs:
-                            if doc and doc not in seen:
-                                seen.add(doc)
-                                unit_docs.append(doc)
+                        metas = meta_lists[li] if li < len(meta_lists) else []
+                        if not isinstance(metas, list):
+                            metas = []
+                        for di, doc in enumerate(docs):
+                            if not doc or doc in seen:
+                                continue
+                            seen.add(doc)
+                            # Printed position, so _spread_order can walk ACROSS the chapter.
+                            mt = metas[di] if di < len(metas) and isinstance(metas[di], dict) else {}
+                            unit_docs.append((_as_int(mt.get("material_id"), 0),
+                                              _as_int(mt.get("chunk_index"), 0), doc))
             except Exception as e:
                 print(f"[Section-Context] query failed chapter='{chapter}' q='{query}': {e}")
 
@@ -4147,7 +4802,10 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
             parts.append(header)
         used = sum(len(p) for p in parts)
         added = 0
-        for doc in docs_by_unit[chapter]:
+        picked_at = []
+        # Spread across the chapter rather than taking the similarity-ordered top-k, which
+        # clusters into one region (see _spread_order).
+        for _mid, cidx, doc in _spread_order(docs_by_unit[chapter]):
             if not added:
                 # Always represent the chapter with at least one (possibly trimmed) chunk.
                 room = max(400, budget - used)
@@ -4158,7 +4816,13 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
             else:
                 parts.append(doc)
                 used += len(doc) + 2
+            picked_at.append(cidx)
             added += 1
+        if chapter and picked_at:
+            # Printed positions of the excerpts actually sent. Adjacent numbers here mean the
+            # paper is again being written from one part of the chapter.
+            print(f"[Section-Context]   '{chapter}': {added} excerpt(s), {used} chars, "
+                  f"chunk idx {','.join(str(i) for i in sorted(picked_at))}")
         blocks.append("\n\n".join(parts))
 
     context = "\n\n".join(blocks)
@@ -4541,6 +5205,7 @@ def identify_grammar_chapters(class_name: str, subject: str, chapters: list) -> 
             raw, _, _ = mantle_client.converse(
                 model_id=mantle_client.VAL_MODEL, prompt=prompt,
                 max_tokens=500, temperature=0.0,
+                stage="grammar-chapters",
             )
             m = re.search(r"\[.*\]", raw or "", re.DOTALL)
             if m:
@@ -4572,6 +5237,189 @@ def _route_grammar_chapters(is_grammar: bool, sec_chapters: list, grammar_chapte
     else:
         kept = [c for c in (sec_chapters or []) if c not in gset]
     return kept or list(sec_chapters or [])
+
+
+# ─────────────────────────────────────────────
+# English grammar — own knowledge only, never the retrieved context
+# ─────────────────────────────────────────────
+# An English paper's grammar questions must be composed from the model's OWN knowledge of
+# English grammar. NOTHING may come from the reference material handed to the LLM.
+#
+# Why this needs its own rule: NCERT English readers (Honeydew, Beehive, First Flight,
+# Footprints…) contain no grammar LESSONS, so identify_grammar_chapters finds nothing to route
+# the grammar section to and _route_grammar_chapters falls back to the full chapter list. The
+# section then retrieves prose/poetry and the model builds "gap filling", "editing" and
+# "reordering" questions out of story sentences, tagged to literature chapters.
+#
+# Enforcement is layered, so a leak has to defeat all three:
+#   1. grammar slots are forced to source='general' — this reuses the whole existing
+#      general-knowledge machinery (per-slot prompt directive, chapter-assignment exemption,
+#      chapter-name validator);
+#   2. a section that is ENTIRELY grammar is denied retrieval outright — no context reaches
+#      the prompt at all, plus an explicit ABSOLUTE RULE block in build_section_prompt;
+#   3. _lifted_span rejects any grammar question that still copies a span of the material
+#      (the case that survives 2 only in mixed sections, which keep context for their
+#      literature/comprehension slots).
+
+# Grammar skills named on a slot's type / topic / format. Deliberately grammar-only —
+# vocabulary wording (synonym/antonym/word-meaning) is excluded because "find a word from the
+# passage meaning X" is a comprehension question that legitimately needs the passage.
+_ENGLISH_GRAMMAR_TOPIC_MARKERS = (
+    "grammar", "tense", "article", "preposition", "conjunction", "determiner",
+    "modal", "auxiliar", "voice", "passive", "active", "narration",
+    "reported speech", "direct speech", "indirect speech", "subject-verb",
+    "subject verb", "concord", "agreement", "gap fill", "gap-fill", "gap filling",
+    "editing", "omission", "error correction", "reorder", "re-order", "rearrange",
+    "jumbled", "transformation", "clause", "phrase", "degrees of comparison",
+    "punctuation", "capitalisation", "capitalization", "parts of speech", "noun",
+    "pronoun", "adjective", "adverb", "verb form", "infinitive", "gerund",
+    "participle", "question tag", "homophone", "homonym", "singular", "plural",
+    "syntax", "linker", "connector", "sentence type", "sentence structure",
+)
+
+# Literature wording exempts a slot — and, for a slot-less section, keeps the whole section's
+# context — so a hybrid "Literature and Grammar" section does not lose the material its
+# literature questions genuinely need.
+_ENGLISH_LITERATURE_TOPIC_MARKERS = (
+    "chapter", "story", "poem", "poetry", "prose", "extract", "passage",
+    "character", "author", "poet", "lesson", "textbook", "novel", "drama", "play",
+    "literature", "reading", "comprehension", "unseen", "supplementary",
+)
+
+# Slot types that ARE grammar questions whatever their topic says.
+_ENGLISH_GRAMMAR_SLOT_TYPES = ("error_correction", "punctuation", "rewrite")
+
+# ── Creative writing ─────────────────────────────────────────────────────────────
+# Composition tasks belong to the student, not to the textbook. A generated Creative Writing
+# section came back as: "After reading 'The Laburnum Top', you are inspired by the theme of
+# nature's vitality. Write an article … on 'The Healing Power of Nature'" — the model reached
+# into the retrieved poem and hung the writing task off it, in BOTH options of the internal
+# choice. An article, letter, notice or advertisement must stand on its own real-world brief.
+
+_ENGLISH_WRITING_SLOT_TYPES = ("writing",)
+
+# Composition FORMS. Phrase-level wherever a bare word would collide with literature: "message
+# writing" not "message" ("the message of the poem" is comprehension), "letter writing" /
+# "formal letter" not "letter" ("A Letter to God" is a chapter).
+_ENGLISH_WRITING_TOPIC_MARKERS = (
+    "creative writing", "composition", "article writing", "write an article",
+    "letter writing", "formal letter", "informal letter", "letter to the editor",
+    "complaint letter", "enquiry letter", "order letter", "job application",
+    "application writing", "notice writing", "notice", "advertisement", "classified",
+    "poster", "speech", "debate", "essay", "report writing", "story writing",
+    "diary entry", "email", "invitation", "bio-data", "biodata", "resume",
+    "analytical paragraph", "descriptive paragraph", "paragraph writing", "precis",
+    "précis", "dialogue writing", "summary writing", "message writing", "note making",
+    "notemaking", "speech writing",
+)
+
+# Section names that make the WHOLE section own-knowledge composition work.
+_ENGLISH_WRITING_SECTION_MARKERS = (
+    "creative writing", "writing skill", "writing section", "composition",
+    "writing", "letter and", "applied writing",
+)
+
+
+def _is_english_subject(subject: str) -> bool:
+    """True for English papers ("English", "English Core", "English Lang. & Lit.", …)."""
+    return "english" in str(subject or "").lower()
+
+
+def _slot_wording(slot: dict) -> str:
+    return " ".join(str(slot.get(k) or "") for k in ("topic", "format", "condition")).lower()
+
+
+def _slot_names_grammar(slot: dict) -> bool:
+    """True when a slot's own type/topic/format names an English grammar skill."""
+    if str(slot.get("type") or "").strip().lower() in _ENGLISH_GRAMMAR_SLOT_TYPES:
+        return True
+    return any(m in _slot_wording(slot) for m in _ENGLISH_GRAMMAR_TOPIC_MARKERS)
+
+
+def _slot_names_writing(slot: dict) -> bool:
+    """True when a slot's own type/topic/format names a composition task."""
+    if str(slot.get("type") or "").strip().lower() in _ENGLISH_WRITING_SLOT_TYPES:
+        return True
+    return any(m in _slot_wording(slot) for m in _ENGLISH_WRITING_TOPIC_MARKERS)
+
+
+def _english_own_section_kind(sec_name, instructions) -> str:
+    """'grammar' / 'writing' / '' — what a whole English section is, by name and instructions.
+
+    Writing wins a tie: a "Writing and Grammar" section is composition-led, and either way the
+    two get identical treatment (own knowledge, no context) — only the prompt wording differs.
+    """
+    hay = " ".join([str(sec_name or "")] + [str(i) for i in (instructions or [])]).lower()
+    if any(m in hay for m in _ENGLISH_WRITING_SECTION_MARKERS):
+        return "writing"
+    if _is_grammar_section(sec_name, instructions):
+        return "grammar"
+    return ""
+
+
+def english_own_slot_kinds(subject, section_subject, sec_name, sec_data, slots) -> dict:
+    """{slot_index: 'grammar' | 'writing'} for the slots that must come from the model's OWN
+    knowledge rather than the retrieved reference material.
+
+    In a grammar- or writing-named section every slot counts; in any other section only the
+    slots whose own type/topic/format names a grammar skill or a composition form do.
+
+    A slot whose wording names literature is exempt UNLESS it also names a composition form —
+    "story writing" is a writing task, not a story question — because an explicit form is a
+    stronger signal than a bare content word. Passage-carrying slots (cbq/extract) never count:
+    they print their own source_text and are comprehension questions by construction.
+
+    Empty for non-English subjects, so no other paper's behaviour changes.
+    """
+    if not _is_english_subject(section_subject or subject):
+        return {}
+    sec_kind = _english_own_section_kind(sec_name, (sec_data or {}).get("instructions"))
+    out = {}
+    for i, s in enumerate(slots or []):
+        if not isinstance(s, dict):
+            continue
+        if pattern_structure.slot_category(str(s.get("type") or "")) == "cbq":
+            continue
+        is_writing = _slot_names_writing(s)
+        if not is_writing and any(m in _slot_wording(s)
+                                  for m in _ENGLISH_LITERATURE_TOPIC_MARKERS):
+            continue
+        if is_writing:
+            out[i] = "writing"
+        elif _slot_names_grammar(s):
+            out[i] = "grammar"
+        elif sec_kind:
+            out[i] = sec_kind
+    return out
+
+
+def english_own_scope(subject, section_subject, sec_name, sec_data, slots):
+    """(kinds, own_only, slot_kinds) for one section of an English paper.
+
+    kinds     — tuple of the own-knowledge kinds present ('grammar', 'writing'), so the prompt
+                can state the right rule and the validator knows to police the section.
+    own_only  — EVERY question in it is own-knowledge, so it gets no retrieved context and no
+                chapter assignment at all.
+    slot_kinds— {index: kind} for the slots to fence off individually (mixed sections).
+
+    All empty/False for non-English subjects.
+    """
+    if not _is_english_subject(section_subject or subject):
+        return (), False, {}
+    real = [s for s in (slots or []) if isinstance(s, dict)]
+    if real:
+        kinds = english_own_slot_kinds(subject, section_subject, sec_name, sec_data, real)
+        present = tuple(k for k in ("grammar", "writing") if k in kinds.values())
+        return present, len(kinds) == len(real), kinds
+    # Slot-less section (legacy subsection blueprints) — judged on its name and instructions
+    # alone. One that ALSO names literature/reading keeps its context: only its grammar or
+    # writing questions are fenced off, by the prompt rule and the lifted-span check.
+    sec_kind = _english_own_section_kind(sec_name, (sec_data or {}).get("instructions"))
+    if not sec_kind:
+        return (), False, {}
+    hay = " ".join([str(sec_name or "")]
+                   + [str(i) for i in ((sec_data or {}).get("instructions") or [])]).lower()
+    return (sec_kind,), not any(m in hay for m in _ENGLISH_LITERATURE_TOPIC_MARKERS), {}
 
 
 def _slots_all_general(sec_data) -> bool:
@@ -4618,6 +5466,17 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
         sec_types = sec_data.get("question_types") or question_types_all
         section_subject = _resolve_section_subject(subject, sec_name, sec_data.get("section_subject", ""))
         effective_subject = section_subject or subject
+        # English grammar and creative writing come from the model's own knowledge — such a
+        # section gets NO reference material, so there is nothing for it to copy from (see the
+        # notes above english_own_slot_kinds). Mixed sections keep their context for the
+        # literature/comprehension slots; their own-knowledge slots are fenced off per-question.
+        if english_own_scope(subject, section_subject, sec_name, sec_data,
+                             sec_data.get("question_slots"))[1]:
+            print(f"[English-Own] '{sec_name}': grammar/writing section — skipping retrieval "
+                  "(questions come from the model's own knowledge)")
+            context_map[sec_name] = ""
+            context_by_type_map[sec_name] = {}
+            continue
         q_count = sec_data.get("questions_count") or sec_data.get("questions") or 0
         # Compound papers: retrieve context only for chapters belonging to this sub-subject.
         # Single-subject papers get the full list back unchanged (see _chapters_for_subject).
@@ -4873,7 +5732,8 @@ def _typical_marks_for_types(types_list) -> float:
     return 1.0
 
 
-def _allocate_chapters_to_slots(candidate_chapters: list, n_slots: int, subject: str, covered: dict) -> list:
+def _allocate_chapters_to_slots(candidate_chapters: list, n_slots: int, subject: str,
+                                covered: dict, class_name: str = "") -> list:
     """Assign `n_slots` question slots to specific chapters.
 
     Score per chapter = weight / (1 + times already covered). Because an uncovered chapter
@@ -4881,11 +5741,16 @@ def _allocate_chapters_to_slots(candidate_chapters: list, n_slots: int, subject:
     coverage), and only repeats a chapter once the higher-weight ones are each covered —
     so heavier (higher CBSE-marks) chapters get the repeats. `covered` is shared across the
     whole paper and mutated in place, so later sections fill the gaps earlier ones left.
-    Deterministic: chapters are sorted and ties resolve to the alphabetically-first."""
+    Deterministic: chapters are sorted and ties resolve to the alphabetically-first.
+
+    The spreading is only as good as the weights: a spurious 8-vs-1 split put 19 of 21
+    questions in one chapter of a two-chapter paper, which reads to the teacher as "it ignored
+    the chapters I picked". Weights now come from `_chapter_weights`, which is class-scoped and
+    gives an unlisted chapter the mean of the listed ones instead of 1."""
     chs = sorted({c for c in (candidate_chapters or []) if c})
     if not chs or n_slots <= 0:
         return []
-    weights = {c: max(1, _chapter_weight(subject, c)) for c in chs}
+    weights = _chapter_weights(subject, chs, class_name)
     plan = []
     for _ in range(int(n_slots)):
         best = max(chs, key=lambda c: (weights[c] / (1 + covered.get((subject, c), 0)), weights[c]))
@@ -4896,13 +5761,138 @@ def _allocate_chapters_to_slots(candidate_chapters: list, n_slots: int, subject:
 
 def plan_chapter_allocation(work_orders: list) -> list:
     """Give every section a per-question chapter plan (`wo.chapter_plan`), weighted by CBSE
-    unit marks where known (uniform otherwise) and coordinated across the whole paper to
-    maximise unique-chapter coverage before any chapter repeats. No-op for sections with no
-    chapters (e.g. One-Mark tests) — they keep the legacy 'spread across all topics' prompt."""
+    unit marks where known for that CLASS (uniform otherwise) and coordinated across the whole
+    paper to maximise unique-chapter coverage before any chapter repeats. No-op for sections
+    with no chapters (e.g. One-Mark tests) — they keep the legacy 'spread across all topics'
+    prompt."""
     covered: dict = {}
     for wo in work_orders:
         eff_subject = wo.section_subject or wo.subject
-        wo.chapter_plan = _allocate_chapters_to_slots(wo.chapters, wo.questions_count, eff_subject, covered)
+        wo.chapter_plan = _allocate_chapters_to_slots(wo.chapters, wo.questions_count,
+                                                      eff_subject, covered, wo.class_name)
+    return work_orders
+
+
+# ─────────────────────────────────────────────
+# Sums / quiz composition (Accountancy)
+# ─────────────────────────────────────────────
+# An Accountancy paper must be 80% SUMS (numerical / practical problems — journal entries,
+# ledger, final accounts, revaluation, goodwill valuation, ratios from given figures) and 20%
+# QUIZ (definitions, concepts, rules, formats) BY MARKS. Left to itself the model writes
+# theory-heavy Accountancy papers: an SA slot comes back as "Explain the features of a
+# partnership" where the teacher needs "Pass the journal entries for the following
+# transactions".
+#
+# The blueprint fixes each section's marks and counts, so the ratio cannot be met by changing
+# the structure — it is met by choosing WHICH questions are sums. plan_sums_allocation spends
+# the 20% quiz budget on the cheapest objective questions first (1-mark MCQs are the natural
+# quiz carriers) and declares everything else a sum, which is what makes the leftover objective
+# marks come back as NUMERICAL MCQs ("Calculate the interest on capital: ₹4,000 / ₹5,000 / …").
+# Each section then gets a concrete count in its prompt rather than a paper-wide aspiration.
+
+# Subject → required share of paper MARKS that must be sums. Accountancy-scoped by request;
+# every other subject's composition is governed by the CBSE competency split instead.
+_SUMS_MARKS_SHARE = {
+    "accountancy": 0.80,
+    "accounts": 0.80,
+    "book keeping": 0.80,
+    "book-keeping": 0.80,
+    "bookkeeping": 0.80,
+}
+
+# How far the finished paper may drift from the target before enforcement regenerates anything.
+SUMS_SHARE_TOLERANCE = 0.05
+# Cap on regenerations per paper, so a stubborn model can't run the token bill up.
+SUMS_MAX_REGENS = 6
+
+
+def _sums_share_for_subject(subject: str) -> float:
+    """Required sums MARKS share for this subject, or 0.0 when the subject has no such rule."""
+    s = str(subject or "").lower()
+    for marker, share in _SUMS_MARKS_SHARE.items():
+        if marker in s:
+            return share
+    return 0.0
+
+
+def _question_marks_plan(wo: SectionWorkOrder) -> list:
+    """Per-question (marks, is_objective) for one section, one entry per generated question.
+
+    Reads the slots first (they state every printed question), then the per-type breakdown,
+    and falls back to the section's uniform marks_per_question.
+    """
+    n = wo.questions_count or 0
+    out = []
+    if wo.slots:
+        for s in wo.slots:
+            if not isinstance(s, dict):
+                continue
+            cat = pattern_structure.slot_category(str(s.get("type") or ""))
+            m = _as_float(s.get("marks"), wo.marks_per_question)
+            out.append((m, cat == "mcq" or m <= 1))
+    if not out:
+        for t in (wo.question_types or []):
+            if not isinstance(t, dict) or "marks_each" not in t:
+                continue
+            cat = _fine_category(t.get("type", ""))
+            m = _as_float(t.get("marks_each"), wo.marks_per_question)
+            for _ in range(_as_int(t.get("count"), 0) or 0):
+                out.append((m, cat in ("mcq", "ar") or m <= 1))
+    if not out:
+        cats = [_fine_category(t if isinstance(t, str) else t.get("type", ""))
+                for t in (wo.question_types or [])]
+        m = _as_float(wo.marks_per_question, 1.0)
+        objective = bool(cats) and all(c in ("mcq", "ar") for c in cats) or m <= 1
+        out = [(m, objective)] * n
+    return out[:n] if n else out
+
+
+def plan_sums_allocation(work_orders: list) -> list:
+    """Set `wo.sums_count` / `wo.sums_share` so the paper hits its sums MARKS target.
+
+    Spends the quiz budget ((1 - share) of total marks) on the cheapest OBJECTIVE questions
+    first, then on the cheapest written ones if the objective marks alone cannot cover it.
+    Every remaining question is a sum. No-op for subjects with no sums rule, so no other
+    subject's work orders change.
+    """
+    if not work_orders:
+        return work_orders
+    share = _sums_share_for_subject(work_orders[0].section_subject or work_orders[0].subject)
+    if not share:
+        return work_orders
+
+    slots = []            # (sec_idx, q_idx, marks, is_objective)
+    for si, wo in enumerate(work_orders):
+        for qi, (marks, objective) in enumerate(_question_marks_plan(wo)):
+            slots.append((si, qi, marks, objective))
+    total = sum(s[2] for s in slots)
+    if total <= 0:
+        return work_orders
+
+    quiz_budget = (1.0 - share) * total
+    # Objective first, then ascending marks — a 1-mark MCQ is the cheapest way to spend the quiz
+    # budget, which leaves the expensive written questions (and any leftover objective marks) as
+    # sums. Question index BEFORE section index, so the budget is spent round-robin across the
+    # objective sections: every one of them then carries a share of the numerical MCQs, instead
+    # of one section going pure-theory and another pure-numerical.
+    order = sorted(slots, key=lambda s: (not s[3], s[2], s[1], s[0]))
+    quiz = set()
+    spent = 0.0
+    for si, qi, marks, _obj in order:
+        if spent + marks > quiz_budget + 1e-9:
+            continue                      # would overshoot the budget — leave it as a sum
+        quiz.add((si, qi))
+        spent += marks
+
+    for si, wo in enumerate(work_orders):
+        n = len(_question_marks_plan(wo))
+        wo.sums_count = sum(1 for qi in range(n) if (si, qi) not in quiz)
+        wo.sums_share = share
+    sums_marks = total - spent
+    print(f"[Sums-Plan] target {share:.0%} sums by marks → {sums_marks:g}/{total:g} "
+          f"({sums_marks / total:.0%}) sums, {spent:g}m quiz | per section: "
+          + ", ".join(f"{wo.section_name}={wo.sums_count}/{len(_question_marks_plan(wo))}"
+                      for wo in work_orders))
     return work_orders
 
 
@@ -5035,6 +6025,25 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             sec_name, sec_data.get("instructions") or ps.get("instructions"))
         section_chapters = _route_grammar_chapters(sec_is_grammar, section_chapters, grammar_chapters)
 
+        # English grammar / creative writing: force every own-knowledge slot to source='general'
+        # so the existing general-knowledge machinery applies to it — the per-slot "do NOT take
+        # this from the textbook or the reference material" prompt line, the chapter-assignment
+        # exemption and the chapter-name validator. Copied, not mutated in place: these slot
+        # dicts belong to the blueprint/pattern and are read again elsewhere.
+        eng_own_kinds, eng_own_only, eng_own_slots = english_own_scope(
+            subject, section_subject, sec_name, sec_data, slots)
+        if eng_own_slots:
+            slots = [
+                (dict(s, source="general") if i in eng_own_slots else s)
+                for i, s in enumerate(slots)
+            ]
+            print(f"[English-Own] '{sec_name}': {len(eng_own_slots)}/{len(slots)} slot(s) "
+                  f"forced to source=general ({'/'.join(eng_own_kinds)} — own knowledge, "
+                  "no textbook content)")
+        elif eng_own_kinds:
+            print(f"[English-Own] '{sec_name}': {'/'.join(eng_own_kinds)} section"
+                  f"{' — no context, no chapter assignment' if eng_own_only else ''}")
+
         # MO-01: attempt-N-of-M support — 'attempt' = students answer, 'count'/'provided' = questions generated
         # (coerced to int — these feed a division in the section marks-total check).
         attempt_count = _as_int(sec_data.get("attempt_count") or ps.get("attempt"), 0) or None
@@ -5085,7 +6094,7 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             question_types=types_list,
             instructions=ps.get("instructions", sec_data.get("instructions", [])),
             constraints=ps.get("constraints", sec_data.get("constraints", {})),
-            context_text="" if _all_general else context_map.get(sec_name, ""),
+            context_text="" if (_all_general or eng_own_only) else context_map.get(sec_name, ""),
             difficulty=difficulty,
             subject=subject,
             class_name=class_name,
@@ -5098,9 +6107,12 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
             passage_instruction=ps.get("passage_instruction"),
             extract_instruction=ps.get("extract_instruction"),
             subsections=[] if slots else subsecs,
-            context_by_type={} if _all_general else context_by_type_all.get(sec_name, {}),  # 3.2
+            context_by_type={} if (_all_general or eng_own_only) else context_by_type_all.get(sec_name, {}),  # 3.2
             slots=slots,
             is_grammar=sec_is_grammar,
+            is_english_grammar="grammar" in eng_own_kinds,
+            is_english_writing="writing" in eng_own_kinds,
+            english_own_only=eng_own_only,
             disable_images=disable_images,
         )
         work_orders.append(wo)
@@ -5110,6 +6122,8 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
 
     # Deterministic, CBSE-weighted, paper-wide chapter allocation (sets wo.chapter_plan).
     plan_chapter_allocation(work_orders)
+    # Accountancy sums/quiz composition (sets wo.sums_count) — no-op for other subjects.
+    plan_sums_allocation(work_orders)
     for wo in work_orders:
         if wo.chapter_plan:
             from collections import Counter
@@ -5123,6 +6137,128 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
 # Cross-section validation (numbering)
 # ─────────────────────────────────────────────
 
+CROSS_SECTION_DUP_THRESHOLD = 0.55
+
+
+def _cross_section_dup_pairs(paper_data: dict, threshold: float = CROSS_SECTION_DUP_THRESHOLD):
+    """[(sec_i, idx_i, sec_j, idx_j, score)] for near-duplicate pairs in DIFFERENT sections.
+
+    Same-section pairs are excluded — validate_uniqueness + verify_and_fix_semantic_duplicates
+    already handle those during per-section generation.
+    """
+    items = []
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__") or not isinstance(sec_data, dict):
+            continue
+        for idx, q in enumerate(sec_data.get("questions", [])):
+            text = _comparable_text(q)
+            if text:
+                items.append((sec_name, idx, text))
+    pairs = []
+    for a in range(len(items)):
+        for b in range(a + 1, len(items)):
+            sec_i, idx_i, text_i = items[a]
+            sec_j, idx_j, text_j = items[b]
+            if sec_i == sec_j:
+                continue
+            score = _concept_overlap(text_i, text_j)
+            if score > threshold:
+                pairs.append((sec_i, idx_i, sec_j, idx_j, score))
+    return pairs
+
+
+def fix_cross_section_duplicates(paper_data: dict, work_orders: list) -> tuple:
+    """Replace questions duplicated ACROSS sections. Returns (paper_data, in_tok, out_tok).
+
+    Cross-section duplicates were detected but never acted on: cross_section_validate logged
+    them and handed them to the final LLM audit as a warning, so a paper that asked the same
+    thing in Section A and Section D shipped with both. Sections are generated in parallel by
+    independent prompts, so neither one can see the other's questions — this is the only place
+    the overlap can be caught.
+
+    Mirrors the within-section chain: heuristic pair detection → LLM confirmation (so a
+    code-only 55% token overlap never removes a legitimate question on its own) → in-place
+    replacement through _regen_replacement_question, which keeps type, marks and qnum. The
+    question count never changes, so no section can be left short.
+    """
+    pairs = _cross_section_dup_pairs(paper_data)
+    if not pairs:
+        return paper_data, 0, 0
+
+    wo_by_name = {wo.section_name: wo for wo in (work_orders or [])}
+    in_tok = out_tok = 0
+    replaced = set()                       # (sec, idx) already swapped — don't touch twice
+    unresolved = []
+
+    for sec_i, idx_i, sec_j, idx_j, score in pairs:
+        if (sec_i, idx_i) in replaced or (sec_j, idx_j) in replaced:
+            continue                       # one of the pair is already a fresh question
+        try:
+            q_i = paper_data[sec_i]["questions"][idx_i]
+            q_j = paper_data[sec_j]["questions"][idx_j]
+        except (KeyError, IndexError):
+            continue
+        label = (f"Q{q_i.get('qnum', idx_i + 1)} ({sec_i}) ↔ "
+                 f"Q{q_j.get('qnum', idx_j + 1)} ({sec_j}) — {score:.0%} concept overlap")
+
+        confirm_prompt = (
+            "Do these two questions from the SAME exam paper test the same knowledge or "
+            "concept? Answer true only if a student who can answer one can answer the other "
+            "for the same reason.\n\n"
+            f"A: {str(_comparable_text(q_i))[:250]}\n\n"
+            f"B: {str(_comparable_text(q_j))[:250]}\n\n"
+            "Answer with JSON only:\n"
+            '{"same_concept": true, "reason": "one sentence"}'
+        )
+        try:
+            raw, i_t, o_t = mantle_client.converse(
+                model_id=mantle_client.VAL_MODEL, prompt=confirm_prompt,
+                max_tokens=100, temperature=0.1, stage="dup-confirm")
+            in_tok += i_t
+            out_tok += o_t
+            m = re.search(r"\{.*\}", raw or "", re.S)
+            if not (json.loads(m.group()) if m else {}).get("same_concept", False):
+                print(f"[Cross-Dup] not a duplicate (L1 false positive): {label}")
+                continue
+        except Exception as e:
+            print(f"[Cross-Dup] confirmation failed ({e}) — leaving both: {label}")
+            unresolved.append(label)
+            continue
+
+        # Replace the LATER question: the earlier section usually owns the concept (Reading
+        # before Literature), and its work order is the one whose spec the pair matched first.
+        # Fall back to the other side when the later one is structurally heavy (CBQ/map).
+        order = [(sec_j, idx_j, q_j, q_i), (sec_i, idx_i, q_i, q_j)]
+        if _fine_category(q_j.get("type", ""), str(q_j.get("subtype", ""))) in ("cbq", "map"):
+            order.reverse()
+
+        for tgt_sec, tgt_idx, tgt_q, keep_q in order:
+            wo = wo_by_name.get(tgt_sec)
+            if not wo:
+                continue
+            print(f"[Cross-Dup] confirmed: {label} — regenerating in '{tgt_sec}'")
+            new_q, i_t, o_t = _regen_replacement_question(
+                tgt_q, tgt_idx, wo, str(keep_q.get("text", ""))[:150], tag="Cross-Dup")
+            in_tok += i_t
+            out_tok += o_t
+            if new_q:
+                paper_data[tgt_sec]["questions"][tgt_idx] = new_q
+                replaced.add((tgt_sec, tgt_idx))
+                break
+        else:
+            # Neither side could be safely regenerated (CBQ/map, no work order, or the model
+            # drifted) — keep both and let the final audit report the overlap.
+            unresolved.append(label)
+
+    print(f"[Cross-Dup] {len(replaced)} replaced, {len(unresolved)} left flagged "
+          f"(of {len(pairs)} candidate pair(s))")
+    if unresolved:
+        for sec_data in paper_data.values():
+            if isinstance(sec_data, dict):
+                sec_data.setdefault("_cross_section_duplicates", unresolved)
+    return paper_data, in_tok, out_tok
+
+
 def cross_section_validate(paper_data: dict, blueprint: dict) -> dict:
     """Renumber questions sequentially and run cross-section deduplication."""
     # Renumber
@@ -5132,27 +6268,17 @@ def cross_section_validate(paper_data: dict, blueprint: dict) -> dict:
             q["qnum"] = q_num
             q_num += 1
 
-    # Cross-section dedup (3.1) — code-only, no LLM cost
-    # Collect (section, q_idx, text) tuples
-    all_qs = []
-    for sec_name, sec_data in paper_data.items():
-        for q_idx, q in enumerate(sec_data.get("questions", [])):
-            text = _comparable_text(q)
-            if text:
-                all_qs.append((sec_name, q_idx, q.get("qnum", 0), text))
-
+    # Cross-section dedup (3.1) — code-only, no LLM cost. This is the REPORT pass, run after
+    # renumbering: fix_cross_section_duplicates has already replaced the confirmed ones, so
+    # anything still here is either an LLM-cleared false positive or a pair it could not
+    # safely regenerate.
     cross_dupes = []
-    for i in range(len(all_qs)):
-        for j in range(i + 1, len(all_qs)):
-            sec_i, _, qnum_i, text_i = all_qs[i]
-            sec_j, _, qnum_j, text_j = all_qs[j]
-            if sec_i == sec_j:
-                continue  # same section already handled by validate_uniqueness
-            score = _concept_overlap(text_i, text_j)
-            if score > 0.55:
-                cross_dupes.append(
-                    f"Q{qnum_i} ({sec_i}) ↔ Q{qnum_j} ({sec_j}) — {score:.0%} concept overlap"
-                )
+    for sec_i, idx_i, sec_j, idx_j, score in _cross_section_dup_pairs(paper_data):
+        qnum_i = paper_data[sec_i]["questions"][idx_i].get("qnum", idx_i + 1)
+        qnum_j = paper_data[sec_j]["questions"][idx_j].get("qnum", idx_j + 1)
+        cross_dupes.append(
+            f"Q{qnum_i} ({sec_i}) ↔ Q{qnum_j} ({sec_j}) — {score:.0%} concept overlap"
+        )
 
     if cross_dupes:
         print(f"[Cross-Section-Dedup] ⚠️  {len(cross_dupes)} cross-section duplicate(s):")
@@ -5170,6 +6296,523 @@ def cross_section_validate(paper_data: dict, blueprint: dict) -> dict:
 # ─────────────────────────────────────────────
 # CBSE 50/20/30 competency distribution check
 # ─────────────────────────────────────────────
+
+def validate_sums_distribution(paper_data: dict, subject: str) -> dict:
+    """Measure the finished paper's sums/quiz MARKS split against the subject's target.
+
+    Returns {} for subjects with no sums rule, so this is free for every other paper.
+    """
+    share = _sums_share_for_subject(subject)
+    if not share:
+        return {}
+    sums, quiz = _sums_marks_split(paper_data)
+    total = sums + quiz
+    if total <= 0:
+        return {"target_pct": round(share * 100, 1), "compliant": False,
+                "violations": ["No questions found"]}
+    got = sums / total
+    violations = []
+    if got < share - SUMS_SHARE_TOLERANCE:
+        violations.append(
+            f"Sums {got:.0%} of marks < {share:.0%} target "
+            f"({sums:g}m sums vs {quiz:g}m quiz) — paper is theory-heavy")
+    elif got > share + SUMS_SHARE_TOLERANCE:
+        violations.append(
+            f"Sums {got:.0%} of marks > {share:.0%} target "
+            f"({sums:g}m sums vs {quiz:g}m quiz) — too few conceptual questions")
+    result = {
+        "target_pct": round(share * 100, 1),
+        "sums_pct": round(got * 100, 1),
+        "quiz_pct": round((1 - got) * 100, 1),
+        "sums_marks": sums, "quiz_marks": quiz, "total_marks": total,
+        "compliant": not violations,
+        "violations": violations,
+    }
+    if violations:
+        print(f"[SumsCheck] ⚠️  {violations}")
+    else:
+        print(f"[SumsCheck] ✅ sums {got:.0%} / quiz {1 - got:.0%} "
+              f"(target {share:.0%}) — {sums:g}m / {quiz:g}m")
+    return result
+
+
+# The MANDATORY requirement handed to a regenerated question that must be a sum.
+_SUMS_REGEN_RULE = (
+    "MANDATORY: this question MUST be a NUMERICAL / PRACTICAL problem (a \"sum\"), not a theory "
+    "question. Supply the actual figures in ₹ (with dates and names where relevant) and ask the "
+    "student to work something out — journalise, pass entries, prepare an account or statement, "
+    "calculate, ascertain, distribute, value goodwill, or compute a ratio from the figures "
+    "given. Do NOT ask for a definition, an explanation, a format or a list. Put the full "
+    "working in \"answer_explanation\"."
+)
+
+
+def enforce_sums_distribution(paper_data: dict, work_orders: list, subject: str) -> tuple:
+    """Regenerate theory questions that were planned as sums. Returns (paper_data, in, out).
+
+    Only runs for a sums subject that finished BELOW target. Targets the questions the plan
+    allocated to sums but that came back as theory, highest marks first (one 6-mark long answer
+    buys back more of the ratio than six 1-mark MCQs), capped at SUMS_MAX_REGENS. A replacement
+    that still classifies as quiz is discarded, so this can never make the split worse.
+    """
+    share = _sums_share_for_subject(subject)
+    if not share:
+        return paper_data, 0, 0
+    sums, quiz = _sums_marks_split(paper_data)
+    total = sums + quiz
+    if total <= 0 or sums / total >= share - SUMS_SHARE_TOLERANCE:
+        return paper_data, 0, 0
+
+    wo_by_name = {wo.section_name: wo for wo in (work_orders or [])}
+    # A section planned for K sums but holding fewer is where the shortfall lives. Offer its
+    # quiz-classified questions as candidates, richest first.
+    candidates = []
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__") or not isinstance(sec_data, dict):
+            continue
+        wo = wo_by_name.get(sec_name)
+        if not wo or not wo.sums_count:
+            continue
+        qs = sec_data.get("questions", [])
+        natures = [_question_nature(q) for q in qs]
+        deficit = wo.sums_count - natures.count("sums")
+        if deficit <= 0:
+            continue
+        quiz_idxs = [i for i, nat in enumerate(natures) if nat == "quiz"]
+        quiz_idxs.sort(key=lambda i: -_as_float(qs[i].get("marks"), 0.0))
+        for i in quiz_idxs[:deficit]:
+            candidates.append((_as_float(qs[i].get("marks"), 0.0), sec_name, i))
+    candidates.sort(key=lambda c: -c[0])
+
+    in_tok = out_tok = 0
+    fixed = attempts = 0
+    need = (share - SUMS_SHARE_TOLERANCE) * total - sums     # marks still to convert
+    for marks, sec_name, idx in candidates:
+        # Cap ATTEMPTS, not successes: a model that keeps returning theory would otherwise
+        # retry every candidate in the paper and blow past the intended call budget.
+        if attempts >= SUMS_MAX_REGENS or need <= 0:
+            break
+        attempts += 1
+        wo = wo_by_name[sec_name]
+        orig = paper_data[sec_name]["questions"][idx]
+        new_q, i_t, o_t = _regen_replacement_question(
+            orig, idx, wo, tag="Sums", extra_rule=_SUMS_REGEN_RULE)
+        in_tok += i_t
+        out_tok += o_t
+        if not new_q:
+            continue
+        if _question_nature(new_q) != "sums":
+            print(f"[Sums] '{sec_name}' Q{idx+1} regen came back theory again — keeping original")
+            continue
+        paper_data[sec_name]["questions"][idx] = new_q
+        fixed += 1
+        need -= marks
+
+    sums2, quiz2 = _sums_marks_split(paper_data)
+    print(f"[Sums] converted {fixed}/{attempts} attempted question(s) to sums — "
+          f"{sums:g}m → {sums2:g}m of {sums2 + quiz2:g}m ({sums2 / max(1e-9, sums2 + quiz2):.0%})")
+    return paper_data, in_tok, out_tok
+
+
+# ─────────────────────────────────────────────
+# V11 — Answer-leak audit (one question giving away another's answer)
+# ─────────────────────────────────────────────
+#
+# The gap this closes: _cross_section_dup_pairs measures SYMMETRIC similarity between question
+# stems. Answer leakage is a different shape and slips straight through it —
+#   • it is ASYMMETRIC. The answer to Q7 sits in the STEM of Q3. "Assertion: the Dandi March was
+#     a satyagraha against the salt tax" and "Why did Gandhi choose salt? (2m)" share almost no
+#     tokens; the overlap score sees two different questions, because they ARE two different
+#     questions.
+#   • it DILUTES. A 2-mark answer is one sentence inside a 150-word case study. Token overlap
+#     normalised over the whole passage lands near zero — so the longer the passage, the more
+#     invisible the leak, which is exactly backwards.
+# Neither existing paper-level audit can see it either: V8 is given only type/chapter summaries
+# and V10 only the accumulated warning strings. Neither ever reads question text.
+
+ANSWER_LEAK_MAX_REGENS = 4
+_LEAK_STEM_CHARS = 320
+_LEAK_ANS_CHARS = 320
+_LEAK_PASSAGE_CHARS = 1200
+_LEAK_MIN_SPAN_WORDS = 5
+_LEAK_MAX_HINTS = 12
+
+
+def _leak_flat(t, limit: int) -> str:
+    """Single-line, length-capped text for prompt blocks. A helper rather than an inline
+    re.sub because a backslash inside an f-string expression is a syntax error before 3.12."""
+    return re.sub(r"\s+", " ", str(t or "")).strip()[:limit]
+
+
+def _leak_norm(t) -> str:
+    """Whitespace/case/punctuation-insensitive form, used ONLY to confirm a span the model
+    quoted really does occur in the leaker's printed body.
+
+    Collapses every non-word RUN — punctuation and whitespace together — to one space. Doing it
+    in two passes (whitespace then punctuation) is wrong: 'press, and' becomes 'press  and' with
+    a double space and no longer matches 'press and' in the source, so a real leak quoted with
+    one comma out of place would be thrown away as a hallucination.
+
+    Strips PUNCTUATION AND WHITESPACE, rather than keeping only [a-z0-9] or only \\w — both of
+    those silently destroy this check on most of the catalogue:
+      • [a-z0-9] normalised every Tamil/Hindi/Sanskrit span to the EMPTY string, so every finding
+        on those papers was dropped as "span too short" and V11 was a silent no-op for them; and
+        on Maths/Science it stripped Greek letters and superscripts, collapsing 'cot θ = cos θ /
+        sin θ' to 'cot cos sin' — three tokens of pure notation unrelated formulas also match.
+      • \\w excludes Indic combining marks (categories Mn/Mc), which fragments 'இலக்கணம்' into
+        'இலக கணம' — consistent, so matching still works, but it inflates word counts and makes
+        the span floor meaningless for those languages.
+    Removing ASCII punctuation plus General Punctuation (U+2000–206F, i.e. — – " ' …) keeps every
+    letter, digit, Greek symbol, superscript and combining mark exactly as written.
+    """
+    return re.sub(r"[\s!-/:-@\[-`{-~ -⁯]+", " ", str(t or "").lower()).strip()
+
+
+def _disclosure_text(q: dict) -> str:
+    """Everything about a question that a STUDENT ACTUALLY READS — stem, MCQ option texts, the
+    OR alternative, its own case/source passage, and its sub-question stems.
+
+    Deliberately EXCLUDES answer_explanation/answer. The marking key is never printed on the
+    student's paper, so a key that happens to restate another question's answer cannot help
+    anyone in the exam hall. Including it would flood the audit with unfixable non-findings.
+    """
+    if not isinstance(q, dict):
+        return str(q or "")
+    parts = [str(q.get("text", "") or ""), str(q.get("or_alternative", "") or "")]
+    opts = q.get("options")
+    if isinstance(opts, dict):
+        parts.extend(str(v) for v in opts.values())
+    elif isinstance(opts, list):
+        parts.extend(str(v) for v in opts)
+    src = q.get("source_text") or q.get("passage")
+    if src:
+        parts.append(str(src))
+    for sq in (q.get("sub_questions") or []):
+        parts.append(str(sq.get("text", "") or "") if isinstance(sq, dict) else str(sq))
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _victim_answer_text(q: dict) -> str:
+    """The answer this question is protecting. For an MCQ the stored letter says nothing on its
+    own — the correct option's TEXT is what must stay secret. Sub-question keys count too, so a
+    CBQ's own answers can be checked against other sections."""
+    if not isinstance(q, dict):
+        return ""
+    parts = [str(q.get("answer_explanation", "") or "")]
+    opts, ans = q.get("options"), str(q.get("answer", "") or "").strip().lower()
+    if isinstance(opts, dict) and ans in opts:
+        parts.insert(0, str(opts[ans]))
+    for sq in (q.get("sub_questions") or []):
+        if isinstance(sq, dict) and sq.get("answer_explanation"):
+            parts.append(str(sq["answer_explanation"]))
+    return " ".join(p for p in parts if p).strip()
+
+
+def _leak_inventory(paper_data: dict) -> list:
+    """One record per auditable SURFACE on the paper, in printed order.
+
+    kind 'q' = a question (id S<i>Q<n>, n is its POSITION in the section, not its qnum, so the
+    id stays stable across the renumbering in cross_section_validate).
+    kind 'p' = a section-level reading passage (id S<i>P) that every question in its own
+    section is meant to draw on.
+    """
+    inv = []
+    si = 0
+    for sec_name, sec_data in paper_data.items():
+        if sec_name.startswith("__") or not isinstance(sec_data, dict):
+            continue
+        si += 1
+        passage = str(sec_data.get("passage", "") or "")
+        if len(passage) >= 50:
+            inv.append({"id": f"S{si}P", "kind": "p", "sec": sec_name, "idx": None,
+                        "qnum": None, "marks": 0.0, "cat": "passage",
+                        "disclosure": passage, "answer": ""})
+        for idx, q in enumerate(sec_data.get("questions", [])):
+            if not isinstance(q, dict):
+                continue
+            inv.append({
+                "id": f"S{si}Q{idx + 1}", "kind": "q", "sec": sec_name, "idx": idx,
+                "qnum": q.get("qnum", idx + 1), "marks": _as_float(q.get("marks"), 0.0),
+                "cat": _fine_category(q.get("type", ""), str(q.get("subtype", ""))),
+                "disclosure": _disclosure_text(q), "answer": _victim_answer_text(q),
+            })
+    return inv
+
+
+def _leak_pair_allowed(victim: dict, leaker: dict) -> bool:
+    """Reject the pairs where shared content is the DESIGN, not a defect.
+
+    A reading/case passage exists precisely so the questions printed beside it can draw on it —
+    V6 actively REQUIRES every sub-question to be answerable from the passage alone. So a
+    section passage never "leaks" to its own section, and nothing leaks to itself. The same
+    overlap across sections is a genuine leak.
+    """
+    if victim["id"] == leaker["id"]:
+        return False
+    if victim["kind"] != "q" or not victim["answer"]:
+        return False                       # a passage has no answer of its own to give away
+    if leaker["kind"] == "p" and leaker["sec"] == victim["sec"]:
+        return False
+    return True
+
+
+def _leak_prefilter(inv: list) -> list:
+    """Cheap deterministic pass: a victim's answer copied VERBATIM into something a student
+    reads. Returns [(victim_id, leaker_id, span)].
+
+    Used as a HINT to the auditor, never as a gate. The Assertion-Reason case that prompted
+    this check paraphrases rather than copies, so gating on a verbatim match would miss exactly
+    the defect we are looking for.
+    """
+    hits = []
+    for v in inv:
+        if v["kind"] != "q" or not v["answer"]:
+            continue
+        for lk in inv:
+            if not _leak_pair_allowed(v, lk):
+                continue
+            span = _lifted_span(v["answer"], lk["disclosure"], span=8, content_floor=4)
+            # Hold hints to the SAME floor the audit applies to a reported span. Without this the
+            # prefilter emits hints the verifier would itself reject — on the first live Maths
+            # paper both hints were shared notation ('cot θ = cos θ / sin θ', 'sin x = -1/2 in
+            # [0, 2π)'), one of them only 3 normalised tokens long. Pointing the auditor at noise
+            # is worse than pointing it nowhere: it invites confirmation of a non-leak.
+            if span and len(_leak_norm(span).split()) >= _LEAK_MIN_SPAN_WORDS:
+                hits.append((v["id"], lk["id"], span))
+                break                      # one hint per victim is enough to point the auditor
+    return hits
+
+
+def _audit_converse(prompt: str, max_tokens: int = 1200) -> tuple:
+    """Paper-level audit call on AUDIT_MODEL, degrading to GEN_MODEL.
+
+    AUDIT_MODEL is deliberately a stronger reasoner that is NOT confirmed against this endpoint
+    the way GEN/VAL are, so an unknown-model error must cost us the model, not the audit.
+    Returns (raw, in_tok, out_tok, model_used); model_used == "" means every candidate failed.
+    """
+    audit_model = str(getattr(mantle_client, "AUDIT_MODEL", "") or "").strip()
+    for model_id in [m for m in dict.fromkeys([audit_model, GEN_MODEL]) if m]:
+        try:
+            raw, i_t, o_t = mantle_client.converse(
+                model_id=model_id, prompt=prompt, max_tokens=max_tokens, temperature=0.1,
+                stage="v11-answer-leak")
+            return raw, i_t, o_t, model_id
+        except Exception as e:
+            print(f"[Leak] audit model '{model_id}' unavailable ({e})")
+    return "", 0, 0, ""
+
+
+def run_answer_leak_audit(paper_data: dict, class_name: str, subject: str) -> tuple:
+    """
+    V11 — cross-question answer-leak audit. ONE LLM call for the whole assembled paper.
+
+    Returns (findings, in_tok, out_tok). Each finding is
+      {"victim": id, "leaker": id, "leaked_span": str, "why": str}
+    and every one has had its leaked_span CONFIRMED to occur verbatim in the leaker's printed
+    body. That verification is the load-bearing part: without it an unverified audit invents
+    leaks and the fixer below rewrites perfectly good questions. A finding the model cannot
+    quote is dropped, which costs nothing.
+
+    Pairwise prompting is not an option — a 35-question paper is ~600 pairs. The whole paper
+    goes in one prompt (~5-6k input) and the model returns a list.
+    """
+    inv = _leak_inventory(paper_data)
+    by_id = {it["id"]: it for it in inv}
+    if len([it for it in inv if it["kind"] == "q"]) < 2:
+        return [], 0, 0
+
+    lines = []
+    for it in inv:
+        if it["kind"] == "p":
+            lines.append(f"[{it['id']}] SECTION READING PASSAGE (printed once for its section)")
+            lines.append(f"  PRINTED: {_leak_flat(it['disclosure'], _LEAK_PASSAGE_CHARS)}")
+            continue
+        lines.append(f"[{it['id']}] {it['marks']:g} marks, {it['cat'].upper()}")
+        lines.append(f"  PRINTED: {_leak_flat(it['disclosure'], _LEAK_STEM_CHARS)}")
+        if it["answer"]:
+            lines.append(f"  ANSWER (kept secret — never printed): "
+                         f"{_leak_flat(it['answer'], _LEAK_ANS_CHARS)}")
+
+    hints = _leak_prefilter(inv)
+    hint_block = ""
+    if hints:
+        hint_lines = "\n".join(
+            f"  • {v} may be given away by {lk}: \"{_leak_flat(sp, 120)}\""
+            for v, lk, sp in hints[:_LEAK_MAX_HINTS])
+        hint_block = (
+            "\nA verbatim-text scan already flagged these as WORTH CHECKING FIRST. They are "
+            "unconfirmed — judge each one yourself, and look for leaks it missed (a paraphrased "
+            "leak is still a leak and the scan cannot see those):\n" + hint_lines + "\n")
+
+    prompt = (
+        f"You are the answer-leak auditor for a CBSE Class {class_name} {subject} question paper.\n\n"
+        "A LEAK is when the PRINTED body of one item — its stem, its options, its OR-alternative "
+        "or its case/source passage — states or plainly gives away the secret ANSWER to a "
+        "DIFFERENT question on the same paper. The test: could a student who had studied nothing "
+        "answer the second question correctly just by reading the first?\n\n"
+        "Leaks look like:\n"
+        "  • an Assertion-Reason item whose assertion states the very fact another question asks for\n"
+        "  • a case/source passage containing the answer to a standalone question elsewhere on the paper\n"
+        "  • an MCQ option that spells out what another question asks about\n\n"
+        "These are NOT leaks — do not report them:\n"
+        "  • a passage and the questions printed with it that are meant to draw on it\n"
+        "  • two questions on the same topic that require different answers\n"
+        "  • anything revealed only by an ANSWER line — those are marking keys, never printed for students\n"
+        "  • general subject vocabulary or a shared technical term appearing in both\n\n"
+        f"PAPER ITEMS:\n" + "\n".join(lines) + "\n"
+        f"{hint_block}\n"
+        "For every leak you report, quote the EXACT words from the LEAKER's PRINTED body that "
+        "give the answer away — copied character-for-character, at least 6 words, and it must "
+        "appear in that item's PRINTED line above (never from an ANSWER line). If you cannot "
+        "quote it verbatim, do not report it.\n\n"
+        "Output JSON only:\n"
+        '{"leaks": [{"victim": "S1Q7", "leaker": "S2P", '
+        '"leaked_span": "exact words copied from the leaker", "why": "one sentence"}]}\n'
+        'If nothing leaks, output exactly {"leaks": []}'
+    )
+
+    raw, in_tok, out_tok, model_used = _audit_converse(prompt)
+    if not model_used:
+        print("[Leak] audit unavailable — no model answered; paper unchanged")
+        return [], in_tok, out_tok
+    try:
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        reported = (json.loads(m.group()) if m else {}).get("leaks", []) or []
+    except Exception as e:
+        print(f"[Leak] could not parse audit response ({e}) — paper unchanged")
+        return [], in_tok, out_tok
+
+    findings, seen = [], set()
+    for item in reported:
+        if not isinstance(item, dict):
+            continue
+        v_id = str(item.get("victim", "") or "").strip().upper()
+        l_id = str(item.get("leaker", "") or "").strip().upper()
+        span = str(item.get("leaked_span", "") or "").strip()
+        v_rec, l_rec = by_id.get(v_id), by_id.get(l_id)
+        if not v_rec or not l_rec:
+            print(f"[Leak] dropped — unknown item id ({v_id!r} ← {l_id!r})")
+            continue
+        if not _leak_pair_allowed(v_rec, l_rec):
+            print(f"[Leak] dropped — {v_id} ← {l_id} is by design, not a leak")
+            continue
+        if len(_leak_norm(span).split()) < _LEAK_MIN_SPAN_WORDS:
+            print(f"[Leak] dropped — span too short to verify ({v_id} ← {l_id})")
+            continue
+        if _leak_norm(span) not in _leak_norm(l_rec["disclosure"]):
+            print(f"[Leak] dropped — span is NOT in {l_id}'s printed body (hallucinated quote)")
+            continue
+        if (v_id, l_id) in seen:
+            continue
+        seen.add((v_id, l_id))
+        findings.append({"victim": v_id, "leaker": l_id, "leaked_span": span,
+                         "why": str(item.get("why", "") or "").strip()})
+
+    print(f"[Leak] {model_used}: {len(findings)} confirmed of {len(reported)} reported "
+          f"({len(hints)} verbatim hint(s), {len(inv)} item(s) audited)")
+    for f in findings:
+        print(f"[Leak]   {f['victim']} answered by {f['leaker']} — {f['why'][:90]}")
+    return findings, in_tok, out_tok
+
+
+_LEAK_VICTIM_RULE = (
+    "MANDATORY: another question already PRINTED on this same paper contains the following "
+    "words, which give away the answer to this question:\n"
+    "  ✗ \"{span}\"\n"
+    "Your replacement must test DIFFERENT knowledge — something whose answer is neither stated "
+    "in nor directly inferable from that text. Keep the same type, marks and difficulty."
+)
+_LEAK_LEAKER_RULE = (
+    "MANDATORY: your question must NOT state, quote or reveal the following, because it is the "
+    "secret answer to a DIFFERENT question on this same paper:\n"
+    "  ✗ \"{span}\"\n"
+    "Cover the same topic if you wish, but the text you produce must not give that away. "
+    "Keep the same type, marks and difficulty."
+)
+
+
+def fix_answer_leaks(paper_data: dict, work_orders: list, class_name: str, subject: str) -> tuple:
+    """Audit the assembled paper for cross-question answer leaks and rewrite one side of each.
+    Returns (paper_data, in_tok, out_tok).
+
+    Which side gets rewritten is policy, not the model's choice:
+      • A case/source passage is NEVER a candidate. It is section-level scaffolding that every
+        question printed beside it depends on, and replacing it cascades through all of them —
+        so a passage leak is always fixed by rewriting the VICTIM.
+        (_regen_replacement_question independently refuses cbq/map, so this is belt-and-braces.)
+      • Otherwise rewrite the cheaper side, lowest marks first: replacing a 1-mark
+        Assertion-Reason costs less than rewriting a 3-mark question. Assertion-Reason sorts
+        last among equal marks because its structure (a true/false assertion plus a valid
+        reason relation) is the hardest to regenerate cleanly.
+      • If the chosen side cannot be regenerated safely, fall through to the other one; if
+        neither can, keep both and REPORT. A flagged paper a teacher fixes in 30 seconds beats
+        a failed generation.
+
+    Bounded: at most ANSWER_LEAK_MAX_REGENS rewrites, then a single re-audit to confirm. Never
+    loops, and never raises — any failure leaves the paper exactly as it was.
+    """
+    findings, in_tok, out_tok = run_answer_leak_audit(paper_data, class_name, subject)
+    if not findings:
+        return paper_data, in_tok, out_tok
+
+    inv = {it["id"]: it for it in _leak_inventory(paper_data)}
+    wo_by_name = {wo.section_name: wo for wo in (work_orders or [])}
+    replaced, unresolved = set(), []
+
+    for f in findings:
+        v_rec, l_rec = inv.get(f["victim"]), inv.get(f["leaker"])
+        label = f"{f['victim']} answered by {f['leaker']}"
+        if not v_rec or not l_rec:
+            continue
+        if len(replaced) >= ANSWER_LEAK_MAX_REGENS:
+            print(f"[Leak] regen cap ({ANSWER_LEAK_MAX_REGENS}) reached — flagging: {label}")
+            unresolved.append(f"{label}: {f['why']}")
+            continue
+        if (v_rec["sec"], v_rec["idx"]) in replaced or (
+                l_rec["kind"] == "q" and (l_rec["sec"], l_rec["idx"]) in replaced):
+            continue                        # one side is already a fresh question
+
+        cands = [it for it in (v_rec, l_rec)
+                 if it["kind"] == "q" and it["cat"] not in ("cbq", "map")
+                 and wo_by_name.get(it["sec"])]
+        cands.sort(key=lambda it: (it["marks"], it["cat"] == "ar"))
+
+        for tgt in cands:
+            is_victim = tgt["id"] == f["victim"]
+            rule = (_LEAK_VICTIM_RULE if is_victim else _LEAK_LEAKER_RULE).format(
+                span=_leak_flat(f["leaked_span"], 240))
+            print(f"[Leak] rewriting {'victim' if is_victim else 'leaker'} {tgt['id']} "
+                  f"({tgt['marks']:g}m {tgt['cat'].upper()}) in '{tgt['sec']}' — {label}")
+            new_q, i_t, o_t = _regen_replacement_question(
+                paper_data[tgt["sec"]]["questions"][tgt["idx"]], tgt["idx"],
+                wo_by_name[tgt["sec"]], tag="Leak", extra_rule=rule)
+            in_tok += i_t
+            out_tok += o_t
+            if new_q:
+                paper_data[tgt["sec"]]["questions"][tgt["idx"]] = new_q
+                replaced.add((tgt["sec"], tgt["idx"]))
+                break
+        else:
+            print(f"[Leak] neither side safely regenerable — flagging: {label}")
+            unresolved.append(f"{label}: {f['why']}")
+
+    # One confirmation pass. Rewrites are in place (count, marks and qnum preserved), so item
+    # ids are unchanged and any leak still reported here genuinely survived the fix.
+    if replaced:
+        survivors, i_t, o_t = run_answer_leak_audit(paper_data, class_name, subject)
+        in_tok += i_t
+        out_tok += o_t
+        for s in survivors:
+            unresolved.append(f"{s['victim']} still answered by {s['leaker']}: {s['why']}")
+
+    print(f"[Leak] {len(replaced)} question(s) rewritten, {len(unresolved)} left flagged")
+    if unresolved:
+        unresolved = list(dict.fromkeys(unresolved))
+        for sec_data in paper_data.values():
+            if isinstance(sec_data, dict):
+                sec_data.setdefault("_answer_leaks", unresolved)
+    return paper_data, in_tok, out_tok
+
 
 def validate_competency_distribution(paper_data: dict) -> dict:
     """
@@ -5259,6 +6902,15 @@ def run_final_paper_audit(paper_data: dict, class_name: str, subject: str, diffi
             all_warnings.append(f"[CBQ-Passage] {sec_name}: {w}")
         for w in sec_data.get("_cross_section_duplicates", []):
             all_warnings.append(f"[CrossDup] {w}")
+        for w in (sec_data.get("_sums_report") or {}).get("violations", []):
+            all_warnings.append(f"[Sums/Quiz] {w}")
+        for w in sec_data.get("_answer_leaks", []):
+            all_warnings.append(f"[Answer-Leak] {w}")
+
+    # Paper-level reports (_cross_section_duplicates, _sums_report) are stored on EVERY section,
+    # so the loop above collects each of their warnings once per section. Dedupe, order kept, so
+    # the 40-line cap isn't spent restating one finding.
+    all_warnings = list(dict.fromkeys(all_warnings))
 
     warnings_block = (
         "\n".join(f"  • {w}" for w in all_warnings[:40])
@@ -5287,6 +6939,7 @@ def run_final_paper_audit(paper_data: dict, class_name: str, subject: str, diffi
             prompt=prompt,
             max_tokens=512,
             temperature=0.1,
+            stage="v10-final",
         )
         raw = raw.strip()
         m = re.search(r"\{.*\}", raw, re.S)
@@ -5361,6 +7014,7 @@ def run_cross_section_coherence_audit(paper_data: dict, class_name: str, subject
             prompt=prompt,
             max_tokens=512,
             temperature=0.1,
+            stage="v8-coherence",
         )
         raw = raw.strip()
         m = re.search(r"\{.*\}", raw, re.S)
@@ -5471,6 +7125,7 @@ def enforce_competency_distribution(paper_data: dict, class_name: str, subject: 
             prompt=prompt,
             max_tokens=1024,
             temperature=0.1,
+            stage="v7-competency-fix",
         )
         raw = raw.strip()
         m = re.search(r"\[.*\]", raw, re.S)
@@ -5617,6 +7272,16 @@ def trim_overfull_sections(paper_data: dict, work_orders: list) -> dict:
     return paper_data
 
 
+def _section_worker(wo: SectionWorkOrder):
+    """generate_section() under a named stage. mantle_client.stage is thread-local, so wrapping
+    here labels every LLM call the section makes — including the ones inside its validators —
+    with the section name, and three parallel sections never mix their labels. Wrapping at the
+    call site rather than inside generate_section keeps the whole ~200-line body un-reindented.
+    """
+    with mantle_client.stage(wo.section_name):
+        return generate_section(wo)
+
+
 def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False):
     """
     Generate all sections in parallel using ThreadPoolExecutor.
@@ -5625,28 +7290,54 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
     Raises RuntimeError if any section is still entirely missing after the serial retry
     (caller falls back to the whole-paper single-prompt path).
     """
-    work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters, disable_images=disable_images)
-    if not work_orders:
-        raise RuntimeError("Blueprint produced no work orders")
+    # 15 numbered slots: the 14 passes below plus slot 3, which is the serial-retry pass that
+    # only runs when a section failed (skipped on the happy path so the numbering stays stable).
+    step = _StepLog(total=15)
+    print(f"[Pipeline] ===== Class {class_name} {subject} | {difficulty} | "
+          f"{len(chapters or [])} chapter(s) | {mantle_client.models_summary()} =====")
+
+    with step("Build work orders"):
+        work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters, disable_images=disable_images)
+        if not work_orders:
+            raise RuntimeError("Blueprint produced no work orders")
+        for wo in work_orders:
+            _flags = [n for n, on in (("grammar-own", wo.is_english_grammar),
+                                      ("writing-own", wo.is_english_writing),
+                                      ("no-context", wo.english_own_only),
+                                      ("map", wo.is_map_work),
+                                      ("no-images", wo.disable_images)) if on]
+            print(f"[Pipeline]   · '{wo.section_name}': {wo.questions_count}q "
+                  f"{wo.marks}m mpq={wo.marks_per_question:g} ctx={_k(len(wo.context_text))}ch "
+                  f"slots={len(wo.slots)} sums={wo.sums_count} "
+                  f"chapters={len(wo.chapters)}{' [' + ','.join(_flags) + ']' if _flags else ''}")
 
     paper_data: dict = {}
     failed: list = []
     total_input_tokens = 0
     total_output_tokens = 0
 
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_SECTIONS) as executor:
-        futures = {executor.submit(generate_section, wo): wo for wo in work_orders}
-        for future in as_completed(futures):
-            wo = futures[future]
-            try:
-                sec_dict, in_tok, out_tok = future.result()
-                paper_data.update(sec_dict)
-                total_input_tokens += in_tok
-                total_output_tokens += out_tok
-            except Exception as e:
-                print(f"[Parallel-Gen] FAILED '{wo.section_name}': {e}")
-                print(traceback.format_exc())
-                failed.append(wo.section_name)
+    with step("Generate sections", f"{len(work_orders)} section(s), "
+                                  f"{MAX_PARALLEL_SECTIONS} at a time"):
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_SECTIONS) as executor:
+            futures = {executor.submit(_section_worker, wo): wo for wo in work_orders}
+            done_n = 0
+            for future in as_completed(futures):
+                wo = futures[future]
+                done_n += 1
+                try:
+                    sec_dict, in_tok, out_tok = future.result()
+                    paper_data.update(sec_dict)
+                    total_input_tokens += in_tok
+                    total_output_tokens += out_tok
+                    _qs = sum(len(v.get("questions", [])) for v in sec_dict.values()
+                              if isinstance(v, dict))
+                    print(f"[Parallel-Gen] {done_n}/{len(work_orders)} OK '{wo.section_name}' — "
+                          f"{_qs} question(s), in={_k(in_tok)} out={_k(out_tok)}")
+                except Exception as e:
+                    print(f"[Parallel-Gen] {done_n}/{len(work_orders)} FAILED "
+                          f"'{wo.section_name}': {e}")
+                    print(traceback.format_exc())
+                    failed.append(wo.section_name)
 
     # A section can fail in the parallel burst purely from endpoint contention — the biggest
     # section (e.g. a 30-question language section) starves while the other two stream and even
@@ -5655,17 +7346,20 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
     # SERIALLY, where it has the endpoint to itself; even a truncated base result is enough for
     # the top-up path to fill it. Only runs on failure — the happy path is untouched.
     if failed:
-        for wo in [w for w in work_orders if w.section_name in failed]:
-            print(f"[Parallel-Gen] serial retry of failed section '{wo.section_name}'")
-            try:
-                sec_dict, in_tok, out_tok = generate_section(wo)
-                paper_data.update(sec_dict)
-                total_input_tokens += in_tok
-                total_output_tokens += out_tok
-                failed.remove(wo.section_name)
-                print(f"[Parallel-Gen] ✅ serial retry recovered '{wo.section_name}'")
-            except Exception as e:
-                print(f"[Parallel-Gen] serial retry FAILED '{wo.section_name}': {e}")
+        with step("Serial retry of failed sections", f"{len(failed)}: {', '.join(failed)}"):
+            for wo in [w for w in work_orders if w.section_name in failed]:
+                print(f"[Parallel-Gen] serial retry of failed section '{wo.section_name}'")
+                try:
+                    sec_dict, in_tok, out_tok = _section_worker(wo)
+                    paper_data.update(sec_dict)
+                    total_input_tokens += in_tok
+                    total_output_tokens += out_tok
+                    failed.remove(wo.section_name)
+                    print(f"[Parallel-Gen] ✅ serial retry recovered '{wo.section_name}'")
+                except Exception as e:
+                    print(f"[Parallel-Gen] serial retry FAILED '{wo.section_name}': {e}")
+    else:
+        step.i += 1                       # keep the step numbering stable on the happy path
 
     # Any section still failed here is ENTIRELY ABSENT from paper_data (paper_data.update only
     # runs on success) — it never generated even a truncated base to top up. Shipping the paper
@@ -5683,60 +7377,106 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
 
     # Final guarantee: strip any wrong-type questions before numbering/render (covers the
     # partial-emit path where a section shipped foreign types after exhausting retries).
-    paper_data = enforce_section_question_types(paper_data, work_orders)
+    with step("Enforce section question types"):
+        paper_data = enforce_section_question_types(paper_data, work_orders)
 
     # Symmetric to the [Refill] below: drop questions a section generated ABOVE its blueprint,
     # so an over-full section can't push the paper's marks over (e.g. Biology 33/30). Runs
     # before Refill so the two together converge each section on its exact per-type counts.
-    paper_data = trim_overfull_sections(paper_data, work_orders)
+    with step("Trim over-full sections"):
+        paper_data = trim_overfull_sections(paper_data, work_orders)
 
     # Refill any section the type-enforcer (or post-validation dedup) left SHORT. These trims
     # run AFTER per-section validation passed, so the section never went 'partial' and was
     # never topped up — e.g. a 20-question Objective section that emitted 2 stray SA questions
     # ends up 18/20 silently. Top each short section back up to its work order's count.
-    wo_by_name = {wo.section_name: wo for wo in work_orders}
-    for sec_name, sec_data in paper_data.items():
-        if sec_name.startswith("__") or not isinstance(sec_data, dict):
-            continue
-        wo = wo_by_name.get(sec_name)
-        if not wo:
-            continue
-        expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
-        if expected and len(sec_data.get("questions", [])) < expected:
-            print(f"[Refill] '{sec_name}': {len(sec_data.get('questions', []))}/{expected} after enforce — topping up")
-            tu_in, tu_out = _fill_short_section(sec_data, wo)
-            total_input_tokens += tu_in
-            total_output_tokens += tu_out
+    with step("Refill short sections"):
+        wo_by_name = {wo.section_name: wo for wo in work_orders}
+        for sec_name, sec_data in paper_data.items():
+            if sec_name.startswith("__") or not isinstance(sec_data, dict):
+                continue
+            wo = wo_by_name.get(sec_name)
+            if not wo:
+                continue
+            expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
+            if expected and len(sec_data.get("questions", [])) < expected:
+                print(f"[Refill] '{sec_name}': {len(sec_data.get('questions', []))}/{expected} after enforce — topping up")
+                tu_in, tu_out = _fill_short_section(sec_data, wo)
+                total_input_tokens += tu_in
+                total_output_tokens += tu_out
 
     # Deterministic marks fix: every question in a uniform-marks section must equal its
     # marks_per_question. Runs after top-up (so newly added questions are covered too) and
     # before the audit, killing the 'Section B: 9/10 marks (-1)' single-question drift.
-    paper_data = reconcile_uniform_marks(paper_data, work_orders)
+    with step("Reconcile uniform marks"):
+        paper_data = reconcile_uniform_marks(paper_data, work_orders)
 
-    paper_data = cross_section_validate(paper_data, blueprint)
-    total_q = sum(len(v.get("questions", [])) for v in paper_data.values())
-    print(f"[Parallel-Gen] ✅ {len(paper_data)} sections, {total_q} questions | in={total_input_tokens} out={total_output_tokens} tokens")
+    # Cross-section duplicates: sections are generated by independent parallel prompts, so
+    # neither can see the other's questions — this is the only place the same question turning
+    # up in two sections can be caught. Replaces in place (count and marks preserved), so it is
+    # safe to run after the refill/marks passes above.
+    with step("Cross-section duplicates (V5x)"):
+        paper_data, _cd_in, _cd_out = fix_cross_section_duplicates(paper_data, work_orders)
+        total_input_tokens += _cd_in
+        total_output_tokens += _cd_out
 
-    competency_report = validate_competency_distribution(paper_data)
-    if not competency_report.get("compliant", True):
-        # V7 — attempt to fix competency distribution via targeted LLM relabelling
-        paper_data = enforce_competency_distribution(paper_data, class_name, subject)
-        # Re-run check to capture final distribution
+    # Accountancy 80/20 sums-vs-quiz composition. Runs after the duplicate fixer (whose
+    # replacements also have to satisfy the ratio) and before the answer-key balance, so a
+    # regenerated numerical MCQ still gets its key spread. No-op for every other subject.
+    with step("Sums/quiz composition", f"subject={subject}"):
+        paper_data, _sm_in, _sm_out = enforce_sums_distribution(paper_data, work_orders, subject)
+        total_input_tokens += _sm_in
+        total_output_tokens += _sm_out
+        sums_report = validate_sums_distribution(paper_data, subject)
+        if sums_report:
+            for _sd in paper_data.values():
+                if isinstance(_sd, dict):
+                    _sd["_sums_report"] = sums_report
+
+    # V11 — cross-question answer leaks (an Assertion-Reason stem or a case passage stating the
+    # answer to a 2-mark question elsewhere). Needs the WHOLE assembled paper plus the answer
+    # keys, so it cannot run per-section; runs after every pass that adds or replaces questions
+    # so its findings are about the questions that will actually ship, and before the answer-key
+    # balance below so a rewritten MCQ still gets its key spread.
+    with step("Answer-leak audit (V11)", f"model={getattr(mantle_client, 'AUDIT_MODEL', '?')}"):
+        paper_data, _lk_in, _lk_out = fix_answer_leaks(paper_data, work_orders, class_name, subject)
+        total_input_tokens += _lk_in
+        total_output_tokens += _lk_out
+
+    # Spread the MCQ answer key over a/b/c/d with no run longer than 2. Deterministic and
+    # LLM-free; runs LAST so every earlier pass that can change an answer (V4 verification,
+    # duplicate replacement, refill) has already settled.
+    with step("Balance MCQ answer keys"):
+        paper_data = balance_mcq_answer_keys(paper_data)
+
+    with step("Renumber + report leftover dupes"):
+        paper_data = cross_section_validate(paper_data, blueprint)
+        total_q = sum(len(v.get("questions", [])) for v in paper_data.values())
+        print(f"[Parallel-Gen] ✅ {len(paper_data)} sections, {total_q} questions | in={total_input_tokens} out={total_output_tokens} tokens")
+
+    with step("Competency distribution (V7)"):
         competency_report = validate_competency_distribution(paper_data)
-    for sec_data in paper_data.values():
-        sec_data["_competency_report"] = competency_report
+        if not competency_report.get("compliant", True):
+            # V7 — attempt to fix competency distribution via targeted LLM relabelling
+            paper_data = enforce_competency_distribution(paper_data, class_name, subject)
+            # Re-run check to capture final distribution
+            competency_report = validate_competency_distribution(paper_data)
+        for sec_data in paper_data.values():
+            sec_data["_competency_report"] = competency_report
 
     # V8 — Cross-section coherence audit (one LLM call for the full paper)
-    coherence_report = run_cross_section_coherence_audit(
-        paper_data, class_name, subject, chapters
-    )
-    for sec_data in paper_data.values():
-        sec_data["_coherence_report"] = coherence_report
+    with step("Cross-section coherence (V8)", f"model={mantle_client.VAL_MODEL}"):
+        coherence_report = run_cross_section_coherence_audit(
+            paper_data, class_name, subject, chapters
+        )
+        for sec_data in paper_data.values():
+            sec_data["_coherence_report"] = coherence_report
 
     # V10 — Final paper-level audit (master QC gate, deepseek.v3.2)
-    final_audit = run_final_paper_audit(paper_data, class_name, subject, difficulty)
-    for sec_data in paper_data.values():
-        sec_data["_final_audit"] = final_audit
+    with step("Final paper audit (V10)", f"model={GEN_MODEL}"):
+        final_audit = run_final_paper_audit(paper_data, class_name, subject, difficulty)
+        for sec_data in paper_data.values():
+            sec_data["_final_audit"] = final_audit
 
     # ── DEBUG: dump the fully-assembled question JSON for inspection ──────────────
     # Writes temp_questions.json (latest run) in the project root. Gitignored via temp_*.
@@ -5745,6 +7485,24 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
         paper_data, class_name, subject, difficulty, chapters,
         total_input_tokens, total_output_tokens, final_audit, coherence_report,
     )
+
+    # Closing trace: per-section shape, then the whole run's LLM spend broken down by model, by
+    # KEY and by slowest stage. This is the block to read first when a paper looks wrong or slow.
+    print(f"[Pipeline] ===== assembled in {time.time() - step.t0:.0f}s =====")
+    for _sn, _sd in paper_data.items():
+        if _sn.startswith("__") or not isinstance(_sd, dict):
+            continue
+        _qs = _sd.get("questions", [])
+        _flags = [f"{_t}={len(_sd.get(_key) or [])}" for _t, _key in (
+            ("dupes", "_cross_section_duplicates"), ("leaks", "_answer_leaks"),
+            ("quality", "_quality_flags"), ("answers", "_mcq_answer_warnings"),
+            ("grounding", "_grounding_issues")) if _sd.get(_key)]
+        print(f"[Pipeline]   · '{_sn}': {len(_qs)} q, "
+              f"{sum(_as_float(q.get('marks'), 0.0) for q in _qs):g} marks"
+              f"{' | ' + ' '.join(_flags) if _flags else ''}")
+    print(f"[Pipeline] paper tokens: in={_k(total_input_tokens)} out={_k(total_output_tokens)}")
+    for _line in mantle_client.run_stats_lines():
+        print(f"[Pipeline] {_line}")
 
     return paper_data, total_input_tokens, total_output_tokens
 
