@@ -14,4 +14,4 @@ cd /d "E:\GIT REPO MAIN\qpg\redis" && cls && redis-server redis.windows.conf
 celery:
 cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && cls && celery -A qpg worker --loglevel=info --pool=solo
 
-cd /d "E:\GIT REPO MAIN\qpg" && claude --dangerously-skip-permissions
+cf
