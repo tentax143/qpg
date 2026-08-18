@@ -1,17 +1,90 @@
-django:
+=========================================================================
+START ORDER — four terminal windows, in this order.
+Verify with the health check (step 5) once they are all up.
+=========================================================================
 
-cd /d "E:\GIT REPO MAIN\qpg"
-conda activate tpm && cls
-python manage.py runserver 172.16.71.183:1223
-
-frontend:
-
-cd /d "E:\GIT REPO MAIN\qpg\frontend" && cls
-npm run dev
-
-redis:
+1) redis  (the broker — nothing queued runs without it)
 cd /d "E:\GIT REPO MAIN\qpg\redis" && cls && redis-server redis.windows.conf
-celery:
-cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && cls && celery -A qpg worker --loglevel=info --pool=solo
+
+2) django  (the API)
+cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && cls && python manage.py runserver 172.16.71.183:1223
+
+3) frontend
+cd /d "E:\GIT REPO MAIN\qpg\frontend" && cls && npm run dev
+
+4) celery  — ONE worker, handles everything: papers, patterns, ingest, answer keys.
+cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && cls && celery -A qpg worker --loglevel=info --pool=threads -Q celery,patterns
+
+5) VERIFY — run after starting up, and any time somebody reports "it's just
+   loading". It is the only way to see a queue nobody is draining: a missing
+   worker raises nothing, .delay() still succeeds, the row just says 'queued'
+   forever. Exits 1 if anything is wrong.
+cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && python manage.py celery_health
+   ...and to test the API keys for real (one live call each):
+cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && python manage.py celery_health --check-keys
+
+  Expected healthy output:
+    workers  1 responding
+    queue    OK    celery    waiting=0
+    queue    OK    patterns  waiting=0
+    RESULT   healthy
+  "queue ORPHAN <name>" means the worker is not consuming that queue — check
+  that step 4 still has BOTH names after -Q (celery,patterns). Drop either one
+  and that half of the app silently stops running while the UI spins.
+
+
+=========================================================================
+WHAT MAKES THE ONE-WORKER SETUP SAFE
+=========================================================================
+Do not change these three things casually — together they are what let a single
+worker run papers and patterns side by side.
+
+  --pool=threads   The whole point. --pool=solo runs ONE task at a time no
+                   matter what any setting says, so a 20-minute paper blocked
+                   every 40-second pattern behind it. That was the original
+                   "AI pattern just keeps loading" bug. Never go back to solo
+                   with a single worker. (prefork is not usable on Windows.)
+
+  -Q celery,patterns   The worker must name BOTH queues. Patterns are routed to
+                   their own queue (CELERY_TASK_ROUTES in settings.py) so they
+                   CAN be split onto a dedicated worker later; until then this
+                   one worker has to drain both or patterns never run.
+
+  no --concurrency  Deliberate: it comes from CELERY_WORKER_CONCURRENCY in
+                   settings.py (6), so there is one source of truth. 6 rather
+                   than 4 because papers hold a slot for minutes and patterns
+                   for seconds — the headroom is what keeps a slot free for a
+                   pattern while several papers build.
+
+Rate limiting: raising worker concurrency does NOT raise LLM load without bound.
+Each paper already fans out 3 sections at once
+(section_generator.MAX_PARALLEL_SECTIONS), so 6 concurrent papers would want 18
+simultaneous Mantle calls. mantle_client.MAX_CONCURRENT_CALLS caps total
+in-flight requests for the whole process at 6 (override with the env var
+QPG_MAX_CONCURRENT_LLM_CALLS). Without that cap you trade a queue wait for HTTP
+429s — and a 429 does not merely slow a paper, it can drop a whole section out
+of it. Raise the cap only as more API keys go live; each key has its own limit.
+When the cap is saturated the log says so: "[Mantle] WAIT ... all 6 call slots
+busy".
+
+Known cost of one worker: mantle_client._run_stats is a process-global tally
+reset at the start of each task, so when several papers run at once their token
+and cost totals interleave into one number. The per-call "[Mantle] OK ..." lines
+stay accurate and are stamped with the stage, so individual calls are still
+attributable — only the per-paper SUMMARY is approximate under load.
+
+
+=========================================================================
+OCCASIONAL / MAINTENANCE
+=========================================================================
+Import the CBSE sample papers in sqp\ as one-to-one board patterns.
+Already done for the current 10 PDFs — re-run only when sqp\ is refreshed for a
+new academic year, or after adding a PDF (add its stem to SUBJECT_BY_STEM first):
+cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && python manage.py import_sqp_patterns
+   preview without writing to the DB:
+cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && python manage.py import_sqp_patterns --dry-run
+
+Tests:
+cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && set PYTHONIOENCODING=utf-8 && python manage.py test core --noinput
 
 cf

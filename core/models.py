@@ -271,18 +271,47 @@ class BlueprintTemplate(models.Model):
         return f"{self.name} - {self.class_name} {self.subject}"
 
 class ExamBlueprint(models.Model):
-    """Enhanced blueprint model for specific exam configurations"""
+    """A chapter/unit plan layered ON TOP OF an ExamPattern.
+
+    Division of labour: the PATTERN says what the paper looks like (sections, question numbers,
+    types, marks); the BLUEPRINT says where each of those questions draws its content from
+    ("Q1 from Electrostatics, Q2 from Current Electricity"). One pattern can have several
+    blueprints — the same Half-Yearly structure covering different units each term.
+
+    This is a teacher-authored override of what the generator already computes for itself:
+    `section_generator.plan_chapter_allocation` assigns one chapter per question slot weighted by
+    CBSE unit marks, and `apply_unit_map` replaces those assignments with the teacher's wherever
+    the blueprint states one. Unmapped questions keep the automatic allocation, so a partial
+    blueprint is valid and useful — nobody has to fill 38 dropdowns to constrain 3 questions.
+    """
     class_name = models.CharField(max_length=10)   # e.g. "11-A", "12-B"
     subject = models.CharField(max_length=100)
     code = models.CharField(max_length=20, blank=True, null=True)  # e.g. "301" for English Core
-    
-    # Enhanced blueprint structure
+
+    # The pattern this blueprint plans the units for. Nullable: rows created before blueprints
+    # were bound to patterns (the abandoned structure-style blueprints) have none, and are shown
+    # as legacy rather than migrated — their `blueprint` JSON does not describe units at all.
+    pattern = models.ForeignKey(
+        'ExamPattern', on_delete=models.CASCADE, null=True, blank=True, related_name='blueprints')
+
+    # Which unit each printed question draws from. KEYED BY PRINTED QUESTION NUMBER, never by
+    # position: a section can generate more questions than it prints (attempt-N-of-M), so a
+    # positional index into chapter_plan would quietly assign the wrong unit.
+    #   {"sections": [
+    #      {"section_id": "SEC_A",
+    #       "units": ["Electrostatics"],                     # section-wide default
+    #       "questions": {"1": "Electrostatics", "2": "Current Electricity"}}]}
+    unit_map = models.JSONField(default=dict, blank=True)
+
+    # Legacy structure-style blueprint payload. Kept so existing rows are not destroyed; nothing
+    # reads it for generation.
     blueprint = models.JSONField(default=dict)
-    
+
     # Template reference
     template = models.ForeignKey(BlueprintTemplate, on_delete=models.SET_NULL, null=True, blank=True)
-    
+
     # Metadata
+    name = models.CharField(max_length=150, blank=True, default="")
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -292,7 +321,60 @@ class ExamBlueprint(models.Model):
         ordering = ['class_name', 'subject']
 
     def __str__(self):
-        return f"{self.class_name} {self.subject} ({self.code})"
+        label = self.name or (self.pattern.name if self.pattern else self.code)
+        return f"{self.class_name} {self.subject} ({label})"
+
+    # ── unit_map helpers ─────────────────────────────────────────────────────────
+    # Kept on the model so the API, the generator and the tests all read the map the same way.
+    # A hand-edited or half-saved map must never raise into paper generation, so every accessor
+    # tolerates missing/malformed pieces and simply reports nothing for them.
+
+    def section_entries(self):
+        """The unit_map's per-section entries, skipping anything malformed."""
+        sections = (self.unit_map or {}).get('sections')
+        if not isinstance(sections, list):
+            return []
+        return [s for s in sections if isinstance(s, dict) and s.get('section_id')]
+
+    def question_units(self):
+        """{section_id: {qnum(int): unit}} for every explicitly mapped question."""
+        out = {}
+        for entry in self.section_entries():
+            mapped = entry.get('questions')
+            if not isinstance(mapped, dict):
+                continue
+            per_q = {}
+            for qnum, unit in mapped.items():
+                try:
+                    q = int(qnum)
+                except (TypeError, ValueError):
+                    continue
+                if q > 0 and isinstance(unit, str) and unit.strip():
+                    per_q[q] = unit.strip()
+            if per_q:
+                out[str(entry['section_id'])] = per_q
+        return out
+
+    def section_units(self):
+        """{section_id: [unit, ...]} section-wide defaults, used for questions that are not
+        individually mapped (and for legacy patterns with no question_slots at all)."""
+        out = {}
+        for entry in self.section_entries():
+            units = [u.strip() for u in (entry.get('units') or [])
+                     if isinstance(u, str) and u.strip()]
+            if units:
+                out[str(entry['section_id'])] = units
+        return out
+
+    def all_units(self):
+        """Every unit named anywhere in the map — the set that must be retrievable at generation
+        time, so it is unioned into the paper's chapters."""
+        units = set()
+        for per_q in self.question_units().values():
+            units.update(per_q.values())
+        for unit_list in self.section_units().values():
+            units.update(unit_list)
+        return sorted(units)
 
 
 # ==============================

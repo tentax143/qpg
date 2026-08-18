@@ -80,6 +80,14 @@ const QUESTION_TYPE_OPTIONS = [
   { label: 'Mixed',                 value: 'Mixed' },
 ];
 
+// How long the create-pattern page keeps polling a generating pattern before it gives up and
+// tells the teacher what to do. Must exceed the worker's own ceiling
+// (core/tasks.PATTERN_TIME_LIMIT = 9 min) so a task that is genuinely still working is never
+// abandoned by the page; past that the worker itself has stopped, so continuing to spin only
+// ever shows a lie — which is exactly what teachers reported as "the pattern just loads".
+const GEN_POLL_TIMEOUT_MS  = 10 * 60 * 1000;
+const GEN_POLL_INTERVAL_MS = 3000;
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function inferQType(typeStr = '') {
@@ -278,6 +286,8 @@ export default function CreatePatternPage() {
   // AI generation polling
   const [generating, setGenerating]   = useState(false);  // true while Celery task is running
   const [genPatternId, setGenPatternId] = useState(null); // id to poll
+  const [genStatus, setGenStatus]     = useState(null);   // 'queued' | 'generating' — what the worker is doing
+  const [genElapsed, setGenElapsed]   = useState(0);      // seconds since we started polling
 
   // PDF import tab
   const [pdfFile, setPdfFile] = useState(null);
@@ -382,41 +392,66 @@ export default function CreatePatternPage() {
     setSections(prev => prev.filter((_, i) => i !== idx));
   }
 
-  // Poll pattern status until done or failed
+  // Poll pattern status until done, failed, or the deadline passes.
   useEffect(() => {
     if (!genPatternId) return;
     let cancelled = false;
+    const startedAt = Date.now();
+
+    // Tick the elapsed counter so the banner shows progress rather than a mute spinner —
+    // a wait with a visible clock reads as "working", the same wait without one reads as "stuck".
+    const ticker = setInterval(() => {
+      if (!cancelled) setGenElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+
+    const stop = () => {
+      setGenerating(false);
+      setGenPatternId(null);
+      setGenStatus(null);
+      setGenElapsed(0);
+    };
+
     const poll = async () => {
       try {
         const res = await apiClient.get(`/patterns/${genPatternId}/`);
         const pat = res.data;
         if (pat.status === 'done') {
           if (!cancelled) {
-            setGenerating(false);
-            setGenPatternId(null);
+            stop();
             setSuccess('Pattern generated! Redirecting…');
             setTimeout(() => router.push('/patterns'), 1500);
           }
         } else if (pat.status === 'failed') {
           if (!cancelled) {
-            setGenerating(false);
-            setGenPatternId(null);
-            setError('AI generation failed. Edit the prompt and try again.');
+            stop();
+            setError('AI generation failed. Edit the description and try again — or build the pattern on the Manual tab.');
+          }
+        } else if (Date.now() - startedAt > GEN_POLL_TIMEOUT_MS) {
+          // The worker is not going to finish this one. Say so, and point at the real cause
+          // rather than leaving the teacher on a spinner that never resolves.
+          if (!cancelled) {
+            const wasQueued = pat.status === 'queued';
+            stop();
+            setError(wasQueued
+              ? 'Your pattern is still waiting for a free generation worker after 10 minutes — the server is busy or the background worker is not running. Tell your admin, then try again.'
+              : 'Generation is taking unusually long and has been left running in the background. Check the Patterns list in a few minutes — if it never appears, try again with a shorter description.');
           }
         } else {
-          // still queued / generating — check again in 3 seconds
-          if (!cancelled) setTimeout(poll, 3000);
+          // Still queued / generating — surface WHICH, then check again shortly.
+          if (!cancelled) {
+            setGenStatus(pat.status);
+            setTimeout(poll, GEN_POLL_INTERVAL_MS);
+          }
         }
       } catch {
         if (!cancelled) {
-          setGenerating(false);
-          setGenPatternId(null);
+          stop();
           setError('Could not check generation status. Check your connection.');
         }
       }
     };
     poll();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearInterval(ticker); };
   }, [genPatternId]);
 
   // Submit
@@ -997,20 +1032,31 @@ export default function CreatePatternPage() {
             </div>
           )}
 
-          {/* Celery generation progress bar */}
+          {/* Celery generation progress bar. Shows WHICH stage the job is in: 'queued' means it
+              has not reached a worker yet (server busy), 'generating' means the AI is actually
+              running. A single undifferentiated spinner made a full queue look like a hung app. */}
           {generating && (
             <div className="mb-6 p-5 bg-blue-50 rounded-2xl border border-blue-100">
               <div className="flex items-center gap-3 mb-3">
                 <div className="w-5 h-5 border-2 border-blue-400/40 border-t-blue-600 rounded-full animate-spin shrink-0" />
                 <span className="text-xs font-black text-blue-700 uppercase tracking-wide">
-                  {activeTab === 'pdf' ? 'AI is reading your sample paper and extracting its structure…' : 'AI is parsing your pattern description…'}
+                  {genStatus === 'queued'
+                    ? 'Waiting for a free generation worker…'
+                    : activeTab === 'pdf'
+                      ? 'AI is reading your sample paper and extracting its structure…'
+                      : 'AI is parsing your pattern description…'}
+                </span>
+                <span className="ml-auto text-[10px] font-black text-blue-600 tabular-nums shrink-0">
+                  {Math.floor(genElapsed / 60)}:{String(genElapsed % 60).padStart(2, '0')}
                 </span>
               </div>
               <div className="w-full bg-blue-100 rounded-full h-1.5 overflow-hidden">
-                <div className="bg-blue-500 h-full rounded-full animate-pulse" style={{ width: '60%' }} />
+                <div className="bg-blue-500 h-full rounded-full animate-pulse" style={{ width: genStatus === 'queued' ? '25%' : '60%' }} />
               </div>
               <p className="text-[10px] font-bold text-blue-500 mt-2">
-                This runs in the background via Celery. You&apos;ll be redirected automatically when done.
+                {genStatus === 'queued'
+                  ? 'Your request is in line behind other generations. It will start automatically — you can leave this page open.'
+                  : 'This runs in the background. You\u2019ll be redirected automatically when done.'}
               </p>
             </div>
           )}

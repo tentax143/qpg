@@ -176,6 +176,29 @@ function SectionExamPattern({ num }) {
         <p className="text-xs text-slate-400 mt-2 sans">Review and adjust the AI-generated structure before saving.</p>
       </div>
 
+      <div className="section-card mb-4">
+        <h4 className="font-bold text-slate-900 sans mb-2">Ready-Made CBSE Board Patterns</h4>
+        <p className="text-sm text-slate-700 mb-2">
+          For board papers you do not need to build anything. QPG ships patterns taken from the official
+          CBSE 2025-26 sample question papers, reproduced <strong>question by question</strong> — the same
+          sections, the same question numbers, the same marks, the same internal choices as the printed paper.
+        </p>
+        <div className="ml-1 bg-white border border-slate-200 rounded-lg p-3">
+          <p className="text-xs font-bold text-slate-500 sans uppercase tracking-wider mb-2">Available</p>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            <strong>Class 12</strong> — Physics (70M/33Q), Chemistry (70M/33Q), Biology (70M/33Q),
+            Mathematics (80M/38Q), Computer Science (70M/37Q), Accountancy (80M/34Q),
+            Business Studies (80M/34Q), Economics (80M/34Q), English Core (80M/13Q).
+            <br />
+            <strong>Class 10</strong> — English Language &amp; Literature (80M/11Q).
+          </p>
+        </div>
+        <p className="text-xs text-slate-400 mt-2 sans">
+          Pick the class, subject and Board Exam Pattern on the Create Pattern screen. For any other subject or
+          for a past school paper, use Import from PDF and upload the paper.
+        </p>
+      </div>
+
       <div className="tip-box text-sm text-slate-700">
         <strong className="sans text-blue-700">Tip:</strong> Create one pattern per exam type (PT-1, PT-2, Half-Yearly, Annual) and reuse it across subjects — patterns are not subject-specific.
       </div>
@@ -191,28 +214,39 @@ function SectionBlueprint({ num }) {
       </h2>
       <div className="h-1 w-12 bg-blue-500 rounded mb-3" />
       <p className="text-sm text-slate-600 mb-5 leading-relaxed">
-        A blueprint is a chapter-wise mark distribution plan. While a pattern says "10 MCQs worth 1 mark each",
-        a blueprint specifies which chapters those questions come from. Blueprints are optional but give precise control over coverage.
+        A pattern decides the paper&apos;s <strong>structure</strong> — how many questions, their type
+        and marks. A blueprint adds the <strong>syllabus</strong>: which unit each of those questions
+        is set from. Pin only the questions you care about; every question you leave on
+        <strong> Auto</strong> is assigned a unit for you, spread across the chapters you tick at
+        generation time and weighted by CBSE marks.
       </p>
 
       <div className="section-card mb-4">
-        <h4 className="font-bold text-slate-900 sans mb-3">When to Use a Blueprint</h4>
+        <h4 className="font-bold text-slate-900 sans mb-3">When a Blueprint Earns Its Keep</h4>
         <BulletList items={[
-          'You want guaranteed chapter-wise coverage (every chapter must have at least one question).',
-          'You are following a mandated CBSE blueprint for board exams.',
-          "You want to replicate the exact structure of a previous year's paper.",
+          'A unit must appear in a specific place — "Question 31 has to be the Optics derivation".',
+          'A whole section is reserved for one unit — "Section C is all Modern Physics this term".',
+          'Two exams share a structure but cover different units — build one pattern, then a blueprint per term.',
         ]} />
       </div>
 
-      <div className="section-card">
-        <h4 className="font-bold text-slate-900 sans mb-3">Creating a Blueprint</h4>
+      <div className="section-card mb-4">
+        <h4 className="font-bold text-slate-900 sans mb-3">Creating One</h4>
         <StepList steps={[
-          'Go to Blueprints in the sidebar.',
-          'Click Create Blueprint or start from an existing CBSE template.',
-          'Select the subject and class.',
-          'For each chapter, enter the marks allocated per question type.',
-          'Save the blueprint — it will be available to select during paper generation.',
+          'Go to Blueprints in the sidebar and click New Blueprint.',
+          'Choose the pattern you want to plan. Its real printed questions load automatically — the same numbers, types and marks that will appear on the paper.',
+          'Set a unit per question, or use "Apply to all" to fill a whole section in one click and then adjust individual questions.',
+          'Leave anything you do not care about on Auto.',
+          'Save it, then pick it in the Blueprint field when you generate a paper from that pattern.',
         ]} />
+      </div>
+
+      <div className="tip-box text-sm text-slate-700">
+        <strong className="sans text-blue-700">Note:</strong> a blueprint belongs to one pattern,
+        because it refers to that pattern&apos;s question numbers — so the Blueprint list on the
+        generate page only shows blueprints built for the pattern you picked. You can only pin units
+        that have uploaded material, and questions the pattern marks as unseen passages or general
+        knowledge are deliberately not drawn from any unit.
       </div>
     </section>
   );
@@ -232,7 +266,7 @@ function SectionGenerate({ num }) {
           {[
             ['Materials uploaded', 'At least one PDF uploaded for the target subject and class'],
             ['Pattern created', 'An exam pattern exists for the subject / exam type'],
-            ['Blueprint (optional)', 'Create one if you need chapter-wise mark control'],
+            ['Chapters chosen', 'Know which chapters this exam covers — that selection is what controls coverage'],
           ].map(([label, desc]) => (
             <li key={label} className="flex items-start gap-3 text-sm text-blue-800">
               <span className="mt-0.5 text-blue-500">
@@ -255,7 +289,7 @@ function SectionGenerate({ num }) {
             ['Choose Chapters', 'Select one or more chapters. The list is populated from your uploaded materials.'],
             ['Pick a Pattern', 'Select the exam pattern that defines the paper structure.'],
             ['Set Difficulty', 'Choose Easy, Medium, or Hard.'],
-            ['Select Blueprint (optional)', 'Attach a blueprint for chapter-wise mark distribution.'],
+            ['Select Blueprint (optional)', 'Pins named questions to specific units. Only blueprints built for the pattern you picked are listed.'],
             ['Generate', 'Click Generate Paper. The paper is created in the background — it appears in My Papers with a "Generating" status. Generation typically takes 30–90 seconds.'],
           ].map(([title, desc], j) => (
             <li key={j} className="flex gap-3">

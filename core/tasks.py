@@ -1,5 +1,6 @@
 from celery import shared_task
-from .models import QuestionPaper, ExamPattern, School
+from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
+from .models import QuestionPaper, ExamPattern, ExamBlueprint, School
 from . import generator, embeddings, mantle_client
 from django.conf import settings
 from django.db.models import F
@@ -52,7 +53,119 @@ def _fill_section_counts(sections):
     return sections
 
 
-@shared_task(bind=True, max_retries=2, default_retry_delay=60)
+# --- Pattern generation ------------------------------------------------------------
+# A pattern is a SHORT job (one LLM call, plus at most one repair round), but it used to
+# share the single default queue with paper generation, which legitimately runs for many
+# minutes. The Windows deploy runs the worker with `--pool=solo` - ONE task at a time - so
+# a teacher who clicked "AI generate pattern" while any paper anywhere on the instance was
+# building sat on a spinner until that paper finished. Patterns are therefore routed to
+# their own `patterns` queue (CELERY_TASK_ROUTES in settings) served by a separate worker,
+# and bounded by their own time limits so one wedged LLM call cannot hold that queue either.
+# Sized against api.ai_service.PATTERN_CALL_TIMEOUT: one bounded generation call plus one
+# bounded repair call always fit, an endlessly stalled one never does.
+PATTERN_SOFT_TIME_LIMIT = 8 * 60    # raises SoftTimeLimitExceeded -> task fails itself cleanly
+PATTERN_TIME_LIMIT      = 9 * 60    # hard kill
+
+# A pattern whose task evaporated (worker restart, broker flush, revoked message, a crash
+# before the status was written) would otherwise sit at 'queued'/'generating' FOREVER, and
+# the create-pattern page polls it every 3s with no deadline - this is the "AI pattern just
+# keeps loading" report. Mirrors reap_stale_papers for QuestionPaper.
+STALE_PATTERN_QUEUED_SECONDS     = 12 * 60   # never picked up by any worker
+STALE_PATTERN_GENERATING_SECONDS = 10 * 60   # started, then the worker died mid-run
+
+
+def reap_stale_patterns(user_id=None, pattern_ids=None):
+    """Auto-fail patterns stuck in 'queued'/'generating' past their window, so the polling
+    UI gets a real answer instead of an endless spinner. Scoped to one user (the poller) or
+    to explicit ids; with neither it sweeps every pattern. Returns the reaped ids."""
+    from django.utils import timezone
+    now = timezone.now()
+    qs = ExamPattern.objects.filter(status__in=['queued', 'generating'])
+    if pattern_ids is not None:
+        qs = qs.filter(id__in=pattern_ids)
+    if user_id is not None:
+        qs = qs.filter(created_by_id=user_id)
+
+    reaped = []
+    for pat in qs:
+        window = (STALE_PATTERN_GENERATING_SECONDS if pat.status == 'generating'
+                  else STALE_PATTERN_QUEUED_SECONDS)
+        # updated_at is auto_now, so it tracks the last status write (queued -> generating).
+        if (now - pat.updated_at).total_seconds() > window:
+            pat.status = 'failed'
+            pat.save(update_fields=['status', 'updated_at'])
+            reaped.append(pat.id)
+    if reaped:
+        print(f"[reap_stale_patterns] auto-failed stale pattern(s) {reaped}")
+    return reaped
+
+
+def build_validated_sections(pattern_data, *, teacher_input, class_name, subject,
+                             exam_name, log=print):
+    """normalize -> validate -> one repair round -> teacher-visible warnings -> derive
+    aggregates. The single structural contract for every pattern that arrives as LLM JSON.
+
+    Shared by generate_pattern_task (the live AI / PDF-import path) and the
+    import_sqp_patterns management command, so a pattern seeded from a CBSE sample paper
+    goes through exactly the same checks as one a teacher types in.
+
+    Returns the (possibly repaired) sections list; `pattern_data` is updated in place when
+    a repair is accepted, so its total_marks / total_questions stay consistent with them.
+    """
+    from . import pattern_structure
+
+    sections = pattern_structure.normalize_slots(pattern_data.get('sections', []))
+    errors = pattern_structure.validate_pattern_structure(
+        sections, declared_total=pattern_data.get('total_marks'))
+
+    if errors:
+        # One repair round: resend the source text + failed JSON + the numbered errors.
+        # Keep the repair only if it did not get worse and did not destroy question slots.
+        from api.ai_service import repair_pattern_via_api
+        log(f"{len(errors)} structure error(s) - attempting repair round")
+        try:
+            repaired = repair_pattern_via_api(
+                teacher_input=teacher_input,
+                class_name=class_name,
+                subject=subject,
+                exam_name=exam_name,
+                previous_json=pattern_data,
+                errors_text=pattern_structure.format_structure_errors(errors),
+            )
+            r_sections = pattern_structure.normalize_slots(repaired.get('sections', []))
+            r_errors = pattern_structure.validate_pattern_structure(
+                r_sections, declared_total=repaired.get('total_marks'))
+            # Accept the repair only if it did not delete or de-value any question slot - a
+            # repair that reconciles marks by dropping questions (Q19/Q20) or lowering slot
+            # marks destroys content; keeping the faithful original WITH warnings is better.
+            if r_sections and len(r_errors) <= len(errors) and \
+                    pattern_structure.repair_preserves_slots(sections, r_sections):
+                pattern_data.update(repaired)
+                sections, errors = r_sections, r_errors
+            else:
+                log("Repair rejected "
+                    f"(errors {len(errors)} -> {len(r_errors)}, slots preserved: "
+                    f"{pattern_structure.repair_preserves_slots(sections, r_sections)})")
+        except Exception as repair_exc:
+            log(f"Repair round failed - keeping original: {repair_exc}")
+
+    # Residual errors become teacher-visible warnings on the sections they concern
+    # (paper-level ones land on the first section).
+    for e in errors:
+        idx = e.get('section')
+        target = (sections[idx] if idx is not None and 0 <= idx < len(sections)
+                  else (sections[0] if sections else None))
+        if isinstance(target, dict):
+            target.setdefault('_structure_warnings', []).append(e['msg'])
+    if errors:
+        log(f"{len(errors)} unresolved structure warning(s) saved on the pattern")
+
+    pattern_structure.derive_aggregates_from_slots(sections)
+    return sections
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=60,
+             soft_time_limit=PATTERN_SOFT_TIME_LIMIT, time_limit=PATTERN_TIME_LIMIT)
 def generate_pattern_task(self, pattern_id):
     """Parse the pattern's ai_prompt into structured sections via AI. For 'ai_generated'
     patterns the prompt is the teacher's description; for 'imported' ones it is the full
@@ -71,8 +184,6 @@ def generate_pattern_task(self, pattern_id):
     print(f"[generate_pattern_task] Starting — pattern_id={pattern_id} subject={pattern.subject} class={pattern.class_name}")
 
     try:
-        from . import pattern_structure
-
         if pattern.pattern_source == 'imported':
             pattern_data = extract_pattern_from_sqp_via_api(
                 sqp_text=pattern.ai_prompt,
@@ -87,52 +198,16 @@ def generate_pattern_task(self, pattern_id):
                 subject=pattern.subject,
                 exam_name=pattern.name,
             )
-        sections = pattern_structure.normalize_slots(pattern_data.get('sections', []))
-        errors = pattern_structure.validate_pattern_structure(
-            sections, declared_total=pattern_data.get('total_marks'))
 
-        if errors:
-            # One repair round: resend the teacher's text + failed JSON + the
-            # numbered errors. Keep the repair only if it didn't get worse.
-            from api.ai_service import repair_pattern_via_api
-            print(f"[generate_pattern_task] {len(errors)} structure error(s) — attempting repair round")
-            try:
-                repaired = repair_pattern_via_api(
-                    teacher_input=pattern.ai_prompt,
-                    class_name=pattern.class_name,
-                    subject=pattern.subject,
-                    exam_name=pattern.name,
-                    previous_json=pattern_data,
-                    errors_text=pattern_structure.format_structure_errors(errors),
-                )
-                r_sections = pattern_structure.normalize_slots(repaired.get('sections', []))
-                r_errors = pattern_structure.validate_pattern_structure(
-                    r_sections, declared_total=repaired.get('total_marks'))
-                # Accept the repair only if it did not delete or de-value any
-                # question slot — a repair that reconciles marks by dropping
-                # questions (Q19/Q20) or lowering slot marks destroys teacher
-                # content; keeping the faithful original WITH warnings is better.
-                if r_sections and len(r_errors) <= len(errors) and \
-                        pattern_structure.repair_preserves_slots(sections, r_sections):
-                    pattern_data, sections, errors = repaired, r_sections, r_errors
-                else:
-                    print("[generate_pattern_task] Repair rejected "
-                          f"(errors {len(errors)} -> {len(r_errors)}, "
-                          f"slots preserved: {pattern_structure.repair_preserves_slots(sections, r_sections)})")
-            except Exception as repair_exc:
-                print(f"[generate_pattern_task] Repair round failed — keeping original: {repair_exc}")
+        sections = build_validated_sections(
+            pattern_data,
+            teacher_input=pattern.ai_prompt,
+            class_name=pattern.class_name,
+            subject=pattern.subject,
+            exam_name=pattern.name,
+            log=lambda m: print(f"[generate_pattern_task] {m}"),
+        )
 
-        # Residual errors become teacher-visible warnings on the sections they
-        # concern (paper-level ones land on the first section).
-        for e in errors:
-            idx = e.get('section')
-            target = sections[idx] if idx is not None and 0 <= idx < len(sections) else (sections[0] if sections else None)
-            if isinstance(target, dict):
-                target.setdefault('_structure_warnings', []).append(e['msg'])
-        if errors:
-            print(f"[generate_pattern_task] {len(errors)} unresolved structure warning(s) saved on pattern {pattern_id}")
-
-        pattern_structure.derive_aggregates_from_slots(sections)
         pattern.sections       = _fill_section_counts(sections)
         pattern.total_marks    = pattern_data.get('total_marks', 0)
         pattern.total_questions = pattern_data.get('total_questions', 0)
@@ -140,11 +215,29 @@ def generate_pattern_task(self, pattern_id):
         pattern.save()
         print(f"[generate_pattern_task] Done — pattern_id={pattern_id} sections={len(pattern.sections)} marks={pattern.total_marks}")
         return {'id': pattern_id, 'status': 'done', 'sections': len(pattern.sections)}
-    except Exception as exc:
-        print(f"[generate_pattern_task] Error — pattern_id={pattern_id}: {exc}")
+    except SoftTimeLimitExceeded:
+        # Don't retry a timeout — a pattern that couldn't be parsed in PATTERN_SOFT_TIME_LIMIT
+        # won't parse in the next 6 minutes either, and retrying it holds the queue behind it.
+        # Fail immediately so the polling UI stops spinning and the teacher can edit the prompt.
+        print(f"[generate_pattern_task] Timed out after {PATTERN_SOFT_TIME_LIMIT}s — pattern_id={pattern_id}")
         pattern.status = 'failed'
         pattern.save(update_fields=['status'])
-        raise self.retry(exc=exc)
+        return {'id': pattern_id, 'status': 'failed', 'reason': 'timeout'}
+    except Exception as exc:
+        print(f"[generate_pattern_task] Error — pattern_id={pattern_id}: {exc}")
+        # Keep the row 'generating' between retries: flipping it to 'failed' here made the
+        # polling UI give up and show an error while a retry that would have succeeded was
+        # still scheduled. Only the FINAL attempt is allowed to mark the pattern failed.
+        if self.request.retries >= self.max_retries:
+            pattern.status = 'failed'
+            pattern.save(update_fields=['status'])
+            raise
+        try:
+            raise self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            pattern.status = 'failed'
+            pattern.save(update_fields=['status'])
+            raise
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
@@ -674,6 +767,53 @@ def dispatch_next_queued_paper(user_id):
         return dispatch_paper(waiting)
 
 
+def _resolve_blueprint(blueprint_id, paper):
+    """Resolve the `blueprint_id` the generate form sent into an ExamBlueprint, or None.
+
+    The form sends prefixed ids ("exam_12") because the same field historically also offered
+    BlueprintTemplates; only the `exam_` form addresses a real per-pattern unit plan. Anything
+    else — a template id, a stale id, a blueprint for a different pattern — must degrade to
+    "generate without a blueprint" rather than fail the paper, because the paper's structure
+    comes from the pattern and is perfectly generatable without one.
+    """
+    raw = str(blueprint_id or '').strip()
+    if not raw:
+        return None
+    if raw.startswith('exam_'):
+        raw = raw[len('exam_'):]
+    if not raw.isdigit():
+        print(f"[Task] blueprint_id {blueprint_id!r} is not an exam blueprint — ignoring")
+        return None
+
+    blueprint = ExamBlueprint.objects.filter(id=int(raw), is_active=True).first()
+    if blueprint is None:
+        print(f"[Task] blueprint {raw} not found — generating without one")
+        return None
+    if not blueprint.all_units():
+        print(f"[Task] blueprint {raw} has an empty unit map — generating without one")
+        return None
+    # A blueprint is a plan for ONE pattern's question numbers. Applied to a different pattern
+    # its qnums address different questions, so it would assign units to the wrong ones.
+    if blueprint.pattern_id and paper.pattern_id and blueprint.pattern_id != paper.pattern_id:
+        print(f"[Task] blueprint {raw} belongs to pattern {blueprint.pattern_id}, "
+              f"paper uses pattern {paper.pattern_id} — ignoring (question numbers would not line up)")
+        return None
+    return blueprint
+
+
+def _available_units(paper):
+    """Units that actually have uploaded material for this paper's class+subject — used only to
+    warn about blueprint units that will generate ungrounded."""
+    from .models import Material
+    class_num = str(paper.class_name or '').split('-')[0]
+    if not class_num or not paper.subject:
+        return []
+    return list(
+        Material.objects
+        .filter(class_name__istartswith=class_num, subject__iexact=paper.subject)
+        .values_list('unit', flat=True).distinct())
+
+
 @shared_task(bind=True)
 def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local', additional_context=""):
     # Ghost-message guard: with acks_late, a task can be redelivered long after its paper
@@ -756,16 +896,48 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
             pattern_obj.total_marks = n
             pattern_obj.total_questions = n
 
+        # ── Blueprint: the teacher's per-question unit plan for this pattern ──────────
+        # `blueprint_id` used to be accepted here and then dropped on the floor — the argument
+        # was threaded all the way from the generate form and never read, so attaching a
+        # blueprint did nothing at all. It now resolves to an ExamBlueprint whose unit_map
+        # overrides the automatic chapter allocation per printed question
+        # (section_generator.apply_unit_map).
+        unit_map = None
+        gen_chapters = list(paper.chapters or [])
+        if blueprint_id:
+            blueprint = _resolve_blueprint(blueprint_id, paper)
+            if blueprint is not None:
+                unit_map = blueprint
+                bp_units = blueprint.all_units()
+                # UNION, not replace: a unit the blueprint pins must be retrievable or its
+                # questions get no context, and a chapter the teacher ticked must not vanish
+                # just because the blueprint does not mention it.
+                added = [u for u in bp_units if u not in gen_chapters]
+                gen_chapters += added
+                print(f"[Task] blueprint={blueprint.id} '{blueprint.name or blueprint}' "
+                      f"units={len(bp_units)}"
+                      + (f" (+{len(added)} added to chapters: {', '.join(added)})" if added else ""))
+                # A pinned unit with no uploaded material is a real misconfiguration: the
+                # question will be written from the model's own knowledge with no textbook
+                # grounding. Name it rather than let the paper come back subtly wrong.
+                known = set(_available_units(paper))
+                if known:
+                    missing = [u for u in bp_units if u not in known]
+                    if missing:
+                        print(f"[Task] WARNING blueprint units with NO uploaded material: "
+                              f"{', '.join(missing)} — those questions will be ungrounded")
+
         file_path, summary, total_cost, input_tokens, output_tokens = generator.generate_paper(
             class_name=class_name,
             subject=paper.subject,
-            chapters=paper.chapters,
+            chapters=gen_chapters,
             difficulty=paper.difficulty,
             pattern=pattern_obj,
             section=section,
             model_source=model_source,
             additional_context=additional_context,
             school_id=school_id,
+            unit_map=unit_map,
         )
 
         # file_path is relative like "question_papers/filename.docx"

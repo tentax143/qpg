@@ -123,17 +123,27 @@ function GeneratorContent() {
     }
   };
 
-  // Load chapters and blueprints when subject changes
+  // Load chapters when subject changes.
   useEffect(() => {
     if (formData.subject && formData.class_name) {
       loadChapters();
-      loadBlueprints();
     } else {
       setAvailableChapters([]);
       setSelectedChapters([]);
-      setBlueprints([]);
     }
   }, [formData.subject, formData.class_name]);
+
+  // Blueprints depend on the PATTERN as well: a blueprint pins that pattern's printed question
+  // numbers, so one built for another pattern would map units onto the wrong questions (the worker
+  // rejects it). Re-fetch whenever the pattern changes and clear any stale selection.
+  useEffect(() => {
+    if (formData.subject && formData.class_name && formData.pattern) {
+      loadBlueprints();
+    } else {
+      setBlueprints([]);
+    }
+    setFormData(prev => (prev.blueprint ? { ...prev, blueprint: '' } : prev));
+  }, [formData.subject, formData.class_name, formData.pattern]);
 
   const loadChapters = async () => {
     setLoadingChapters(true);
@@ -151,7 +161,7 @@ function GeneratorContent() {
   const loadBlueprints = async () => {
     setLoadingBlueprints(true);
     try {
-      const res = await apiClient.get(`/get_blueprints/?class_name=${encodeURIComponent(formData.class_name)}&subject=${encodeURIComponent(formData.subject)}`);
+      const res = await apiClient.get(`/get_blueprints/?class_name=${encodeURIComponent(formData.class_name)}&subject=${encodeURIComponent(formData.subject)}&pattern=${encodeURIComponent(formData.pattern)}`);
       setBlueprints(res.data.blueprints || []);
     } catch (err) {
       console.error("Error loading blueprints", err);

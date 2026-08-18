@@ -331,6 +331,16 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
             return ExamPattern.objects.filter(created_by__profile__school=school).order_by('-created_at')
         return ExamPattern.objects.filter(created_by=user).order_by('-created_at')
 
+    def retrieve(self, request, *args, **kwargs):
+        """The create-pattern page polls this endpoint every 3s while a pattern generates.
+        Reap the caller's stale patterns first: a pattern whose Celery task evaporated in a
+        worker/broker restart used to stay 'queued' forever and the page spun forever with
+        no error — the "AI pattern is just loading" report. Reaping here means the very poll
+        that would have spun forever is the one that resolves it to 'failed'."""
+        from core.tasks import reap_stale_patterns
+        reap_stale_patterns(user_id=request.user.id)
+        return super().retrieve(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
@@ -386,11 +396,27 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
 
         if class_name:
             qs = qs.filter(class_name__iexact=class_name)
+
+        results = list(qs.order_by('-created_at')) if not subject else []
+        cross = []
         if subject:
             narrowed = qs.filter(subject__iexact=subject)
-            qs = narrowed if narrowed.exists() else qs.filter(subject__icontains=subject)
+            if not narrowed.exists():
+                narrowed = qs.filter(subject__icontains=subject)
+            results = list(narrowed.order_by('-created_at'))
 
-        results = list(qs.order_by('-created_at'))
+            # Official board patterns are offered to EVERY subject, not just the ten that have a
+            # CBSE sample paper. The structure is what is reusable: every Class 12 science SQP is
+            # the same 16/5/7/2/3 shape, so a Psychology teacher can clone the Physics one and
+            # get a correct board-shaped paper. clone_template already takes a `subject` override,
+            # so the clone lands in their own subject — this only makes them visible.
+            # Restricted to cbse_official on purpose: opening this to every premade pattern would
+            # bury the subject's own templates under dozens of unrelated rows.
+            if exam_type is None or (exam_type or '').strip().lower() in self._BOARD_EXAM_TYPES:
+                seen = {p.id for p in results}
+                cross = [p for p in qs.filter(pattern_source='cbse_official').order_by('subject')
+                         if p.id not in seen]
+
         # Soft exam_type narrowing by name; keep the broader set if nothing name-matches.
         if exam_type:
             et = exam_type.strip().lower()
@@ -398,7 +424,16 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
             if hit:
                 results = hit
 
-        return Response(ExamPatternSerializer(results, many=True).data)
+        data = ExamPatternSerializer(results, many=True).data
+        for row in data:
+            row['is_cross_subject'] = False
+        cross_data = ExamPatternSerializer(cross, many=True).data
+        for row in cross_data:
+            # The UI labels these "structure from <subject> — reusable" so a teacher understands
+            # why a Physics pattern is on their Sociology list.
+            row['is_cross_subject'] = True
+        # Own-subject first: a teacher whose subject HAS an SQP must never have to hunt for it.
+        return Response(data + cross_data)
 
     @action(detail=False, methods=['post'], url_path='clone-template')
     def clone_template(self, request):
@@ -429,6 +464,10 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
             created_by=request.user,
         )
         return Response(ExamPatternSerializer(new_pattern).data, status=status.HTTP_201_CREATED)
+
+    # Exam types for which a cross-subject BOARD pattern is a sensible suggestion. A 20-mark
+    # PT-1 request must not be offered an 80-mark board paper from another subject.
+    _BOARD_EXAM_TYPES = ('board', 'half_yearly', 'pre_board', 'annual', '')
 
     # Global/system templates shared across all schools — only a superadmin may delete these.
     _GLOBAL_SOURCES = ('cbse_official', 'one_mark_test')
@@ -598,6 +637,73 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
             {'id': pattern.id, 'task_id': task.id, 'status': 'queued'},
             status=status.HTTP_202_ACCEPTED,
         )
+
+    @action(detail=True, methods=['get'], url_path='blueprint-scaffold')
+    def blueprint_scaffold(self, request, pk=None):
+        """Everything the blueprint builder needs for this pattern, in ONE request.
+
+        Returns each section with its PRINTED questions (number, type label, marks, choice) plus
+        the units that have uploaded material for the class+subject — so the builder can render a
+        unit dropdown per question without N round trips.
+
+        `section_id` is computed exactly as `section_generator.build_work_orders` computes it
+        (explicit `id`, else derived from the name), because that is the key `apply_unit_map`
+        matches on at generation time. Deriving it differently here would produce blueprints that
+        save fine and then quietly fail to apply.
+        """
+        from core import pattern_structure
+        from core.section_generator import _section_id_from_name
+
+        pattern = self.get_object()
+        subject = request.query_params.get('subject') or pattern.subject
+        class_name = request.query_params.get('class_name') or pattern.class_name
+
+        sections = []
+        for idx, sec in enumerate(pattern.sections or []):
+            if not isinstance(sec, dict):
+                continue
+            name = sec.get('name') or f'Section {chr(65 + idx)}'
+            section_id = sec.get('id') or _section_id_from_name(name, idx)
+            slots = pattern_structure.slots_for_section(sec)
+
+            questions = []
+            for slot in slots:
+                qnum = slot.get('qnum')
+                if not isinstance(qnum, int) or qnum <= 0:
+                    continue
+                stype = str(slot.get('type') or '')
+                questions.append({
+                    'qnum': qnum,
+                    'type': stype,
+                    'type_label': pattern_structure.SLOT_TYPE_LABEL.get(stype, stype or 'Question'),
+                    'marks': slot.get('marks'),
+                    'topic': slot.get('topic') or '',
+                    'choice': slot.get('choice') or 'none',
+                    # An unseen-passage or general-knowledge question is deliberately NOT drawn
+                    # from a chapter, so pinning a unit to it would contradict the pattern.
+                    'unit_applicable': str(slot.get('source') or '') not in ('unseen', 'general'),
+                })
+
+            sections.append({
+                'section_id': section_id,
+                'name': name,
+                'marks': sec.get('marks'),
+                'questions': questions,
+                # Legacy aggregate-only sections print no individual question numbers, so they
+                # can only be planned as a whole.
+                'section_level_only': not questions,
+                'questions_count': sec.get('questions_count') or len(questions),
+            })
+
+        return Response({
+            'pattern': {
+                'id': pattern.id, 'name': pattern.name, 'subject': pattern.subject,
+                'class_name': pattern.class_name, 'total_marks': pattern.total_marks,
+                'total_questions': pattern.total_questions,
+            },
+            'sections': sections,
+            'units': available_units(request.user, class_name, subject),
+        })
 
     @action(detail=False, methods=['get'])
     def by_subject_and_class(self, request):
@@ -2191,8 +2297,9 @@ class ExamBlueprintViewSet(viewsets.ModelViewSet):
     serializer_class = ExamBlueprintSerializer
     pagination_class = LargeResultsSetPagination
     permission_classes = [IsAuthenticated]
-    filterset_fields = ['class_name', 'subject']
-    search_fields = ['subject', 'class_name', 'code']
+    # `pattern` so the blueprints page can list a pattern's plans without client-side filtering.
+    filterset_fields = ['class_name', 'subject', 'pattern']
+    search_fields = ['subject', 'class_name', 'code', 'name']
 
     def get_queryset(self):
         # Hierarchical: superadmin → all, school_admin → school, teacher → own. (IDOR + own-only.)
@@ -2275,6 +2382,33 @@ def get_subjects_for_class(request):
     return Response({"subjects": list(subjects)})
 
 
+def available_units(user, class_name, subject):
+    """Units (chapters) with uploaded material for this class+subject, visible to `user`.
+
+    Shared by `get_chapters` and the blueprint scaffold: both offer the teacher a list of units
+    to choose from and must offer exactly the same list, scoped by the same visibility rules. A
+    second copy of this query drifting out of sync would let a teacher pin a blueprint to a unit
+    they cannot actually see material for.
+    """
+    class_name = (class_name or "").strip()
+    subject = (subject or "").strip()
+    if not class_name or not subject:
+        return []
+
+    class_num = class_name.split("-")[0]
+    base_qs = Material.objects.filter(class_name__istartswith=class_num, subject__iexact=subject)
+
+    role = _user_role(user) if getattr(user, 'is_authenticated', False) else None
+    school = _get_school(user) if getattr(user, 'is_authenticated', False) else None
+    if role == 'superadmin' or getattr(user, 'is_superuser', False):
+        qs = base_qs                                  # superadmin sees everything
+    else:
+        from core.access import visibility_q
+        qs = base_qs.filter(visibility_q(school))     # own ∪ shared(if granted) ∪ institutional
+
+    return list(qs.values_list("unit", flat=True).distinct().order_by("unit"))
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_chapters(request):
@@ -2285,81 +2419,64 @@ def get_chapters(request):
     if not class_name or not subject:
         return Response({"chapters": []})
 
-    class_num = class_name.split("-")[0]
-    base_qs = Material.objects.filter(class_name__istartswith=class_num, subject__iexact=subject)
-
-    role = _user_role(request.user) if request.user.is_authenticated else None
-    school = _get_school(request.user) if request.user.is_authenticated else None
-    if role == 'superadmin' or getattr(request.user, 'is_superuser', False):
-        qs = base_qs                                  # superadmin sees everything
-    else:
-        from core.access import visibility_q
-        qs = base_qs.filter(visibility_q(school))     # own ∪ shared(if granted) ∪ institutional
-
-    chapters = qs.values_list("unit", flat=True).distinct().order_by("unit")
-    return Response({"chapters": list(chapters)})
+    return Response({"chapters": available_units(request.user, class_name, subject)})
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_blueprints(request):
-    """API version of blueprint lookup"""
+    """Blueprints the generate form may attach, for a class+subject and optionally a pattern.
+
+    Only real per-pattern unit plans are offered. Two things are deliberately NOT listed:
+
+      * BlueprintTemplates ("template_<id>"). They described a paper structure, which is an
+        ExamPattern's job; `core.tasks._resolve_blueprint` ignores that form outright, so listing
+        them would offer the teacher a choice that silently does nothing.
+      * Blueprints whose unit map is empty. Same reason — attaching one changes no question.
+
+    When `pattern` is supplied the list is restricted to that pattern's blueprints. A blueprint
+    addresses its pattern's printed question numbers, so attaching one built for a different
+    pattern would map units onto the wrong questions; the task rejects that, and the form should
+    never present it in the first place.
+    """
     try:
         class_name = request.GET.get("class_name", "").strip()
         subject = request.GET.get("subject", "").strip()
-        
+        pattern_id = (request.GET.get("pattern") or "").strip()
+
         if not class_name or not subject:
             return Response({"blueprints": []})
-            
+
         class_num = class_name.split("-")[0]
-        
-        # 1. Standard Blueprint Templates (school-scoped)
-        templates = _scoped_blueprint_templates(request.user).filter(
+
+        qs = _scoped_blueprints(request.user).filter(
             class_name=class_num,
             subject__iexact=subject,
-        ).values('id', 'name', 'created_at')
-        
-        template_list = []
-        for t in templates:
-            template_list.append({
-                'id': f"template_{t['id']}",
-                'name': f"[Template] {t['name']}",
-                'source': 'template',
-                'created_at': t['created_at']
+        ).select_related('pattern')
+        if pattern_id.isdigit():
+            qs = qs.filter(pattern_id=int(pattern_id))
+
+        out = []
+        for bp in qs.order_by('-created_at'):
+            mapped = sum(len(per_q) for per_q in bp.question_units().values())
+            section_wide = len(bp.section_units())
+            if not mapped and not section_wide:
+                continue        # nothing pinned — attaching it would be a no-op
+            detail = []
+            if mapped:
+                detail.append(f"{mapped} question{'' if mapped == 1 else 's'}")
+            if section_wide:
+                detail.append(f"{section_wide} section{'' if section_wide == 1 else 's'}")
+            out.append({
+                'id': f"exam_{bp.id}",
+                'name': (bp.name or f"Blueprint #{bp.id}") + f" ({', '.join(detail)} pinned)",
+                'source': 'unit_plan',
+                'pattern_id': bp.pattern_id,
+                'pattern_name': bp.pattern.name if bp.pattern else '',
+                'units': bp.all_units(),
+                'created_at': bp.created_at,
             })
 
-        # 2. AI-generated Blueprints (school-scoped)
-        blueprints = _scoped_blueprints(request.user).filter(
-            class_name=class_num,
-            subject__iexact=subject,
-        )
-
-        blueprint_list = []
-        for b in blueprints:
-             blueprint_list.append({
-                'id': f"exam_{b.id}",
-                'name': f"Blueprint - {b.subject}" + (f" ({b.code})" if b.code else ""),
-                'source': 'generated',
-                'created_at': b.created_at
-            })
-        
-        # Helper to ensure datetime for sorting
-        def get_sort_key(item):
-            val = item.get('created_at')
-            if val is None:
-                return timezone.now()
-            if isinstance(val, str):
-                from django.utils.dateparse import parse_datetime
-                val = parse_datetime(val) or timezone.now()
-            return val
-
-        # Combine and sort (newest first)
-        combined = sorted(
-            template_list + blueprint_list, 
-            key=get_sort_key, 
-            reverse=True
-        )
-        
-        return Response({"blueprints": combined})
+        return Response({"blueprints": out})
     except Exception as e:
         import traceback
         return Response({"error": str(e), "trace": traceback.format_exc()}, status=500)

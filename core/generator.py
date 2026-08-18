@@ -3532,7 +3532,8 @@ def pattern_sections_to_blueprint_dict(pattern):
     return blueprint_dict if blueprint_dict else None
 
 
-def generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None):
+def generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None,
+                            unit_map=None):
     """
     Universal question paper generator that works for all subjects and question types.
     Uses database-driven blueprints and adaptive prompt generation.
@@ -3642,6 +3643,7 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
                 subject=subject,
                 chapters=chapters,
                 disable_images=_disable_images,
+                unit_map=unit_map,
             )
             print("[Universal-Generator] ✅ Parallel pipeline succeeded — rendering")
             return _render_paper_from_data(
@@ -4190,7 +4192,7 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
         # instead of an unvalidated paper silently reaching a teacher.
         try:
             from .section_generator import build_work_orders, validate_section_output, reconcile_uniform_marks
-            _work_orders = build_work_orders(blueprint, pattern, {}, difficulty, class_name, subject, chapters)
+            _work_orders = build_work_orders(blueprint, pattern, {}, difficulty, class_name, subject, chapters, unit_map=unit_map)
             for _wo in _work_orders:
                 _sec = direct_data.get(_wo.section_name)
                 if isinstance(_sec, dict) and isinstance(_sec.get("questions"), list) and _sec["questions"]:
@@ -4284,7 +4286,7 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
         
         raise Exception(error_msg)
 
-def generate_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None):
+def generate_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None, unit_map=None):
     """
     Main entry point for question paper generation.
     Now uses the universal generator by default, with fallback to legacy system.
@@ -4294,7 +4296,7 @@ def generate_paper(class_name, subject, chapters, difficulty, pattern, section=N
     try:
         # Try universal generator first
         print(f"[Generator] Attempting universal generation...")
-        file_path, summary, total_cost, in_tok, out_tok = generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section, model_source, additional_context, school_id=school_id)
+        file_path, summary, total_cost, in_tok, out_tok = generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section, model_source, additional_context, school_id=school_id, unit_map=unit_map)
         return file_path, summary, total_cost, in_tok, out_tok
         
     except Exception as e:

@@ -154,11 +154,46 @@ class ExamBlueprintSerializer(serializers.ModelSerializer):
         allow_null=True
     )
     created_by = UserSerializer(read_only=True)
-    
+
+    # A blueprint plans the units for ONE pattern. Writable by id; read back with enough of the
+    # pattern to render a list without a second request per row.
+    pattern_id = serializers.PrimaryKeyRelatedField(
+        queryset=ExamPattern.objects.all(),
+        source='pattern',
+        required=False,
+        allow_null=True,
+    )
+    pattern_name = serializers.CharField(source='pattern.name', read_only=True)
+    pattern_total_marks = serializers.IntegerField(source='pattern.total_marks', read_only=True)
+    mapped_questions = serializers.SerializerMethodField()
+    units_used = serializers.SerializerMethodField()
+
+    def get_mapped_questions(self, obj):
+        """How many printed questions this blueprint actually pins — the one number that says
+        whether a blueprint is filled in or an empty shell."""
+        return sum(len(per_q) for per_q in obj.question_units().values())
+
+    def get_units_used(self, obj):
+        return obj.all_units()
+
+    def validate(self, attrs):
+        """A unit map is addressed by the PATTERN's question numbers, so it is meaningless
+        without one. Reject early with a clear message instead of saving a blueprint that
+        generation will silently ignore."""
+        unit_map = attrs.get('unit_map', getattr(self.instance, 'unit_map', None))
+        pattern = attrs.get('pattern', getattr(self.instance, 'pattern', None))
+        if unit_map and not pattern:
+            raise serializers.ValidationError(
+                {'pattern_id': 'A unit map needs a pattern — its question numbers refer to that '
+                               "pattern's printed questions."})
+        return attrs
+
     class Meta:
         model = ExamBlueprint
         fields = [
-            'id', 'class_name', 'subject', 'code',
+            'id', 'name', 'class_name', 'subject', 'code',
+            'pattern_id', 'pattern_name', 'pattern_total_marks',
+            'unit_map', 'mapped_questions', 'units_used',
             'blueprint', 'template', 'template_id', 'is_active',
             'created_by', 'created_at', 'updated_at'
         ]

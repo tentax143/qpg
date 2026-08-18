@@ -201,10 +201,35 @@ CELERY_RESULT_BACKEND = "redis://127.0.0.1:6380/0"
 # Light papers for other subjects finish far under this, so the higher ceiling never bites them.
 CELERY_TASK_SOFT_TIME_LIMIT = 20 * 60
 CELERY_TASK_TIME_LIMIT = 25 * 60
-# Run multiple workers so one long paper can't block all others; ack late so a crash re-queues.
-CELERY_WORKER_CONCURRENCY = 4
+# How many tasks the single worker runs at once. This ONLY takes effect on a pool that can
+# actually run more than one task — `--pool=solo` silently ignores it, which is why papers
+# used to serialise across schools and why every "AI generate pattern" click waited behind
+# whatever paper happened to be building (the "pattern just keeps loading" report).
+#
+# 6, not 4, on purpose: papers hold a slot for minutes, patterns for seconds. The extra
+# headroom is what keeps a slot free for a pattern while several papers are building.
+CELERY_WORKER_CONCURRENCY = 6
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# Deploy contract — ONE worker that serves both queues (see run_commands.txt):
+#   celery -A qpg worker --loglevel=info --pool=threads -Q celery,patterns
+# (no --concurrency: it is read from CELERY_WORKER_CONCURRENCY above, one source of truth.)
+#
+# The separate `patterns` queue is kept even though one worker drains both, because it costs
+# nothing and preserves the option to split patterns onto their own worker later
+# (`-Q patterns`) without touching application code. A worker started with `-Q celery` alone
+# would strand every pattern in an unconsumed queue — `manage.py celery_health` exists to
+# catch exactly that, since nothing else reports it.
+#
+# NOTE: raising worker concurrency does NOT raise LLM load without limit — total in-flight
+# Mantle requests are capped by mantle_client.MAX_CONCURRENT_CALLS
+# (QPG_MAX_CONCURRENT_LLM_CALLS, default 6), so N concurrent papers cannot turn into 3N
+# simultaneous calls and a 429 storm that drops sections out of papers.
+CELERY_TASK_DEFAULT_QUEUE = "celery"
+CELERY_TASK_ROUTES = {
+    "core.tasks.generate_pattern_task": {"queue": "patterns"},
+}
 
 
 # Embedding: OpenRouter nvidia/llama-nemotron-embed-vl-1b-v2:free

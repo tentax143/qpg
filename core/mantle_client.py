@@ -36,6 +36,21 @@ AUDIT_MODEL = os.environ.get("QPG_AUDIT_MODEL", "").strip() or "zai.glm-5"
 _key_index = 0
 _key_lock = threading.Lock()   # converse() is now called from thread pools — keep rotation atomic
 
+# ── Global ceiling on in-flight HTTP calls ────────────────────────────────────
+# One Celery worker now serves BOTH papers and patterns concurrently (see run_commands.txt),
+# so the fan-out multiplies: each paper already runs MAX_PARALLEL_SECTIONS=3 sections at once,
+# so N concurrent papers want 3N simultaneous calls. At worker_concurrency=6 that is 18 —
+# far past what the Mantle keys absorb, and a 429 does not just slow a paper down, it can
+# drop a whole section from it. This semaphore bounds TOTAL concurrent requests across every
+# task and thread in the process, independent of how many tasks the worker is running.
+#
+# The floor is MAX_PARALLEL_SECTIONS: below that a single lone paper would throttle itself.
+# Raise it once more API keys are live (each key carries its own rate limit).
+MAX_CONCURRENT_CALLS = max(3, int(os.environ.get("QPG_MAX_CONCURRENT_LLM_CALLS", "6")))
+_call_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CALLS)
+_waiting = 0
+_waiting_lock = threading.Lock()
+
 
 def _get_keys():
     keys_csv = os.environ.get("MANTLE_API_KEYS", "")
@@ -190,7 +205,8 @@ def keys_summary() -> str:
 
 
 def models_summary() -> str:
-    return f"gen={GEN_MODEL} val={VAL_MODEL} audit={AUDIT_MODEL} region={REGION}"
+    return (f"gen={GEN_MODEL} val={VAL_MODEL} audit={AUDIT_MODEL} region={REGION} "
+            f"max_concurrent_calls={MAX_CONCURRENT_CALLS}")
 
 
 def _bump(bucket: str, name: str, **deltas):
@@ -199,6 +215,33 @@ def _bump(bucket: str, name: str, **deltas):
             name, {"calls": 0, "in": 0, "out": 0, "seconds": 0.0, "errors": 0})
         for k, v in deltas.items():
             d[k] = d.get(k, 0) + v
+
+
+@contextmanager
+def _call_slot(call_no, stage_path):
+    """Occupy one of MAX_CONCURRENT_CALLS in-flight request slots.
+
+    Logs only when a caller actually has to wait, so the common case stays silent but a
+    saturated process says so plainly — 'why is this paper slow' is otherwise indistinguishable
+    from a slow model.
+    """
+    global _waiting
+    acquired = _call_slots.acquire(blocking=False)
+    if not acquired:
+        with _waiting_lock:
+            _waiting += 1
+            queued = _waiting
+        print(f"[Mantle] WAIT  #{call_no} stage={stage_path} "
+              f"all {MAX_CONCURRENT_CALLS} call slots busy, {queued} waiting")
+        t0 = time.time()
+        _call_slots.acquire()
+        with _waiting_lock:
+            _waiting -= 1
+        print(f"[Mantle] GO    #{call_no} stage={stage_path} waited {time.time() - t0:.1f}s")
+    try:
+        yield
+    finally:
+        _call_slots.release()
 
 
 def _reserve_key_start():
@@ -295,7 +338,8 @@ def _chat(
         )
         t_attempt = time.time()
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=timeout)
+            with _call_slot(call_no, st):
+                resp = requests.post(url, headers=headers, json=body, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
 

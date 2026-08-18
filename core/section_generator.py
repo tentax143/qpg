@@ -18,6 +18,7 @@ import re
 import time
 import traceback
 import zlib
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace as dc_replace
@@ -1186,6 +1187,12 @@ MATHEMATICAL NOTATION (strictly follow):
                     'letter of the correct one and the same correct pairing in '
                     '"answer_explanation"'
                 )
+            # Set by apply_unit_map from the teacher's blueprint. The section-level chapter
+            # block only states a DISTRIBUTION ("3 from Optics, 2 from Waves"), which is enough
+            # for automatic allocation but cannot express "Q7 specifically must be Optics" —
+            # this is what makes a blueprint's per-question assignment actually binding.
+            if s.get("chapter"):
+                line += f" | CHAPTER: draw this question from \"{s['chapter']}\" ONLY"
             if s.get("topic"):
                 line += f" | TOPIC: {s['topic']}"
             if s.get("format"):
@@ -5773,6 +5780,128 @@ def plan_chapter_allocation(work_orders: list) -> list:
     return work_orders
 
 
+def apply_unit_map(work_orders: list, unit_map, log=print) -> list:
+    """Overlay a teacher's ExamBlueprint unit map onto the automatic chapter allocation.
+
+    `plan_chapter_allocation` above decides which chapter each question comes from using CBSE
+    mark weights. A blueprint is the teacher overriding that decision — "Q1 from Electrostatics,
+    Q2 from Current Electricity". This applies the override in two layers:
+
+      1. SECTION level ("units"): restricts the section's candidate chapters to the named units
+         and re-allocates the section's questions across just those. Used for whole-section
+         statements ("Section C is all Optics") and for legacy patterns that have no
+         question_slots to address individually.
+      2. QUESTION level ("questions"): pins individual printed questions, on top of layer 1.
+
+    Anything the map does not mention keeps its automatic allocation, so a partial blueprint is
+    valid — constraining 3 questions must not require filling in all 38.
+
+    Matched on PRINTED QUESTION NUMBER, never on position: a section can be told to generate more
+    questions than it prints (attempt-N-of-M, `provided_count` > printed slots), so indexing
+    chapter_plan by a slot's ordinal would assign the wrong unit to the wrong question.
+
+    `unit_map` is whatever was stored on the blueprint — possibly hand-edited, half-saved or from
+    an older schema. It must never raise into paper generation, so every lookup is defensive and
+    an unusable map simply leaves the automatic allocation alone.
+    """
+    if not unit_map:
+        return work_orders
+
+    # Accept either the model instance or a plain dict, so callers (task, tests) can pass either.
+    if hasattr(unit_map, "question_units"):
+        per_question_by_sec = unit_map.question_units()
+        section_units_by_sec = unit_map.section_units()
+    else:
+        from .models import ExamBlueprint
+        proxy = ExamBlueprint(unit_map=unit_map if isinstance(unit_map, dict) else {})
+        per_question_by_sec = proxy.question_units()
+        section_units_by_sec = proxy.section_units()
+
+    if not per_question_by_sec and not section_units_by_sec:
+        return work_orders
+
+    def _for(wo, table):
+        """A section's entry, matched by id first then by name — the builder writes the id the
+        work order derives, but a hand-written map keyed by 'Section A' should still work."""
+        for key in (wo.section_id, wo.section_name):
+            if key and str(key) in table:
+                return table[str(key)]
+        return None
+
+    covered: dict = {}
+    for wo in work_orders:
+        eff_subject = wo.section_subject or wo.subject
+
+        # ── layer 1: section-wide units ───────────────────────────────────────────
+        units = _for(wo, section_units_by_sec)
+        if units:
+            wo.chapters = list(units)
+            wo.chapter_plan = _allocate_chapters_to_slots(
+                units, wo.questions_count, eff_subject, covered, wo.class_name)
+            log(f"[UnitMap] '{wo.section_name}': section restricted to {', '.join(units)}")
+
+        # ── layer 2: individual printed questions ─────────────────────────────────
+        per_q = _for(wo, per_question_by_sec)
+        if not per_q:
+            continue
+
+        # chapter_plan may be empty when the paper had no chapters at all (one-mark tests) — the
+        # blueprint is then the only source of chapters, so build a plan to overwrite.
+        if not wo.chapter_plan:
+            wo.chapter_plan = [""] * max(0, int(wo.questions_count or 0))
+
+        # Chapter-shaped strings this section already knows about — used to decide whether a
+        # slot's inherited `topic` is a rival chapter name or a skill within one.
+        chapterish = {str(c).strip().lower() for c in (wo.chapters or []) if c}
+        chapterish |= {str(u).strip().lower() for u in per_q.values()}
+
+        pinned = []
+        for pos, slot in enumerate(wo.slots or []):
+            try:
+                qnum = int(slot.get("qnum"))
+            except (TypeError, ValueError):
+                continue
+            unit = per_q.get(qnum)
+            if not unit or pos >= len(wo.chapter_plan):
+                continue
+            wo.chapter_plan[pos] = unit
+            slot["chapter"] = unit      # read by the per-question prompt block
+
+            # Patterns imported from a CBSE sample paper carry a per-slot `topic` lifted from
+            # that paper ("Electrostatics"). If the teacher pins a DIFFERENT chapter, the prompt
+            # would state both — 'draw from Optics' AND 'TOPIC: Electrostatics' — and the model
+            # has to guess which to obey. The teacher's pin is the deliberate instruction, so a
+            # topic that is itself a rival CHAPTER name is dropped. A topic naming a skill inside
+            # a chapter ("Homophones", "Past perfect tense") is complementary and kept.
+            topic = str(slot.get("topic") or "").strip()
+            if topic and topic.lower() != unit.strip().lower() and topic.lower() in chapterish:
+                slot.pop("topic", None)
+                log(f"[UnitMap] '{wo.section_name}': Q{qnum} topic '{topic}' dropped — teacher "
+                    f"pinned chapter '{unit}' instead")
+
+            pinned.append(f"Q{qnum}->{unit}")
+
+        # Any unit the teacher pinned must be a candidate for retrieval too, or the section gets
+        # no context for it.
+        for unit in dict.fromkeys(per_q.values()):
+            if unit not in (wo.chapters or []):
+                wo.chapters = list(wo.chapters or []) + [unit]
+
+        if pinned:
+            log(f"[UnitMap] '{wo.section_name}': {len(pinned)} question(s) pinned — "
+                f"{', '.join(pinned)}")
+        # A map naming questions this section does not print is a stale blueprint (the pattern
+        # was edited under it). Say so rather than silently ignoring the teacher's intent.
+        printed = {int(s.get("qnum")) for s in (wo.slots or [])
+                   if str(s.get("qnum") or "").lstrip("-").isdigit()}
+        unknown = sorted(q for q in per_q if q not in printed)
+        if unknown:
+            log(f"[UnitMap] '{wo.section_name}': blueprint maps Q{unknown} which this section "
+                f"does not print — pattern changed since the blueprint was made; ignored")
+
+    return work_orders
+
+
 # ─────────────────────────────────────────────
 # Sums / quiz composition (Accountancy)
 # ─────────────────────────────────────────────
@@ -5896,7 +6025,8 @@ def plan_sums_allocation(work_orders: list) -> list:
     return work_orders
 
 
-def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False) -> list:
+def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False,
+                      unit_map=None) -> list:
     pattern_section_map: dict = {}
     if pattern and hasattr(pattern, "sections") and pattern.sections:
         for ps in pattern.sections:
@@ -6122,6 +6252,8 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
 
     # Deterministic, CBSE-weighted, paper-wide chapter allocation (sets wo.chapter_plan).
     plan_chapter_allocation(work_orders)
+    # A teacher's blueprint overrides that allocation where it states one (no-op without one).
+    apply_unit_map(work_orders, unit_map)
     # Accountancy sums/quiz composition (sets wo.sums_count) — no-op for other subjects.
     plan_sums_allocation(work_orders)
     for wo in work_orders:
@@ -7282,7 +7414,8 @@ def _section_worker(wo: SectionWorkOrder):
         return generate_section(wo)
 
 
-def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False):
+def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False,
+                            unit_map=None):
     """
     Generate all sections in parallel using ThreadPoolExecutor.
 
@@ -7297,7 +7430,7 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
           f"{len(chapters or [])} chapter(s) | {mantle_client.models_summary()} =====")
 
     with step("Build work orders"):
-        work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters, disable_images=disable_images)
+        work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters, disable_images=disable_images, unit_map=unit_map)
         if not work_orders:
             raise RuntimeError("Blueprint produced no work orders")
         for wo in work_orders:
@@ -7543,8 +7676,13 @@ def _dump_questions_debug(paper_data, class_name, subject, difficulty, chapters,
             "coherence_report": coherence_report,
             "final_audit": final_audit,
         }
-        with open("temp_questions.json", "w", encoding="utf-8") as f:
+        # Per-thread filename: with one worker running several papers at once, a single
+        # fixed temp_questions.json meant whichever paper finished last silently clobbered
+        # the others' dump, so the file was useless exactly when concurrency made it
+        # interesting. temp_* is gitignored, so the suffixed names are ignored too.
+        fname = f"temp_questions_{threading.get_ident()}.json"
+        with open(fname, "w", encoding="utf-8") as f:
             json.dump(debug_payload, f, indent=2, ensure_ascii=False, default=str)
-        print("[Debug] Question JSON written to temp_questions.json")
+        print(f"[Debug] Question JSON written to {fname}")
     except Exception as e:
-        print(f"[Debug] Could not write temp_questions.json: {e}")
+        print(f"[Debug] Could not write the question JSON dump: {e}")

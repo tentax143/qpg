@@ -10,6 +10,15 @@ from core.pattern_structure import SLOT_OUTPUT_EXAMPLE as _OUTPUT_EXAMPLE
 
 MODEL_ID = mantle_client.GEN_MODEL
 
+# Pattern calls are BOUNDED, unlike paper-section calls. converse() otherwise derives its read
+# window from max_tokens — 8000 tokens gives a 300s read, and with retries=3 a single wedged
+# pattern call could occupy a worker for 15 minutes while the teacher watched a spinner. A
+# pattern is one JSON document: 150s is far more than a healthy call needs (typical 30-90s)
+# and still bounds the worst case to ~7.5 min including retries, under the task's soft limit.
+PATTERN_CALL_TIMEOUT = (10, 150)   # (connect, read) seconds
+PATTERN_CALL_RETRIES = 3
+REPAIR_CALL_RETRIES = 2            # the repair is a bonus round — never let it outlast the first
+
 
 def _parse_pattern_json(ai_response):
     """Strip markdown fences and parse the model's JSON reply."""
@@ -58,6 +67,9 @@ Return ONLY valid JSON.
             prompt=prompt,
             max_tokens=8000,
             temperature=0.1,
+            timeout=PATTERN_CALL_TIMEOUT,
+            retries=PATTERN_CALL_RETRIES,
+            stage="pattern-from-text",
         )
         return _parse_pattern_json(ai_response)
 
@@ -117,6 +129,16 @@ EXTRACTION RULES — ABSTRACT THE STRUCTURE, NEVER COPY THE CONTENT:
    to use — chapter choice belongs to the teacher at generation time.
 7. Word limits ("in about 50 words", "100-120 words") go in the slot "condition"
    or the section "constraints".
+8. EITHER/OR PARTS — a paper may offer a choice between WHOLE parts and tell the
+   candidate to attempt only one ("Part B has two options, attempt only ONE option";
+   Accountancy XII: Analysis of Financial Statements OR Computerised Accounting).
+   Emit ONLY THE FIRST such option as a section and DROP the other, then name the
+   dropped alternative in that section's "instructions" (e.g. "CBSE offers an
+   alternative Part B - Computerised Accounting - in place of this part; this pattern
+   follows the first option"). Renumber nothing else. Keeping both options inflates
+   every generated paper past the real question count and maximum marks (Accountancy
+   XII becomes 42 questions / 100 marks instead of 34 / 80) — the pattern must describe
+   the paper a single student actually sits.
 
 {_SLOT_SCHEMA_RULES}
 
@@ -132,6 +154,9 @@ Return ONLY valid JSON.
             prompt=prompt,
             max_tokens=8000,
             temperature=0.1,
+            timeout=PATTERN_CALL_TIMEOUT,
+            retries=PATTERN_CALL_RETRIES,
+            stage="pattern-from-sqp",
         )
         return _parse_pattern_json(ai_response)
 
@@ -184,5 +209,8 @@ Return ONLY valid JSON.
         prompt=prompt,
         max_tokens=8000,
         temperature=0.1,
+        timeout=PATTERN_CALL_TIMEOUT,
+        retries=REPAIR_CALL_RETRIES,
+        stage="pattern-repair",
     )
     return _parse_pattern_json(ai_response)

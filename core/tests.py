@@ -12,7 +12,9 @@ These lock in two production bugs so they can't silently return:
 Run with:  python manage.py test core
 """
 
+import io
 import collections
+import os
 import copy
 import json
 from unittest import mock
@@ -21,7 +23,7 @@ from django.test import TestCase, TransactionTestCase, SimpleTestCase
 
 from django.contrib.auth.models import User
 
-from core.models import ExamPattern, School, ExamBlueprint
+from core.models import ExamPattern, School, ExamBlueprint, QuestionPaper
 from core import section_generator as sg
 from core import mantle_client as mc
 from core import generator as sg_gen
@@ -5172,6 +5174,22 @@ class PatternPdfImportTest(TestCase):
         self.assertIn("QUESTION SLOT RULES", prompt)              # shared slot schema included
         self.assertEqual(data["total_marks"], 80)
 
+    def test_extraction_prompt_drops_either_or_alternative_parts(self):
+        """Accountancy XII offers Part B as EITHER "Analysis of Financial Statements" OR
+        "Computerised Accounting" — attempt one. Extracting both made the imported pattern
+        42 questions / 100 marks against a paper that is 34 / 80, so every paper generated
+        from it would have over-run. The prompt must tell the model to keep one."""
+        from unittest import mock
+        from api import ai_service
+        reply = '{"sections": [], "total_marks": 80, "total_questions": 34}'
+        with mock.patch.object(ai_service.mantle_client, "converse",
+                               return_value=(reply, 10, 10)) as mconv:
+            ai_service.extract_pattern_from_sqp_via_api(
+                self.SQP_TEXT, "12", "Accountancy", "CBSE Board Accountancy Class 12")
+        prompt = mconv.call_args.kwargs["prompt"]
+        self.assertIn("EITHER/OR PARTS", prompt)
+        self.assertIn("ONLY THE FIRST", prompt)
+
 
 class PoemPassageRenderTest(TestCase):
     """A poem quoted WITH its line breaks must PRINT as verse: the DOCX passage box
@@ -6841,3 +6859,742 @@ class ContextSpreadOrderTest(SimpleTestCase):
         self.assertEqual(out[0], cands[0])
         self.assertEqual(out[1][0], 2)             # jumps to the other material, not the neighbour
         self.assertEqual(sorted(out), sorted(cands))
+
+
+class StalePatternReaperTest(TestCase):
+    """A pattern whose Celery task evaporated (worker/broker restart, revoked message) used
+    to sit at 'queued'/'generating' forever while the create-pattern page polled it every 3s
+    with no deadline — the "AI pattern is just loading" report. reap_stale_patterns turns
+    those into an honest 'failed', and the polled detail endpoint runs it."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("reaper_t", "reap@x.com", "pw")
+        self.other = User.objects.create_user("reaper_o", "reap2@x.com", "pw")
+
+    def _pattern(self, status, age_seconds, owner=None):
+        from django.utils import timezone
+        import datetime
+        pat = ExamPattern.objects.create(
+            name=f"P-{status}-{age_seconds}", subject="Physics", class_name="12",
+            sections=[], total_marks=0, total_questions=0,
+            pattern_source="ai_generated", ai_prompt="x", status=status,
+            created_by=owner or self.user)
+        # updated_at is auto_now — bypass the model save to backdate it.
+        ExamPattern.objects.filter(id=pat.id).update(
+            updated_at=timezone.now() - datetime.timedelta(seconds=age_seconds))
+        pat.refresh_from_db()
+        return pat
+
+    def test_long_queued_pattern_is_failed(self):
+        from core.tasks import reap_stale_patterns, STALE_PATTERN_QUEUED_SECONDS
+        pat = self._pattern("queued", STALE_PATTERN_QUEUED_SECONDS + 60)
+        self.assertEqual(reap_stale_patterns(user_id=self.user.id), [pat.id])
+        pat.refresh_from_db()
+        self.assertEqual(pat.status, "failed")
+
+    def test_long_generating_pattern_is_failed(self):
+        from core.tasks import reap_stale_patterns, STALE_PATTERN_GENERATING_SECONDS
+        pat = self._pattern("generating", STALE_PATTERN_GENERATING_SECONDS + 60)
+        reap_stale_patterns(user_id=self.user.id)
+        pat.refresh_from_db()
+        self.assertEqual(pat.status, "failed")
+
+    def test_fresh_pattern_is_left_alone(self):
+        """A pattern that is merely waiting its turn behind a busy worker must NOT be killed —
+        the whole point of the queue is that it starts later."""
+        from core.tasks import reap_stale_patterns
+        pat = self._pattern("queued", 30)
+        self.assertEqual(reap_stale_patterns(user_id=self.user.id), [])
+        pat.refresh_from_db()
+        self.assertEqual(pat.status, "queued")
+
+    def test_done_pattern_is_never_touched(self):
+        from core.tasks import reap_stale_patterns
+        pat = self._pattern("done", 99999)
+        reap_stale_patterns(user_id=self.user.id)
+        pat.refresh_from_db()
+        self.assertEqual(pat.status, "done")
+
+    def test_scoped_to_the_polling_user(self):
+        from core.tasks import reap_stale_patterns, STALE_PATTERN_QUEUED_SECONDS
+        mine = self._pattern("queued", STALE_PATTERN_QUEUED_SECONDS + 60)
+        theirs = self._pattern("queued", STALE_PATTERN_QUEUED_SECONDS + 60, owner=self.other)
+        self.assertEqual(reap_stale_patterns(user_id=self.user.id), [mine.id])
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.status, "queued")
+
+    def test_detail_endpoint_reaps_while_polling(self):
+        """The poll that would have spun forever is the one that resolves the pattern."""
+        from rest_framework.test import APIClient
+        from core.tasks import STALE_PATTERN_QUEUED_SECONDS
+        pat = self._pattern("queued", STALE_PATTERN_QUEUED_SECONDS + 60)
+        api = APIClient()
+        api.force_authenticate(self.user)
+        r = api.get(f"/api/patterns/{pat.id}/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "failed")
+
+
+class PatternTaskResilienceTest(TestCase):
+    """generate_pattern_task must give the polling UI a definite answer: never advertise
+    'failed' while a retry is still coming, always fail on the final attempt, and never
+    retry a timeout (which would hold the pattern queue behind a job that cannot finish)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("res_t", "res@x.com", "pw")
+
+    def _pattern(self):
+        return ExamPattern.objects.create(
+            name="AI Pattern", subject="Physics", class_name="12", sections=[],
+            total_marks=0, total_questions=0, pattern_source="ai_generated",
+            ai_prompt="Section A: 5 MCQ 1 mark each", status="queued",
+            created_by=self.user)
+
+    def test_status_stays_generating_while_retries_remain(self):
+        """Flipping to 'failed' between retries made the page show an error while an attempt
+        that would have succeeded was still scheduled.
+
+        retry() is stubbed because .apply() runs the retry chain inline: without the stub this
+        observes the END of the chain (correctly 'failed'), not the single attempt under test.
+        """
+        from celery.exceptions import Retry
+        from core.tasks import generate_pattern_task
+        pat = self._pattern()
+        with mock.patch("api.ai_service.generate_pattern_via_api",
+                        side_effect=RuntimeError("mantle down")), \
+             mock.patch.object(generate_pattern_task, "retry",
+                               side_effect=Retry("scheduled")) as mretry:
+            generate_pattern_task.apply(args=[pat.id])
+        mretry.assert_called_once()                   # another attempt IS coming...
+        pat.refresh_from_db()
+        self.assertEqual(pat.status, "generating")    # ...so don't tell the teacher it failed
+
+    def test_final_attempt_marks_failed(self):
+        from core.tasks import generate_pattern_task
+        pat = self._pattern()
+        with mock.patch("api.ai_service.generate_pattern_via_api",
+                        side_effect=RuntimeError("mantle down")):
+            generate_pattern_task.apply(args=[pat.id],
+                                        retries=generate_pattern_task.max_retries)
+        pat.refresh_from_db()
+        self.assertEqual(pat.status, "failed")
+
+    def test_timeout_fails_without_retrying(self):
+        from celery.exceptions import SoftTimeLimitExceeded
+        from core.tasks import generate_pattern_task
+        pat = self._pattern()
+        with mock.patch("api.ai_service.generate_pattern_via_api",
+                        side_effect=SoftTimeLimitExceeded()):
+            result = generate_pattern_task.apply(args=[pat.id])
+        pat.refresh_from_db()
+        self.assertEqual(pat.status, "failed")
+        self.assertEqual(result.result["reason"], "timeout")
+
+    def test_pattern_task_is_routed_to_its_own_queue(self):
+        """Patterns must not queue behind multi-minute paper generations on the solo worker."""
+        from django.conf import settings
+        self.assertEqual(
+            settings.CELERY_TASK_ROUTES["core.tasks.generate_pattern_task"]["queue"],
+            "patterns")
+
+
+class SqpPatternImportTest(TestCase):
+    """`manage.py import_sqp_patterns` turns the CBSE sample papers in sqp/ into
+    slot-authored board patterns that replicate those papers question by question."""
+
+    from core.management.commands import import_sqp_patterns as cmd_mod
+
+    EXTRACTED = {
+        "sections": [
+            {"id": "SEC_A", "name": "Section A", "marks": 3,
+             "question_slots": [{"qnum": 1, "type": "mcq", "marks": 1},
+                                {"qnum": 2, "type": "mcq", "marks": 1},
+                                {"qnum": 3, "type": "ar", "marks": 1}]},
+            {"id": "SEC_B", "name": "Section B", "marks": 4,
+             "question_slots": [{"qnum": 4, "type": "sa", "marks": 2},
+                                {"qnum": 5, "type": "sa", "marks": 2,
+                                 "choice": "internal"}]},
+        ],
+        "total_marks": 7, "total_questions": 5,
+    }
+
+    HEADER = ("PHYSICS - Code No. 042\nSAMPLE QUESTION PAPER\n"
+              "CLASS - XII (2025-26)\nTime Allowed: 3 hours   Maximum Marks: 70\n") * 6
+
+    def test_class_is_read_from_the_paper_not_assumed(self):
+        """sqp/ is mostly Class XII but EnglishL-SQP.pdf is the Class X paper — filing it
+        under 12 would hand teachers a pattern for the wrong board exam."""
+        detect = self.cmd_mod.detect_class
+        self.assertEqual(detect("PHYSICS\nCLASS - XII (2025-26)"), "12")
+        self.assertEqual(detect("ENGLISH LANGUAGE AND LITERATURE\nCLASS -X- (2025-26)"), "10")
+        self.assertEqual(detect("ECONOMICS (030) CLASS 12"), "12")
+        self.assertEqual(detect("CLASS XI"), "11")
+        self.assertIsNone(detect("no class marker here"))
+
+    def test_subjects_map_to_the_apps_canonical_names(self):
+        """The picker and the templates endpoint match on subject STRING — 'BusinessStudies'
+        would never be found for a teacher who picked 'Business Studies'."""
+        subject_for = self.cmd_mod.subject_for
+        self.assertEqual(subject_for("sqp/BusinessStudies-SQP.pdf"), "Business Studies")
+        self.assertEqual(subject_for("sqp/ComputerScience-SQP.pdf"), "Computer Science")
+        self.assertEqual(subject_for("sqp/EnglishL-SQP.pdf"), "English Language & Literature")
+        self.assertEqual(subject_for("sqp/Maths-SQP.pdf"), "Mathematics")
+        self.assertIsNone(subject_for("sqp/Astrology-SQP.pdf"))
+
+    def test_max_marks_is_read_for_cross_checking(self):
+        detect = self.cmd_mod.detect_max_marks
+        self.assertEqual(detect("Time: 3 hours    Maximum Marks: 70"), 70)
+        self.assertEqual(detect("MM - 80    TIME: 3 Hours"), 80)
+
+    def _run(self, extracted=None, **kwargs):
+        import tempfile
+        from django.core.management import call_command
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "Physics-SQP.pdf"), "wb") as fh:
+                fh.write(b"%PDF-1.4")
+            with mock.patch("core.material_intel.extract_pages_text",
+                            return_value=self.HEADER), \
+                 mock.patch("api.ai_service.extract_pattern_from_sqp_via_api",
+                            return_value=copy.deepcopy(
+                                self.EXTRACTED if extracted is None else extracted)) as mex, \
+                 mock.patch("api.ai_service.repair_pattern_via_api",
+                            side_effect=AssertionError("repair must not call the network")):
+                call_command("import_sqp_patterns", dir=d, stdout=out, **kwargs)
+        return out.getvalue(), mex
+
+    def test_import_creates_a_slot_authored_board_pattern(self):
+        _, mex = self._run()
+        pat = ExamPattern.objects.get(name="CBSE Board Physics Class 12")
+        self.assertEqual(pat.pattern_source, "cbse_official")
+        self.assertEqual(pat.class_name, "12")
+        self.assertEqual(pat.sqp_year, "2025-26")
+        self.assertEqual(pat.status, "done")
+        self.assertIsNone(pat.created_by)        # premade template — clone-only, school-wide
+        # One slot per printed question, numbered continuously across the whole paper.
+        slots = [s for sec in pat.sections for s in sec["question_slots"]]
+        self.assertEqual([s["qnum"] for s in slots], [1, 2, 3, 4, 5])
+        self.assertEqual(pat.total_questions, 5)
+        # The extractor saw the real class/subject, not a guess from the folder.
+        self.assertEqual(mex.call_args.kwargs["class_name"], "12")
+        self.assertEqual(mex.call_args.kwargs["subject"], "Physics")
+
+    def test_totals_come_from_the_slots_not_the_models_own_total(self):
+        """total_marks is the number the model most often miscopies; the per-question detail
+        is the truth, so the sum of the slots wins."""
+        wrong = copy.deepcopy(self.EXTRACTED)
+        wrong["total_marks"] = 999
+        self._run(extracted=wrong)
+        pat = ExamPattern.objects.get(name="CBSE Board Physics Class 12")
+        self.assertEqual(pat.total_marks, 7)
+
+    def test_mismatch_with_the_printed_total_is_reported(self):
+        """The paper says 70 marks; the extraction sums to 7. That must be shouted about,
+        not silently published to teachers."""
+        out, _ = self._run()
+        self.assertIn("!!", out)
+        self.assertIn("70M", out)
+
+    def test_rerun_updates_in_place_instead_of_duplicating(self):
+        self._run()
+        self._run()
+        self.assertEqual(
+            ExamPattern.objects.filter(name="CBSE Board Physics Class 12").count(), 1)
+
+    def test_as_new_keeps_the_seeded_pattern(self):
+        self._run()
+        self._run(as_new=True)
+        self.assertTrue(ExamPattern.objects.filter(
+            name="CBSE Board Physics Class 12").exists())
+        self.assertTrue(ExamPattern.objects.filter(
+            name="CBSE Sample Paper — Physics Class 12").exists())
+
+    def test_dry_run_writes_nothing(self):
+        self._run(dry_run=True)
+        self.assertEqual(ExamPattern.objects.count(), 0)
+
+
+class CeleryHealthQueueCoverageTest(SimpleTestCase):
+    """`manage.py celery_health` is what makes an un-drained queue visible — a missing worker
+    raises nothing, `.delay()` still succeeds, and the row just says 'queued' forever. That
+    only works if its QUEUES map lists every queue the app actually publishes to. Adding a
+    CELERY_TASK_ROUTES entry and forgetting to update the map would leave the new queue
+    silently unchecked, recreating the exact blind spot the command exists to close."""
+
+    def test_every_published_queue_is_checked(self):
+        from django.conf import settings
+        from core.management.commands.celery_health import QUEUES
+
+        published = {settings.CELERY_TASK_DEFAULT_QUEUE}
+        for route in (settings.CELERY_TASK_ROUTES or {}).values():
+            if isinstance(route, dict) and route.get("queue"):
+                published.add(route["queue"])
+
+        missing = published - set(QUEUES)
+        self.assertFalse(
+            missing,
+            f"celery_health.QUEUES does not check {sorted(missing)} — add them (with a note on "
+            f"what breaks when nobody drains them) or the health check will report 'healthy' "
+            f"while those queues pile up unconsumed.")
+
+    def test_no_stale_queues_are_checked(self):
+        """The reverse rot: a queue that is no longer routed to would report a permanent
+        ORPHAN and train everyone to ignore the command's output."""
+        from django.conf import settings
+        from core.management.commands.celery_health import QUEUES
+
+        published = {settings.CELERY_TASK_DEFAULT_QUEUE}
+        for route in (settings.CELERY_TASK_ROUTES or {}).values():
+            if isinstance(route, dict) and route.get("queue"):
+                published.add(route["queue"])
+
+        self.assertFalse(
+            set(QUEUES) - published,
+            f"celery_health.QUEUES checks {sorted(set(QUEUES) - published)}, which nothing "
+            f"routes to any more — it would report a permanent false ORPHAN.")
+
+
+class LlmConcurrencyCapTest(SimpleTestCase):
+    """One Celery worker now runs papers and patterns side by side, and each paper already
+    fans out MAX_PARALLEL_SECTIONS=3 sections at once — so N concurrent papers would want 3N
+    simultaneous Mantle calls. mantle_client caps total in-flight requests for the whole
+    process instead, because a 429 does not merely slow a paper down: it can drop a whole
+    section out of it."""
+
+    def test_cap_is_never_below_one_papers_section_fanout(self):
+        """A lone paper must never throttle itself — the floor is the per-paper fan-out."""
+        self.assertGreaterEqual(mc.MAX_CONCURRENT_CALLS, sg.MAX_PARALLEL_SECTIONS)
+
+    def test_cap_bounds_concurrent_callers(self):
+        import threading
+        import time
+
+        peak = 0
+        current = 0
+        lock = threading.Lock()
+
+        def caller(i):
+            nonlocal peak, current
+            with mc._call_slot(i, "test"):
+                with lock:
+                    current += 1
+                    peak = max(peak, current)
+                time.sleep(0.05)
+                with lock:
+                    current -= 1
+
+        threads = [threading.Thread(target=caller, args=(i,))
+                   for i in range(mc.MAX_CONCURRENT_CALLS * 3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertLessEqual(peak, mc.MAX_CONCURRENT_CALLS)
+        self.assertEqual(peak, mc.MAX_CONCURRENT_CALLS,
+                         "the cap should be reached, else the test proves nothing")
+
+    def test_slots_are_released_even_when_the_call_raises(self):
+        """A slot leaked on failure would ratchet the process down to zero throughput —
+        every later call would block forever on a semaphore nobody releases."""
+        before = mc._call_slots._value
+        with self.assertRaises(RuntimeError):
+            with mc._call_slot(1, "test"):
+                raise RuntimeError("HTTP blew up")
+        self.assertEqual(mc._call_slots._value, before)
+        self.assertEqual(mc._waiting, 0)
+
+    def test_cap_is_configurable_by_env(self):
+        """Ops needs to raise this as more API keys go live, without a code change."""
+        import importlib
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"QPG_MAX_CONCURRENT_LLM_CALLS": "11"}):
+            reloaded = importlib.reload(mc)
+            try:
+                self.assertEqual(reloaded.MAX_CONCURRENT_CALLS, 11)
+            finally:
+                importlib.reload(mc)   # restore the real module for every other test
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Blueprints: per-question unit mapping over a pattern
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _slot(qnum, marks=1, stype="mcq", **extra):
+    return dict(qnum=qnum, type=stype, marks=marks, **extra)
+
+
+class UnitMapModelTest(TestCase):
+    """ExamBlueprint.unit_map is read by the API, the generator and the paper task, so its
+    accessors are the one place its shape is interpreted. They must tolerate anything a
+    hand-edited or half-saved map can contain — a malformed map must degrade to 'no mapping',
+    never raise into paper generation."""
+
+    def _bp(self, unit_map):
+        return ExamBlueprint(class_name="12", subject="Physics", unit_map=unit_map)
+
+    def test_reads_question_and_section_units(self):
+        bp = self._bp({"sections": [
+            {"section_id": "SEC_A", "questions": {"1": "Optics", "2": "Waves"}},
+            {"section_id": "SEC_B", "units": ["Modern Physics"]},
+        ]})
+        self.assertEqual(bp.question_units(), {"SEC_A": {1: "Optics", 2: "Waves"}})
+        self.assertEqual(bp.section_units(), {"SEC_B": ["Modern Physics"]})
+        self.assertEqual(bp.all_units(), ["Modern Physics", "Optics", "Waves"])
+
+    def test_qnum_keys_are_coerced_from_json_strings(self):
+        """JSON object keys are always strings; the generator matches on int qnums."""
+        bp = self._bp({"sections": [{"section_id": "A", "questions": {"7": "Optics"}}]})
+        self.assertEqual(bp.question_units()["A"], {7: "Optics"})
+
+    def test_garbage_is_ignored_not_raised(self):
+        for bad in (None, {}, {"sections": "nope"}, {"sections": [None, 5, {}]},
+                    {"sections": [{"section_id": "A", "questions": "nope"}]},
+                    {"sections": [{"section_id": "A", "questions": {"x": "Optics", "1": ""}}]},
+                    {"sections": [{"section_id": "A", "questions": {"-3": "Optics"}}]}):
+            bp = self._bp(bad)
+            self.assertEqual(bp.question_units(), {}, bad)
+            self.assertEqual(bp.all_units(), [], bad)
+
+
+class ApplyUnitMapTest(TestCase):
+    """apply_unit_map overlays a teacher's plan onto plan_chapter_allocation's automatic one.
+    This is the whole feature: everything else just carries the map to this function."""
+
+    CHAPTERS = ["Electrostatics", "Optics", "Magnetism", "Waves"]
+
+    def _wo(self, section_id, slots, questions_count=None, chapters=None):
+        wo = sg.SectionWorkOrder(
+            section_name=f"Section {section_id}", section_id=section_id, title="",
+            marks=len(slots), questions_count=questions_count or len(slots),
+            marks_per_question=1, question_types=["MCQ"], instructions=[], constraints={},
+            context_text="", difficulty="Medium", subject="Physics", class_name="12",
+            chapters=list(chapters or self.CHAPTERS), slots=slots)
+        sg.plan_chapter_allocation([wo])
+        return wo
+
+    def _bp(self, sections):
+        return ExamBlueprint(class_name="12", subject="Physics", unit_map={"sections": sections})
+
+    def test_pins_named_questions_and_leaves_the_rest_automatic(self):
+        """A partial blueprint is the normal case — constraining 2 of 5 questions must not blank
+        the other 3."""
+        wo = self._wo("SEC_A", [_slot(i) for i in range(1, 6)])
+        auto_before = list(wo.chapter_plan)
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_A", "questions": {"1": "Optics", "3": "Waves"}}]), log=lambda m: None)
+        self.assertEqual(wo.chapter_plan[0], "Optics")
+        self.assertEqual(wo.chapter_plan[2], "Waves")
+        self.assertEqual(wo.chapter_plan[1], auto_before[1])
+        self.assertEqual(wo.chapter_plan[3], auto_before[3])
+
+    def test_matches_printed_qnum_not_position(self):
+        """The trap this feature is most likely to fall into. A section whose questions are
+        numbered 11-15 (continuous numbering across the paper) must map Q13 to the THIRD slot,
+        not to chapter_plan[13]."""
+        wo = self._wo("SEC_C", [_slot(i) for i in range(11, 16)])
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_C", "questions": {"13": "Optics"}}]), log=lambda m: None)
+        self.assertEqual(wo.chapter_plan[2], "Optics")
+        self.assertEqual(wo.chapter_plan.count("Optics"), 1)
+
+    def test_attempt_n_of_m_section_does_not_misassign(self):
+        """questions_count can EXCEED the printed slots (generate 6, students attempt 5), so
+        chapter_plan is longer than wo.slots. Indexing by slot position stays correct and nothing
+        runs off the end."""
+        wo = self._wo("SEC_D", [_slot(i) for i in range(1, 6)], questions_count=8)
+        self.assertEqual(len(wo.chapter_plan), 8)
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_D", "questions": {"5": "Waves"}}]), log=lambda m: None)
+        self.assertEqual(len(wo.chapter_plan), 8)          # never lengthened or truncated
+        self.assertEqual(wo.chapter_plan[4], "Waves")
+
+    def test_section_level_units_restrict_the_whole_section(self):
+        wo = self._wo("SEC_B", [_slot(i) for i in range(1, 8)])
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_B", "units": ["Magnetism"]}]), log=lambda m: None)
+        self.assertEqual(set(wo.chapter_plan), {"Magnetism"})
+        self.assertEqual(wo.chapters, ["Magnetism"])       # retrieval narrows with it
+
+    def test_question_pin_wins_over_section_default(self):
+        wo = self._wo("SEC_B", [_slot(i) for i in range(1, 5)])
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_B", "units": ["Magnetism"], "questions": {"2": "Optics"}}]),
+            log=lambda m: None)
+        self.assertEqual(wo.chapter_plan[1], "Optics")
+        self.assertEqual(wo.chapter_plan[0], "Magnetism")
+
+    def test_slot_carries_the_chapter_for_the_per_question_prompt(self):
+        """The section prompt states only a DISTRIBUTION; pinning an individual question relies on
+        the slot's own `chapter` reaching the per-question spec block."""
+        wo = self._wo("SEC_A", [_slot(1), _slot(2)])
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_A", "questions": {"2": "Optics"}}]), log=lambda m: None)
+        self.assertEqual(wo.slots[1]["chapter"], "Optics")
+        self.assertNotIn("chapter", wo.slots[0])
+
+    def test_pinned_unit_is_added_to_the_sections_chapters(self):
+        """A unit the teacher pins must be retrievable, or its question is generated with no
+        material behind it."""
+        wo = self._wo("SEC_A", [_slot(1)], chapters=["Electrostatics"])
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_A", "questions": {"1": "Thermodynamics"}}]), log=lambda m: None)
+        self.assertIn("Thermodynamics", wo.chapters)
+
+    def test_rival_chapter_topic_is_dropped_but_a_skill_topic_is_kept(self):
+        """Patterns imported from a CBSE sample paper carry a per-slot topic. If the teacher pins
+        a different CHAPTER, keeping a rival chapter name as TOPIC hands the model two conflicting
+        instructions. A topic naming a skill within a chapter is complementary and stays."""
+        wo = self._wo("SEC_A", [_slot(1, topic="Electrostatics"), _slot(2, topic="Resistance")])
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_A", "questions": {"1": "Optics", "2": "Magnetism"}}]),
+            log=lambda m: None)
+        self.assertNotIn("topic", wo.slots[0])             # rival chapter name -> dropped
+        self.assertEqual(wo.slots[1]["topic"], "Resistance")  # skill -> kept
+
+    def test_matches_by_section_name_when_the_id_differs(self):
+        wo = self._wo("SEC_A", [_slot(1)])
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "Section SEC_A", "questions": {"1": "Optics"}}]), log=lambda m: None)
+        self.assertEqual(wo.chapter_plan[0], "Optics")
+
+    def test_no_map_and_unknown_section_are_both_no_ops(self):
+        wo = self._wo("SEC_A", [_slot(1), _slot(2)])
+        before = list(wo.chapter_plan)
+        sg.apply_unit_map([wo], None, log=lambda m: None)
+        sg.apply_unit_map([wo], self._bp([]), log=lambda m: None)
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_Z", "questions": {"1": "Optics"}}]), log=lambda m: None)
+        self.assertEqual(wo.chapter_plan, before)
+
+    def test_stale_qnums_are_reported_not_applied(self):
+        """A pattern edited after its blueprint was written leaves the map addressing questions
+        that no longer exist. Silently ignoring them hides that the teacher's plan is now wrong."""
+        wo = self._wo("SEC_A", [_slot(1), _slot(2)])
+        logged = []
+        sg.apply_unit_map([wo], self._bp([
+            {"section_id": "SEC_A", "questions": {"1": "Optics", "99": "Waves"}}]),
+            log=logged.append)
+        self.assertEqual(wo.chapter_plan[0], "Optics")
+        self.assertNotIn("Waves", wo.chapter_plan)
+        self.assertTrue(any("99" in m and "does not print" in m for m in logged), logged)
+
+    def test_accepts_a_plain_dict_as_well_as_a_model(self):
+        wo = self._wo("SEC_A", [_slot(1)])
+        sg.apply_unit_map([wo], {"sections": [
+            {"section_id": "SEC_A", "questions": {"1": "Optics"}}]}, log=lambda m: None)
+        self.assertEqual(wo.chapter_plan[0], "Optics")
+
+
+class ResolveBlueprintTest(TestCase):
+    """`blueprint_id` arrives from a form field that historically also carried BlueprintTemplate
+    ids. Everything that is not a usable per-pattern unit plan must degrade to 'generate without a
+    blueprint' — the paper's structure comes from the pattern and is generatable regardless."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("bp_t", "bp@x.com", "pw")
+        self.pattern = ExamPattern.objects.create(
+            name="HY", subject="Physics", class_name="12", sections=[], total_marks=0,
+            total_questions=0, created_by=self.user)
+        self.other_pattern = ExamPattern.objects.create(
+            name="Annual", subject="Physics", class_name="12", sections=[], total_marks=0,
+            total_questions=0, created_by=self.user)
+        self.paper = QuestionPaper.objects.create(
+            class_name="12", subject="Physics", pattern=self.pattern, chapters=["Optics"],
+            difficulty="Medium", created_by=self.user, status="queued")
+        self.bp = ExamBlueprint.objects.create(
+            name="plan", class_name="12", subject="Physics", pattern=self.pattern,
+            unit_map={"sections": [{"section_id": "SEC_A", "questions": {"1": "Optics"}}]})
+
+    def _resolve(self, raw):
+        from core.tasks import _resolve_blueprint
+        return _resolve_blueprint(raw, self.paper)
+
+    def test_resolves_the_prefixed_form_the_generate_page_sends(self):
+        self.assertEqual(self._resolve(f"exam_{self.bp.id}"), self.bp)
+
+    def test_bare_id_also_works(self):
+        self.assertEqual(self._resolve(str(self.bp.id)), self.bp)
+
+    def test_template_id_is_ignored(self):
+        """BlueprintTemplates describe a structure, not units — attaching one must not silently
+        look like it did something."""
+        self.assertIsNone(self._resolve("template_3"))
+
+    def test_blueprint_for_another_pattern_is_refused(self):
+        """Its qnums address a different paper's questions, so applying it would pin units to the
+        wrong ones."""
+        self.bp.pattern = self.other_pattern
+        self.bp.save(update_fields=["pattern"])
+        self.assertIsNone(self._resolve(f"exam_{self.bp.id}"))
+
+    def test_empty_map_and_missing_row_are_ignored(self):
+        self.assertIsNone(self._resolve("exam_999999"))
+        self.bp.unit_map = {}
+        self.bp.save(update_fields=["unit_map"])
+        self.assertIsNone(self._resolve(f"exam_{self.bp.id}"))
+
+    def test_blank_and_junk_are_ignored(self):
+        for raw in (None, "", "   ", "not-an-id", "exam_abc"):
+            self.assertIsNone(self._resolve(raw), raw)
+
+
+class BlueprintScaffoldApiTest(TestCase):
+    """The builder page renders a unit dropdown per printed question, so the scaffold must return
+    exactly the printed questions — with the SAME section_id the generator will match on later."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.user = User.objects.create_user("scaf_t", "scaf@x.com", "pw")
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+        self.pattern = ExamPattern.objects.create(
+            name="Board", subject="Physics", class_name="12", total_marks=6, total_questions=4,
+            created_by=self.user,
+            sections=[
+                {"id": "SEC_A", "name": "Section A", "marks": 3, "question_slots": [
+                    _slot(1), _slot(2, topic="Optics"),
+                    _slot(3, stype="cbq", source="unseen")]},
+                {"name": "Section B", "marks": 3, "questions_count": 3},   # legacy, no slots
+            ])
+
+    def test_returns_one_entry_per_printed_question(self):
+        r = self.api.get(f"/api/patterns/{self.pattern.id}/blueprint-scaffold/")
+        self.assertEqual(r.status_code, 200)
+        sec_a = r.json()["sections"][0]
+        self.assertEqual(sec_a["section_id"], "SEC_A")
+        self.assertEqual([q["qnum"] for q in sec_a["questions"]], [1, 2, 3])
+        self.assertEqual(sec_a["questions"][0]["type_label"], "MCQ")
+        self.assertFalse(sec_a["section_level_only"])
+
+    def test_unseen_and_general_questions_are_not_unit_assignable(self):
+        """The pattern says these are NOT drawn from a chapter; offering a unit dropdown for them
+        would let the teacher contradict the pattern."""
+        r = self.api.get(f"/api/patterns/{self.pattern.id}/blueprint-scaffold/")
+        qs = r.json()["sections"][0]["questions"]
+        self.assertTrue(qs[0]["unit_applicable"])
+        self.assertFalse(qs[2]["unit_applicable"])     # source='unseen'
+
+    def test_legacy_section_is_flagged_section_level_only(self):
+        r = self.api.get(f"/api/patterns/{self.pattern.id}/blueprint-scaffold/")
+        sec_b = r.json()["sections"][1]
+        self.assertTrue(sec_b["section_level_only"])
+        self.assertEqual(sec_b["questions"], [])
+
+    def test_section_id_matches_what_the_generator_will_compute(self):
+        """If these two disagree, blueprints save fine and then quietly fail to apply."""
+        from core.section_generator import _section_id_from_name
+        r = self.api.get(f"/api/patterns/{self.pattern.id}/blueprint-scaffold/")
+        sections = r.json()["sections"]
+        for idx, (api_sec, pat_sec) in enumerate(zip(sections, self.pattern.sections)):
+            expected = pat_sec.get("id") or _section_id_from_name(pat_sec.get("name", ""), idx)
+            self.assertEqual(api_sec["section_id"], expected)
+
+    def test_units_come_from_uploaded_material(self):
+        from core.models import Material
+        # `visibility` defaults to "private", which visibility_q hides from a school-less user —
+        # the same rule get_chapters has always applied.
+        Material.objects.create(class_name="12", subject="Physics", unit="Optics",
+                                visibility="institutional", uploaded_by=self.user)
+        r = self.api.get(f"/api/patterns/{self.pattern.id}/blueprint-scaffold/")
+        self.assertIn("Optics", r.json()["units"])
+
+    def test_scaffold_units_match_the_generate_pages_chapter_list_exactly(self):
+        """The builder offers units to pin and the generate page offers chapters to tick; if the
+        two lists diverge a teacher can pin a unit they cannot then select material for. Both read
+        `available_units`, and this pins that they keep doing so."""
+        from core.models import Material
+        for unit, vis in (("Optics", "institutional"), ("Waves", "institutional"),
+                          ("Hidden", "private")):
+            Material.objects.create(class_name="12", subject="Physics", unit=unit,
+                                    visibility=vis, uploaded_by=self.user)
+        scaffold = self.api.get(
+            f"/api/patterns/{self.pattern.id}/blueprint-scaffold/").json()["units"]
+        chapters = self.api.get(
+            "/api/get_chapters/?class_name=12&subject=Physics").json()["chapters"]
+        self.assertEqual(scaffold, chapters)
+        self.assertNotIn("Hidden", scaffold)
+
+
+class CrossSubjectBoardPatternTest(TestCase):
+    """Only ten subjects have a CBSE sample paper, but every Class 12 science paper shares the same
+    section shape — so the board patterns are offered to every subject, with the teacher's own
+    subject first."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.admin = User.objects.create_superuser("cs_admin", "cs@x.com", "pw")
+        self.user = User.objects.create_user("cs_t", "cst@x.com", "pw")
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+        mk = lambda subj, src: ExamPattern.objects.create(
+            name=f"CBSE Board {subj} Class 12", subject=subj, class_name="12", sections=[],
+            total_marks=70, total_questions=33, pattern_source=src, created_by=self.admin)
+        self.physics = mk("Physics", "cbse_official")
+        self.chem = mk("Chemistry", "cbse_official")
+        self.one_mark = mk("Physics", "one_mark_test")
+
+    def _get(self, **params):
+        from urllib.parse import urlencode
+        return self.api.get(f"/api/patterns/templates/?{urlencode(params)}").json()
+
+    def test_subject_without_an_sqp_still_sees_the_board_patterns(self):
+        rows = self._get(**{"class": "12", "subject": "Sociology", "exam_type": "board"})
+        names = [r["name"] for r in rows]
+        self.assertIn("CBSE Board Physics Class 12", names)
+        self.assertTrue(all(r["is_cross_subject"] for r in rows))
+
+    def test_own_subject_comes_first_and_is_not_flagged(self):
+        rows = self._get(**{"class": "12", "subject": "Physics", "exam_type": "board"})
+        self.assertEqual(rows[0]["subject"], "Physics")
+        self.assertFalse(rows[0]["is_cross_subject"])
+        self.assertTrue(any(r["subject"] == "Chemistry" and r["is_cross_subject"] for r in rows))
+
+    def test_own_subject_pattern_is_never_duplicated(self):
+        rows = self._get(**{"class": "12", "subject": "Physics", "exam_type": "board"})
+        ids = [r["id"] for r in rows]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_only_cbse_official_patterns_travel_across_subjects(self):
+        """Opening this to every premade pattern would bury a subject's own templates."""
+        rows = self._get(**{"class": "12", "subject": "Sociology", "exam_type": "board"})
+        self.assertNotIn(self.one_mark.id, [r["id"] for r in rows])
+
+    def test_a_periodic_test_is_not_offered_an_80_mark_board_paper(self):
+        rows = self._get(**{"class": "12", "subject": "Sociology", "exam_type": "pt1"})
+        self.assertEqual([r for r in rows if r["is_cross_subject"]], [])
+
+
+class BlueprintSerializerTest(TestCase):
+    """A unit map addresses a PATTERN's question numbers, so saving one without a pattern would
+    produce a blueprint that generation can only ignore."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.user = User.objects.create_user("bser_t", "bser@x.com", "pw")
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+        self.pattern = ExamPattern.objects.create(
+            name="HY", subject="Physics", class_name="12", sections=[], total_marks=0,
+            total_questions=0, created_by=self.user)
+
+    def test_unit_map_without_a_pattern_is_rejected(self):
+        r = self.api.post("/api/blueprints/", {
+            "class_name": "12", "subject": "Physics",
+            "unit_map": {"sections": [{"section_id": "SEC_A", "questions": {"1": "Optics"}}]},
+        }, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("pattern_id", r.json())
+
+    def test_saves_and_reports_how_much_is_pinned(self):
+        r = self.api.post("/api/blueprints/", {
+            "name": "HY units", "class_name": "12", "subject": "Physics",
+            "pattern_id": self.pattern.id,
+            "unit_map": {"sections": [
+                {"section_id": "SEC_A", "questions": {"1": "Optics", "2": "Waves"}}]},
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()["mapped_questions"], 2)
+        self.assertEqual(r.json()["units_used"], ["Optics", "Waves"])
+        self.assertEqual(r.json()["pattern_name"], "HY")
