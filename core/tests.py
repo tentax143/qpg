@@ -4904,8 +4904,10 @@ class StandalonePartsNoPassageTest(TestCase):
     def test_clean_sa_parts_group_passes(self):
         q = {"type": "CBQ", "subtype": "standard", "marks": 10,
              "text": "Attempt any 5 of the following 6:", "competency_type": "constructed",
-             "sub_questions": [{"text": f"Explain point {i} from the chapter.", "marks": 2}
-                               for i in range(6)]}
+             # Filler text kept free of textbook pointers on purpose — "from the chapter" is
+             # itself a validation error now (see SelfContainedQuestionTest).
+             "sub_questions": [{"text": f"Explain the term in line {i} in your own words.",
+                                "marks": 2} for i in range(6)]}
         errors = sg.validate_section_output({"questions": [q]}, self._wo())
         self.assertEqual(errors, [])
 
@@ -8262,3 +8264,124 @@ class SourceMixMeterTest(TestCase):
         text = sg_gen._source_mix_directive(40)
         self.assertIn("about 40% of this paper", text)
         self.assertIn("The other 60% must be grounded", text)
+
+
+class SelfContainedQuestionTest(TestCase):
+    """A question must stand on its own — the student sits the exam with the paper and nothing
+    else.
+
+    Live papers came back asking "In Activity 6.2, what is one of the properties mentioned to
+    group objects?", "Which body part did Deepa suggest using to measure the length of the
+    table?" and "Activity 3.2 asks students to explore … What is the primary purpose of this
+    activity?". All three test whether the student remembers a PAGE of the textbook rather than
+    whether they know the concept, and none of them is answerable in an exam hall."""
+
+    def _wo(self, **kw):
+        return sg.SectionWorkOrder(
+            section_name="A", section_id="A", title="", marks=5, questions_count=5,
+            marks_per_question=1.0, question_types=["MCQ"], instructions=[], constraints={},
+            context_text="textbook chunk " * 40, difficulty="Medium", subject="Science",
+            class_name="6", chapters=["Sorting Materials"], **kw)
+
+    def _mcq(self, text, **kw):
+        q = {"type": "MCQ", "subtype": "standard", "marks": 1, "text": text,
+             "options": {"a": "Weight", "b": "Shine", "c": "Size", "d": "Temperature"},
+             "answer": "b", "chapter_tag": "Sorting Materials", "competency_type": "recall"}
+        q.update(kw)
+        return q
+
+    # ── detection ────────────────────────────────────────────────────────────────
+    def test_flags_the_reported_questions(self):
+        for text in (
+            "In Activity 6.2, what is one of the properties mentioned to group objects?",
+            "Activity 3.2 asks students to explore the types of food traditionally consumed "
+            "in various states of India. What is the primary purpose of this activity?",
+            "Refer to Fig. 2.4 and name the part labelled A.",
+            "What does Table 3.1 show about the states of matter?",
+            "Solve Exercise 4.1 given in your textbook.",
+            "Complete Activity 7 and record your observation.",
+            "In the chapter, three methods of separation are described. Name any two.",
+            "In the previous chapter, which law was stated?",
+            "As mentioned in the lesson, what is the SI unit of force?",
+            "According to the book, which gas is used in fire extinguishers?",
+            "Which process was discussed in class for purifying water?",
+        ):
+            self.assertTrue(sg._book_reference_hit(text), text)
+
+    def test_leaves_self_contained_questions_alone(self):
+        # Every one of these is answerable from the paper alone, and several are deliberately
+        # close to the banned forms — a false positive here costs a real question on retry.
+        for text in (
+            "Which of the following is a property used to group objects?",
+            "Which of these is a non-standard unit of length?",
+            "In an activity, a student groups objects by shine and size. Name one more property.",
+            "Read the passage above and answer: why did the narrator hesitate?",
+            "According to the text given above, what did the poet mean by hope?",
+            "In the lesson 'The Sound of Music', who was Evelyn Glennie?",   # names the work
+            "A rod of length 2.5 m rests on a table. Find its weight.",
+            "The figure 2.5 cm across represents the cross-section. Explain.",
+            "The book on the table weighs 500 g. Find the force it exerts.",
+            "A student of Class 9 measures the length of a table with a handspan.",
+            "This concept is taught in Class 9 of the CBSE syllabus.",
+        ):
+            self.assertEqual(sg._book_reference_hit(text), "", text)
+
+    def test_visible_text_covers_options_subquestions_and_alternatives(self):
+        q = self._mcq("Name one property used to group objects.",
+                      sub_questions=[{"text": "Why is Activity 6.2 done?", "marks": 1}])
+        self.assertIn("Activity 6.2", sg._student_visible_text(q))
+        q = self._mcq("Pick the odd one out.", options={"a": "See Fig. 2.4", "b": "x"})
+        self.assertIn("Fig. 2.4", sg._student_visible_text(q))
+        q = self._mcq("Define force.", or_alternative={"text": "Do Exercise 4.1."})
+        self.assertIn("Exercise 4.1", sg._student_visible_text(q))
+
+    def test_printed_passage_is_not_searched(self):
+        # A case-based question PRINTS its passage, so wording inside it is on the paper and in
+        # front of the student — only the question's own words are checked.
+        q = self._mcq("What does the author conclude?",
+                      source_text="Activity 6.2 in the chapter describes ...")
+        self.assertEqual(sg._book_reference_hit(sg._student_visible_text(q)), "")
+
+    # ── enforcement ──────────────────────────────────────────────────────────────
+    def test_validation_rejects_the_question_with_a_usable_message(self):
+        errs = sg._validate_by_subtype(
+            self._mcq("In Activity 6.2, what is one of the properties mentioned?"), 1, self._wo())
+        hits = [e for e in errs if "refers to the textbook itself" in e]
+        self.assertTrue(hits, errs)
+        self.assertIn("Activity 6.2", hits[0])
+        self.assertIn("CONCEPT", hits[0])
+
+    def test_validation_passes_a_self_contained_question(self):
+        errs = sg._validate_by_subtype(
+            self._mcq("Which of the following is a property used to group objects?"), 1, self._wo())
+        self.assertEqual([e for e in errs if "refers to the textbook itself" in e], [])
+
+    def test_prompt_states_the_rule(self):
+        prompt = sg.build_section_prompt(self._wo())
+        self.assertIn("SELF-CONTAINED QUESTIONS — ABSOLUTE RULE", prompt)
+        self.assertIn("In Activity 6.2", prompt)        # the wrong form, shown as wrong
+        self.assertIn("no textbook, no notebook", prompt)
+
+    def test_single_prompt_fallback_states_the_rule_too(self):
+        self.assertIn("SELF-CONTAINED QUESTIONS", sg_gen._self_contained_directive())
+
+    # ── the critic catches what a regex cannot ───────────────────────────────────
+    def test_critic_flags_an_unanswerable_question_on_its_own_score(self):
+        # "Which body part did Deepa suggest…" is indistinguishable IN FORM from "What did
+        # Rutherford conclude…", so no regex can separate them — the critic judges it. Scored
+        # apart from the average on purpose: 5/5/5/5/1 averages to a comfortable 4.2.
+        reply = ('[{"q": 1, "clarity": 5, "ncert_alignment": 5, "difficulty_match": 5, '
+                 '"pedagogical_value": 5, "self_contained": 1, '
+                 '"issues": "asks what a child in an activity suggested"}]')
+        q = self._mcq("Which body part did Deepa suggest using to measure the table?")
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(reply, 10, 20)):
+            flags = sg.run_content_quality_critic([q], "6", "Science", "Easy")
+        self.assertEqual(len(flags), 1, flags)
+        self.assertEqual(flags[0]["scores"]["self_contained"], 1)
+
+    def test_critic_leaves_a_good_question_alone(self):
+        reply = ('[{"q": 1, "clarity": 5, "ncert_alignment": 5, "difficulty_match": 4, '
+                 '"pedagogical_value": 4, "self_contained": 5}]')
+        q = self._mcq("Which of the following is a property used to group objects?")
+        with mock.patch.object(sg.mantle_client, "converse", return_value=(reply, 10, 20)):
+            self.assertEqual(sg.run_content_quality_critic([q], "6", "Science", "Easy"), [])

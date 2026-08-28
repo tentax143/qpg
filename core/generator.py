@@ -3678,6 +3678,16 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
         
         raise Exception(error_msg)
 
+def _self_contained_directive() -> str:
+    """The section pipeline's self-containment rule, reused by the single-prompt fallback.
+
+    Same wording in both paths on purpose: a paper that falls back must not start asking
+    "In Activity 6.2, …" just because the parallel pipeline was unavailable.
+    """
+    from .section_generator import SELF_CONTAINED_RULE
+    return SELF_CONTAINED_RULE
+
+
 def _source_mix_directive(creative_ratio) -> str:
     """The generate page's source-mix meter, as a whole-paper rule for the single-prompt path.
 
@@ -4093,6 +4103,7 @@ EXAMPLE OUTPUT FORMAT (WITH PASSAGES):
 
 {_difficulty_directive(difficulty)}
 {_source_mix_directive(creative_ratio)}
+{_self_contained_directive()}
 OUTPUT REQUIREMENTS:
 - Generate ONLY valid JSON
 - Follow the example format above

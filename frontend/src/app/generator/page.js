@@ -464,89 +464,6 @@ function GeneratorContent() {
                 />
               </div>
 
-              {/* Source Mix — how much of the paper comes from the uploaded book material and
-                  how much the AI composes itself. One paper-wide percentage; the backend spends
-                  it question by question and leaves questions that MUST quote the book alone. */}
-              <div className="p-6 bg-gradient-to-br from-blue-50 via-white to-violet-50 border border-blue-100 rounded-2xl space-y-4">
-                <div className="flex items-center justify-between gap-4">
-                  <label htmlFor="creative_ratio" className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
-                    <BarChart size={16} className="text-blue-500" />
-                    Question Source Mix
-                  </label>
-                  <span className="px-2.5 py-1 rounded-full bg-white border border-gray-200 text-[10px] font-black uppercase tracking-wider text-gray-400">
-                    Drag to adjust
-                  </span>
-                </div>
-
-                {/* The meter itself */}
-                <div className="flex h-8 w-full overflow-hidden rounded-xl bg-white border border-gray-200 shadow-inner">
-                  <div
-                    className="bg-blue-600 transition-all duration-200 ease-out"
-                    style={{ width: `${bookRatio}%` }}
-                  />
-                  <div
-                    className="bg-violet-500 transition-all duration-200 ease-out"
-                    style={{ width: `${creativeRatio}%` }}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-4 text-xs font-bold">
-                  <span className="flex items-center gap-2 text-blue-700">
-                    <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
-                    From the book
-                    <span className="text-sm font-black tabular-nums">{bookRatio}%</span>
-                  </span>
-                  <span className="flex items-center gap-2 text-violet-700">
-                    <span className="text-sm font-black tabular-nums">{creativeRatio}%</span>
-                    AI&apos;s own / creative
-                    <span className="w-2.5 h-2.5 rounded-full bg-violet-500" />
-                  </span>
-                </div>
-
-                <input
-                  id="creative_ratio"
-                  name="creative_ratio"
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={creativeRatio}
-                  onChange={(e) => handleInputChange({ target: { name: 'creative_ratio', value: Number(e.target.value) } })}
-                  className="w-full accent-violet-600 cursor-pointer"
-                  aria-label="Percentage of questions the AI writes itself instead of taking from the book"
-                />
-
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    { v: 0, label: 'All from book' },
-                    { v: 25, label: '25% own' },
-                    { v: 50, label: '50 / 50' },
-                    { v: 75, label: '75% own' },
-                    { v: 100, label: 'All original' },
-                  ].map(({ v, label }) => (
-                    <button
-                      key={v}
-                      type="button"
-                      onClick={() => handleInputChange({ target: { name: 'creative_ratio', value: v } })}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                        creativeRatio === v
-                          ? 'bg-violet-600 text-white'
-                          : 'bg-white text-gray-600 border border-gray-200 hover:border-violet-300 hover:text-violet-700'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-
-                <p className="text-[11px] text-gray-500 leading-relaxed">
-                  <span className="font-black text-blue-700">From the book</span> — built on the material uploaded for the chapters you pick.{' '}
-                  <span className="font-black text-violet-700">Own / creative</span> — the AI writes the question itself: same chapter and level, but a fresh
-                  scenario, example or set of numbers, so students cannot answer it from memory of the textbook exercise.
-                  {creativeRatio > 0 && ' Questions that must quote the book (extracts, prescribed passages, map work) always stay book-based.'}
-                </p>
-              </div>
-
               {/* One Mark Test: question count field */}
               {isOneMarkTest && (
                 <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl space-y-3">
@@ -824,6 +741,82 @@ function GeneratorContent() {
         </div>
 
         <div className="space-y-8">
+          {/* Source Mix — how much of the paper is drawn from the uploaded book material and
+              how much the AI composes itself. One paper-wide percentage; the backend spends it
+              question by question and leaves questions that MUST quote the book alone. It lives
+              outside the <form> on purpose — handleSubmit posts formData, not the DOM. */}
+          <div className="glass-card p-0 overflow-hidden">
+            <div className="p-6 bg-gradient-to-r from-blue-600 to-violet-600 text-white flex items-center gap-3">
+              <BarChart size={22} />
+              <h3 className="text-lg font-black tracking-tight">Source Mix</h3>
+              <span className="ml-auto text-xs font-bold uppercase tracking-widest opacity-80 tabular-nums">
+                {bookRatio} / {creativeRatio}
+              </span>
+            </div>
+
+            <div className="p-8 space-y-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                  <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1">From the book</p>
+                  <p className="text-2xl font-black text-blue-700 tabular-nums">{bookRatio}%</p>
+                </div>
+                <div className="p-4 bg-violet-50 rounded-2xl border border-violet-100">
+                  <p className="text-[10px] font-black text-violet-500 uppercase tracking-widest mb-1">AI&apos;s own</p>
+                  <p className="text-2xl font-black text-violet-700 tabular-nums">{creativeRatio}%</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex h-3 w-full overflow-hidden rounded-full bg-gray-100">
+                  <div className="bg-blue-600 transition-all duration-200 ease-out" style={{ width: `${bookRatio}%` }} />
+                  <div className="bg-violet-500 transition-all duration-200 ease-out" style={{ width: `${creativeRatio}%` }} />
+                </div>
+                <input
+                  id="creative_ratio"
+                  name="creative_ratio"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={creativeRatio}
+                  onChange={(e) => handleInputChange({ target: { name: 'creative_ratio', value: Number(e.target.value) } })}
+                  className="w-full accent-violet-600 cursor-pointer"
+                  aria-label="Percentage of questions the AI writes itself instead of taking from the book"
+                />
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { v: 0, label: 'All book' },
+                  { v: 25, label: '25% own' },
+                  { v: 50, label: '50 / 50' },
+                  { v: 75, label: '75% own' },
+                  { v: 100, label: 'All own' },
+                ].map(({ v, label }) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => handleInputChange({ target: { name: 'creative_ratio', value: v } })}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                      creativeRatio === v
+                        ? 'bg-violet-600 text-white'
+                        : 'bg-gray-50 text-gray-600 border border-gray-200 hover:border-violet-300 hover:text-violet-700'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <p className="text-[11px] text-gray-500 leading-relaxed">
+                <span className="font-black text-blue-700">From the book</span> — built on the material uploaded for the chapters you pick.{' '}
+                <span className="font-black text-violet-700">AI&apos;s own</span> — written by the AI itself: same chapter and level, but a fresh scenario,
+                example or set of numbers, so students cannot answer it from memory of the textbook exercise.
+                {creativeRatio > 0 && ' Extracts, prescribed passages and map work always stay book-based.'}
+              </p>
+            </div>
+          </div>
+
           {/* Pattern Info Card */}
           <div className={`glass-card p-0 overflow-hidden transition-all duration-500 ${selectedPatternDetails ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
             <div className={`p-6 text-white flex items-center gap-3 transition-colors duration-300 ${

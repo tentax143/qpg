@@ -721,6 +721,38 @@ def _language_directive(subject: str) -> str:
     return ""
 
 
+# ─────────────────────────────────────────────
+# Self-contained questions
+# ─────────────────────────────────────────────
+#
+# The reference material is the AUTHOR's source, not the student's. Papers came back asking
+# "In Activity 6.2, what is one of the properties mentioned to group objects?" and "Which body
+# part did Deepa suggest using to measure the length of the table?" — questions about the
+# textbook's page furniture and about the children in its activity boxes. A student in an exam
+# hall has neither, so those test whether they remember the PAGE, not whether they know the
+# concept. Stated to the model here and enforced deterministically by _book_reference_hit.
+
+SELF_CONTAINED_RULE = """
+SELF-CONTAINED QUESTIONS — ABSOLUTE RULE (overrides every other instruction):
+The student answers from this PAPER alone — no textbook, no notebook, no memory of a lesson.
+The reference material is YOUR source for the concept; it is NOT in front of the student.
+- NEVER point at the book's own furniture: "Activity 6.2", "Exercise 4.1", "Example 5.3",
+  "Table 3.1", "Fig. 2.4", "in the chapter", "in the lesson", "your textbook", "as discussed in
+  class". A question may refer to a passage or extract ONLY when it prints that passage itself
+  in its own "source_text".
+- NEVER ask what happened inside the book: what an Activity was for or what it listed, or what a
+  child, teacher or character in one said, suggested, used, measured or found.
+  WRONG: "In Activity 6.2, what is one of the properties mentioned to group objects?"
+  WRONG: "Which body part did Deepa suggest using to measure the length of the table?"
+  WRONG: "Activity 3.2 asks students to explore … What is the primary purpose of this activity?"
+- Take the CONCEPT from the reference material and RESTATE it in the question.
+  RIGHT: "Which of the following is a property used to group objects?"
+  RIGHT: "Which of these is a non-standard unit of length?"
+- Anything the question depends on — data, a situation, a passage, a diagram brief — must be
+  written into the question itself.
+"""
+
+
 def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: str = "", image_vision: dict | None = None) -> str:
     types_str = ", ".join(_type_str(t) for t in wo.question_types) if wo.question_types else "Mixed"
     instructions_str = "\n".join(f"- {i}" for i in wo.instructions) if wo.instructions else "- Follow CBSE guidelines"
@@ -1392,7 +1424,7 @@ SECTION SPECIFICATION:
 ---
 {ctx}
 ---
-
+{SELF_CONTAINED_RULE}
 INSTRUCTIONS:
 {instructions_str}
 {constraints_str}{passage_block}{ar_block}{image_block}{attempt_block}{map_work_block}
@@ -1778,6 +1810,69 @@ def _sq_has_inline_mcq_options(txt: str) -> bool:
     return len(letters) >= 3
 
 
+def _student_visible_text(q: dict) -> str:
+    """Everything the student reads on a question EXCEPT a printed passage: the stem, its options,
+    its sub-questions and every internal-choice alternative. The passage is left out on purpose —
+    a case-based question that prints its own source_text may legitimately point at it."""
+    parts = [str(q.get("text", ""))]
+    opts = q.get("options")
+    if isinstance(opts, dict):
+        parts.extend(str(v) for v in opts.values())
+    alts = q.get("or_alternative")
+    for alt in (alts if isinstance(alts, list) else [alts]):
+        if isinstance(alt, str):
+            parts.append(alt)
+        elif isinstance(alt, dict):
+            parts.append(str(alt.get("text", "")))
+            parts.extend(str(sq.get("text", "")) for sq in (alt.get("sub_questions") or [])
+                         if isinstance(sq, dict))
+    parts.extend(str(sq.get("text", "")) for sq in (q.get("sub_questions") or [])
+                 if isinstance(sq, dict))
+    return " ".join(p for p in parts if p)
+
+
+# Numbered references to the textbook's own furniture. Always wrong, because there is no book in
+# the exam hall: "Activity 6.2" names something the student cannot see. The trailing unit guard
+# keeps a measurement ("the figure 2.5 cm across") from reading as a figure number.
+_BOOK_NUMBERED_RE = re.compile(
+    r"\b(?:activity|activities|exercise|example|table|fig|figure|section|chapter|unit|lesson|"
+    r"page|box)\s*\.?\s*(?:no\.?\s*)?\d+\s*\.\s*\d+"
+    r"(?!\s*(?:cm|mm|km|kg|mg|ml|m|g|l|s|N|J|W|V|A|%)\b)"
+    r"|\b(?:activity|exercise)\s+(?:no\.?\s*)?\d+\b",
+    re.IGNORECASE,
+)
+
+# Pointers at the book itself. "the text" is deliberately absent — a case-based question that
+# prints its own passage says "according to the text" quite legitimately. Naming a work is fine
+# too ("in the chapter 'A Letter to God'"), so a quoted title straight after is exempt.
+_BOOK_POINTER_RE = re.compile(
+    r"\b(?:in|from)\s+(?:the|your|this)\s+(?:previous\s+|above\s+|given\s+)?"
+    r"(?:chapter|lesson)\b"
+    r"(?!\s*[\x27\x22\u201c\u2018]|\s+(?:titled|named|called)\b)"
+    r"|\b(?:your|the)\s+(?:ncert\s+)?(?:textbook|text\s?book)\b|\byour\s+book\b"
+    # "discussed in class", "the experiment we did in class" — the classroom is not on the
+    # paper either. Guarded against "taught in Class 9", where "class" names a grade.
+    r"|\b(?:discussed|taught|studied|demonstrated|performed|shown|done)\s+in\s+"
+    r"(?:the\s+)?class(?:room)?\b(?!\s*(?:\d|[ivxIVX]+\b))"
+    r"|\b(?:as|which\s+(?:is|was))\s+(?:mentioned|given|stated|discussed|described|"
+    r"explained|shown|taught|studied)\s+(?:in|by)\s+(?:the|your)\s+"
+    r"(?:chapter|lesson|textbook|text\s?book|book|class)\b"
+    r"|\baccording\s+to\s+(?:the|your)\s+(?:chapter|lesson|textbook|text\s?book|book)\b"
+    r"|\bas\s+(?:discussed|done|taught|studied)\s+in\s+(?:the\s+)?class(?:room)?\b",
+    re.IGNORECASE,
+)
+
+
+def _book_reference_hit(text: str) -> str:
+    """The offending phrase when a question points at the textbook instead of standing on its
+    own, or "" when it is self-contained."""
+    for rx in (_BOOK_NUMBERED_RE, _BOOK_POINTER_RE):
+        m = rx.search(text or "")
+        if m:
+            return " ".join(m.group(0).split())
+    return ""
+
+
 def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
     """
     Explicit structural validation for every type+subtype combination.
@@ -1807,6 +1902,17 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
 
     if not type_lower:
         errors.append(f"Q{n}: missing 'type' field (must be MCQ / VSA / SA / LA / CBQ)")
+
+    # The student sits the exam with this paper only, so a question that names an Activity,
+    # an Exercise or "the chapter" is asking them to recall a page they do not have.
+    _book_ref = _book_reference_hit(_student_visible_text(q))
+    if _book_ref:
+        errors.append(
+            f"Q{n}: refers to the textbook itself (\"{_book_ref}\") — the student has no "
+            "book in the exam. Ask about the CONCEPT and write everything the question "
+            "needs into the question itself: no Activity/Exercise/Table/Figure numbers, no "
+            "\"the chapter\", and never ask what a person in the book said, suggested or did"
+        )
 
     # General-knowledge slots must not reference textbook chapters: the teacher banned
     # textbook content outright, yet a chapter-assigned model happily writes "In the
@@ -2831,6 +2937,7 @@ def run_content_quality_critic(questions: list, class_name: str, subject: str, d
     Scores: 1–5 (5 = excellent). Threshold: ≥3 required (warn below, don't block).
 
     Evaluates:
+      - Self-contained: Can a student answer it with only this paper in front of them?
       - Clarity: Is the question unambiguous and well-worded?
       - NCERT alignment: Is the content from NCERT Class {class_name} {subject}?
       - Difficulty: Does the question match the requested difficulty ({difficulty})?
@@ -2853,11 +2960,20 @@ def run_content_quality_critic(questions: list, class_name: str, subject: str, d
         "  - clarity (1=ambiguous, 5=crystal clear)\n"
         "  - ncert_alignment (1=off-syllabus, 5=directly from NCERT)\n"
         "  - difficulty_match (1=wrong level, 5=perfect for requested difficulty)\n"
-        "  - pedagogical_value (1=trivial recall, 5=tests deep understanding)\n\n"
+        "  - pedagogical_value (1=trivial recall, 5=tests deep understanding)\n"
+        "  - self_contained (1=unanswerable without the textbook, 5=fully answerable from "
+        "the paper alone)\n"
+        "    A question scores 1-2 on self_contained if it names the book's own material "
+        "(\"Activity 6.2\", \"Exercise 4.1\", \"Fig. 2.4\", \"the chapter\", \"the lesson\"), "
+        "asks what happened inside an activity, or asks what a child/teacher/character in "
+        "the book said, suggested, used, measured or found — e.g. \"Which body part did "
+        "Deepa suggest using to measure the table?\". Naming a real scientist, author or "
+        "historical figure is FINE; so is a question that describes its own scenario.\n\n"
         "Questions:\n" + "\n".join(q_lines) + "\n\n"
         "Output JSON array only:\n"
         '[{"q": 1, "clarity": 4, "ncert_alignment": 5, "difficulty_match": 3, '
-        '"pedagogical_value": 4, "issues": "optional note if any score < 3"}, ...]\n'
+        '"pedagogical_value": 4, "self_contained": 5, '
+        '"issues": "optional note if any score < 3"}, ...]\n'
         "Include ALL questions in the output."
     )
 
@@ -2888,7 +3004,11 @@ def run_content_quality_critic(questions: list, class_name: str, subject: str, d
             _as_float(r.get("pedagogical_value", 5), 5.0),
         ]
         avg = sum(scores) / len(scores)
-        if avg < 3.0:
+        # Scored on its own rather than folded into the average: a question that cannot be
+        # answered without the textbook is unusable however clear and well-pitched it is,
+        # and (5,5,5,5,1) averages to a comfortable 4.2.
+        self_contained = _as_float(r.get("self_contained", 5), 5.0)
+        if avg < 3.0 or self_contained <= 2:
             flagged.append({
                 "qnum": _as_int(r.get("q"), 0),
                 "avg_score": round(avg, 1),
@@ -2897,11 +3017,14 @@ def run_content_quality_critic(questions: list, class_name: str, subject: str, d
                     "ncert_alignment": r.get("ncert_alignment"),
                     "difficulty_match": r.get("difficulty_match"),
                     "pedagogical_value": r.get("pedagogical_value"),
+                    "self_contained": r.get("self_contained"),
                 },
                 "issues": r.get("issues", ""),
             })
             print(
-                f"[V2-Critic] ⚠️  Q{r.get('q')}: avg={avg:.1f} — {r.get('issues', '')}"
+                f"[V2-Critic] ⚠️  Q{r.get('q')}: avg={avg:.1f}"
+                + (f" self-contained={self_contained:.0f}" if self_contained <= 2 else "")
+                + f" — {r.get('issues', '')}"
             )
 
     if not flagged:
@@ -3577,6 +3700,10 @@ def build_single_question_prompt(wo: SectionWorkOrder, qtype_str: str, q_index: 
         f"{context[:4000]}\n\n"
         "RULES:\n"
         f"{source_rule}"
+        "- The student has no textbook: never name an Activity/Exercise/Table/Figure "
+        "number, never write \"the chapter\" or \"the lesson\", and never ask what a person "
+        "in the book said, suggested or did — ask about the concept and write everything "
+        "the question needs into it\n"
         "- Do not repeat concepts from the avoid list\n"
         "- Write at CBSE board exam quality\n\n"
         "OUTPUT — return ONLY this JSON (no markdown fences):\n"
