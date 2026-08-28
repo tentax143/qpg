@@ -85,6 +85,4 @@ cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && python manage.py import_sq
 cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && python manage.py import_sqp_patterns --dry-run
 
 Tests:
-cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && set PYTHONIOENCODING=utf-8 && python manage.py test core --noinput
-
-cf
+cd /d "E:\GIT REPO MAIN\qpg" && conda activate tpm && set PYTHONIOENCODING=utf-8 && python manage.py test core --noinputf pool=solo

@@ -3,6 +3,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
 
+// options: [{ value, label, meta?, badge? }]
+//   label — the primary text; truncated to a single line, full text on hover via title
+//   meta  — optional muted right-hand column (e.g. "Class 10 · Biology · 80M")
+//   badge — optional short tag rendered before the label (e.g. "SQP")
+// meta and badge are additive: callers that pass only value/label render exactly as before.
 export default function CustomSelect({ 
   options = [], 
   value, 
@@ -45,18 +50,23 @@ export default function CustomSelect({
           isOpen ? 'ring-4 ring-blue-500/5 border-blue-500 shadow-lg' : 'hover:border-blue-400 hover:bg-white'
         } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
       >
-        <span className={`font-bold text-sm ${selectedOption ? 'text-gray-900' : 'text-gray-400'}`}>
+        <span
+          title={selectedOption ? selectedOption.label : ''}
+          className={`flex-1 min-w-0 text-left truncate font-bold text-sm ${
+            selectedOption ? 'text-gray-900' : 'text-gray-400'
+          }`}
+        >
           {selectedOption ? selectedOption.label : placeholder}
         </span>
         <ChevronDown 
           size={18} 
-          className={`text-gray-400 transition-transform duration-300 ${isOpen ? 'rotate-180 text-blue-500' : ''}`} 
+          className={`shrink-0 ml-3 text-gray-400 transition-transform duration-300 ${isOpen ? 'rotate-180 text-blue-500' : ''}`} 
         />
       </button>
 
       {isOpen && !disabled && (
         <div 
-          className="absolute z-[1000] top-full left-0 mt-2 w-full bg-white border border-gray-100 rounded-[24px] shadow-2xl shadow-blue-500/10 py-3 animate-in fade-in duration-200 max-h-80 overflow-y-auto custom-scrollbar pr-1"
+          className="absolute z-[1000] top-full left-0 mt-2 w-full min-w-full bg-white border border-gray-100 rounded-[24px] shadow-2xl shadow-blue-500/10 py-3 animate-in fade-in duration-200 max-h-80 overflow-y-auto overflow-x-hidden custom-scrollbar"
           style={{ overscrollBehavior: 'contain' }}
         >
           {options.length === 0 ? (
@@ -70,17 +80,32 @@ export default function CustomSelect({
                   onChange(option.value);
                   setIsOpen(false);
                 }}
-                className={`w-full flex items-center justify-between px-5 py-4 hover:bg-blue-50/50 transition-colors group ${
+                title={[option.label, option.meta].filter(Boolean).join(' — ')}
+                className={`w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-blue-50/50 transition-colors group ${
                   String(option.value) === String(value) ? 'bg-blue-50' : ''
                 }`}
               >
-                <span className={`text-sm font-bold transition-colors ${
+                {/* Badge first so a whole class of option (e.g. official sample papers) is
+                    scannable down the left edge without reading every label. */}
+                {option.badge && (
+                  <span className="shrink-0 px-2 py-0.5 rounded-md bg-cyan-100 text-cyan-700 text-[9px] font-black uppercase tracking-widest">
+                    {option.badge}
+                  </span>
+                )}
+                {/* min-w-0 is what lets `truncate` actually shrink inside a flex row — without it
+                    the name pushes the meta column out and the option wraps onto two lines. */}
+                <span className={`flex-1 min-w-0 truncate text-sm font-bold transition-colors ${
                   String(option.value) === String(value) ? 'text-blue-600' : 'text-gray-700 group-hover:text-gray-900'
                 }`}>
                   {option.label}
                 </span>
+                {option.meta && (
+                  <span className="shrink-0 text-[10px] font-black uppercase tracking-widest text-gray-400">
+                    {option.meta}
+                  </span>
+                )}
                 {String(option.value) === String(value) && (
-                  <Check size={16} className="text-blue-600 mr-2" />
+                  <Check size={16} className="shrink-0 text-blue-600" />
                 )}
               </button>
             ))

@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import {
   Plus, Trash2, Edit, Layers, Info, BookOpen, RefreshCw,
-  GraduationCap, AlertCircle, FileText,
+  GraduationCap, AlertCircle, FileText, Eye,
 } from 'lucide-react';
 import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -146,9 +146,10 @@ export default function BlueprintsPage() {
                 {group.items.map(bp => (
                   <div key={bp.id} className="px-6 py-4 flex flex-wrap items-center gap-4">
                     <div className="flex-1 min-w-[14rem]">
-                      <p className="font-black text-gray-800 text-sm">
+                      <Link href={`/blueprints/${bp.id}`}
+                            className="font-black text-gray-800 text-sm hover:text-cyan-700 hover:underline">
                         {bp.name || `Blueprint #${bp.id}`}
-                      </p>
+                      </Link>
                       <p className="text-[11px] font-bold text-gray-400 mt-0.5 truncate"
                          title={(bp.units_used || []).join(', ')}>
                         {(bp.units_used || []).length
@@ -165,6 +166,11 @@ export default function BlueprintsPage() {
                         : 'Nothing pinned'}
                     </span>
                     <div className="flex items-center gap-2">
+                      <Link href={`/blueprints/${bp.id}`}
+                            className="p-2.5 rounded-xl text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-all"
+                            title="View the full plan">
+                        <Eye size={16} />
+                      </Link>
                       <Link href={`/blueprints/plan?id=${bp.id}`}
                             className="p-2.5 rounded-xl text-gray-400 hover:bg-cyan-50 hover:text-cyan-600 transition-all"
                             title="Edit">
@@ -201,9 +207,10 @@ export default function BlueprintsPage() {
                   {legacy.map(bp => (
                     <div key={bp.id} className="py-3 flex flex-wrap items-center gap-4">
                       <FileText className="text-gray-300 shrink-0" size={16} />
-                      <span className="flex-1 min-w-[12rem] text-sm font-bold text-gray-600">
+                      <Link href={`/blueprints/${bp.id}`}
+                            className="flex-1 min-w-[12rem] text-sm font-bold text-gray-600 hover:text-gray-900 hover:underline">
                         {bp.name || bp.code || `Blueprint #${bp.id}`}
-                      </span>
+                      </Link>
                       <span className="text-[11px] font-black text-gray-400 uppercase tracking-wider">
                         Class {bp.class_name} {bp.subject}
                       </span>

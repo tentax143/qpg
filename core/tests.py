@@ -7046,15 +7046,19 @@ class SqpPatternImportTest(TestCase):
         self.assertEqual(detect("Time: 3 hours    Maximum Marks: 70"), 70)
         self.assertEqual(detect("MM - 80    TIME: 3 Hours"), 80)
 
-    def _run(self, extracted=None, **kwargs):
+    _STEMS = {"Physics": "Physics", "Computer Science": "ComputerScience",
+              "English Language & Literature": "EnglishL"}
+
+    def _run(self, extracted=None, header=None, subject_name="Physics", **kwargs):
         import tempfile
         from django.core.management import call_command
         out = io.StringIO()
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "Physics-SQP.pdf"), "wb") as fh:
+            fname = self._STEMS[subject_name] + "-SQP.pdf"
+            with open(os.path.join(d, fname), "wb") as fh:
                 fh.write(b"%PDF-1.4")
             with mock.patch("core.material_intel.extract_pages_text",
-                            return_value=self.HEADER), \
+                            return_value=header or self.HEADER), \
                  mock.patch("api.ai_service.extract_pattern_from_sqp_via_api",
                             return_value=copy.deepcopy(
                                 self.EXTRACTED if extracted is None else extracted)) as mex, \
@@ -7065,9 +7069,20 @@ class SqpPatternImportTest(TestCase):
 
     def test_import_creates_a_slot_authored_board_pattern(self):
         _, mex = self._run()
-        pat = ExamPattern.objects.get(name="CBSE Board Physics Class 12")
-        self.assertEqual(pat.pattern_source, "cbse_official")
-        self.assertEqual(pat.class_name, "12")
+        # No class in the name: the structure is offered for every class and subject, so labelling
+        # it "Class 12" told a Class 10 teacher it was not for them.
+        pat = ExamPattern.objects.get(name="CBSE Sample Paper — Physics (Classes 11-12)")
+        # Its own source, NOT cbse_official: `seed_cbse_patterns --force` deletes every
+        # cbse_official row and update_cbse_patterns_task regenerates them from the LLM, either of
+        # which would destroy a faithful question-by-question replica.
+        self.assertEqual(pat.pattern_source, "cbse_sqp")
+        self.assertEqual(pat.class_name, "12")     # source class kept as provenance
+        # ...but the STRUCTURE serves the whole senior-secondary stage: CBSE publishes one
+        # paper per subject per stage and schools work towards it across both years.
+        self.assertEqual((pat.class_min, pat.class_max), (11, 12))
+        self.assertTrue(pat.serves_class("11"))
+        self.assertTrue(pat.serves_class("12"))
+        self.assertFalse(pat.serves_class("10"))
         self.assertEqual(pat.sqp_year, "2025-26")
         self.assertEqual(pat.status, "done")
         self.assertIsNone(pat.created_by)        # premade template — clone-only, school-wide
@@ -7085,7 +7100,7 @@ class SqpPatternImportTest(TestCase):
         wrong = copy.deepcopy(self.EXTRACTED)
         wrong["total_marks"] = 999
         self._run(extracted=wrong)
-        pat = ExamPattern.objects.get(name="CBSE Board Physics Class 12")
+        pat = ExamPattern.objects.get(name="CBSE Sample Paper — Physics (Classes 11-12)")
         self.assertEqual(pat.total_marks, 7)
 
     def test_mismatch_with_the_printed_total_is_reported(self):
@@ -7098,16 +7113,51 @@ class SqpPatternImportTest(TestCase):
     def test_rerun_updates_in_place_instead_of_duplicating(self):
         self._run()
         self._run()
-        self.assertEqual(
-            ExamPattern.objects.filter(name="CBSE Board Physics Class 12").count(), 1)
+        self.assertEqual(ExamPattern.objects.filter(pattern_source="cbse_sqp").count(), 1)
 
-    def test_as_new_keeps_the_seeded_pattern(self):
+    def test_rerun_adopts_a_row_stored_under_an_older_name(self):
+        """Renaming must not orphan the row it replaces: a second identically-shaped board pattern
+        in the picker is exactly the confusion this naming change is meant to remove."""
+        legacy = ExamPattern.objects.create(
+            name="CBSE Board Physics Class 12", subject="Physics", class_name="12",
+            sections=[], total_marks=0, total_questions=0, pattern_source="cbse_official")
+        self._run()
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.name, "CBSE Sample Paper — Physics (Classes 11-12)")
+        self.assertEqual(legacy.pattern_source, "cbse_sqp")
+        self.assertEqual(ExamPattern.objects.count(), 1)
+
+    def test_as_new_keeps_the_existing_pattern(self):
         self._run()
         self._run(as_new=True)
         self.assertTrue(ExamPattern.objects.filter(
-            name="CBSE Board Physics Class 12").exists())
+            name="CBSE Sample Paper — Physics (Classes 11-12)").exists())
         self.assertTrue(ExamPattern.objects.filter(
-            name="CBSE Sample Paper — Physics Class 12").exists())
+            name="CBSE Sample Paper — Physics (Classes 11-12, 2025-26)").exists())
+
+    def test_a_class_10_paper_is_banded_to_classes_1_to_10(self):
+        """The Class 10 paper is the model a Class 6 teacher's syllabus builds towards, so it must
+        answer for the whole stage — that is what makes "Class 6 English -> the English SQP" work."""
+        header = ("ENGLISH LANGUAGE AND LITERATURE - Code No. 184\n"
+                  "SAMPLE QUESTION PAPER\nCLASS -X- (2025-26)\nMaximum Marks: 80\n") * 6
+        self._run(header=header, subject_name="English Language & Literature")
+        pat = ExamPattern.objects.get(pattern_source="cbse_sqp")
+        self.assertEqual((pat.class_min, pat.class_max), (1, 10))
+        self.assertIn("Classes 1-10", pat.name)
+        for cls in ("1", "6", "10"):
+            self.assertTrue(pat.serves_class(cls), cls)
+        self.assertFalse(pat.serves_class("11"))
+
+    def test_a_pdf_filed_under_the_wrong_subject_is_refused(self):
+        """sqp_downloads/ is scraper output, and class_10/Computer Science/SQP.pdf turned out to be
+        the SCIENCE paper — importing it produced a "Computer Science" pattern whose sections were
+        Biology and Physics, which nobody would spot from the pattern list."""
+        header = ("SCIENCE - Code no. 086\nSAMPLE QUESTION PAPER\n"
+                  "CLASS - X (2025-26)\nMaximum Marks: 80\n") * 6
+        out, mex = self._run(header=header, subject_name="Computer Science")
+        self.assertIn("not a Computer Science paper", out)
+        self.assertEqual(ExamPattern.objects.count(), 0)
+        mex.assert_not_called()          # refused before spending an LLM call
 
     def test_dry_run_writes_nothing(self):
         self._run(dry_run=True)
@@ -7518,9 +7568,10 @@ class BlueprintScaffoldApiTest(TestCase):
 
 
 class CrossSubjectBoardPatternTest(TestCase):
-    """Only ten subjects have a CBSE sample paper, but every Class 12 science paper shares the same
-    section shape — so the board patterns are offered to every subject, with the teacher's own
-    subject first."""
+    """Only ten subjects have a CBSE sample paper and each was extracted from ONE class's paper,
+    but the structure a sample paper defines is what gets reused — every Class 12 science paper is
+    the same 16/5/7/2/3 shape. So SQP patterns are offered regardless of class AND subject, with
+    the teacher's own subject first. Everything else keeps its class+subject narrowing."""
 
     def setUp(self):
         from rest_framework.test import APIClient
@@ -7528,42 +7579,64 @@ class CrossSubjectBoardPatternTest(TestCase):
         self.user = User.objects.create_user("cs_t", "cst@x.com", "pw")
         self.api = APIClient()
         self.api.force_authenticate(self.user)
-        mk = lambda subj, src: ExamPattern.objects.create(
-            name=f"CBSE Board {subj} Class 12", subject=subj, class_name="12", sections=[],
-            total_marks=70, total_questions=33, pattern_source=src, created_by=self.admin)
-        self.physics = mk("Physics", "cbse_official")
-        self.chem = mk("Chemistry", "cbse_official")
-        self.one_mark = mk("Physics", "one_mark_test")
+
+        def mk(name, subj, cls, src):
+            return ExamPattern.objects.create(
+                name=name, subject=subj, class_name=cls, sections=[], total_marks=70,
+                total_questions=33, pattern_source=src, created_by=self.admin)
+
+        # Both SQP patterns were extracted from CLASS 12 papers.
+        self.physics = mk("CBSE Sample Paper — Physics", "Physics", "12", "cbse_sqp")
+        self.biology = mk("CBSE Sample Paper — Biology", "Biology", "12", "cbse_sqp")
+        # Hand-seeded aggregate + a one-mark template: both stay class/subject specific.
+        self.seeded10 = mk("CBSE Board Science Class 10", "Science", "10", "cbse_official")
+        self.one_mark = mk("One Mark Test", "Physics", "12", "one_mark_test")
 
     def _get(self, **params):
         from urllib.parse import urlencode
         return self.api.get(f"/api/patterns/templates/?{urlencode(params)}").json()
 
-    def test_subject_without_an_sqp_still_sees_the_board_patterns(self):
-        rows = self._get(**{"class": "12", "subject": "Sociology", "exam_type": "board"})
-        names = [r["name"] for r in rows]
-        self.assertIn("CBSE Board Physics Class 12", names)
+    def test_a_class_10_teacher_sees_the_subjects_sqp_extracted_from_class_12(self):
+        """The whole point: the Biology SQP happens to be the Class 12 paper, and filtering by
+        class meant a Class 10 Biology teacher saw nothing at all."""
+        rows = self._get(**{"class": "10", "subject": "Biology", "exam_type": "board"})
+        self.assertEqual(rows[0]["id"], self.biology.id)
+        self.assertFalse(rows[0]["is_cross_subject"])   # it IS their subject
+
+    def test_names_carry_no_class(self):
+        rows = self._get(**{"class": "10", "subject": "Biology", "exam_type": "board"})
+        self.assertNotIn("Class", rows[0]["name"])
+
+    def test_subject_without_an_sqp_still_sees_them_all(self):
+        rows = self._get(**{"class": "11", "subject": "Sociology", "exam_type": "board"})
+        ids = [r["id"] for r in rows]
+        self.assertIn(self.physics.id, ids)
+        self.assertIn(self.biology.id, ids)
         self.assertTrue(all(r["is_cross_subject"] for r in rows))
 
-    def test_own_subject_comes_first_and_is_not_flagged(self):
+    def test_own_subject_leads_and_is_not_flagged(self):
         rows = self._get(**{"class": "12", "subject": "Physics", "exam_type": "board"})
-        self.assertEqual(rows[0]["subject"], "Physics")
+        self.assertEqual(rows[0]["id"], self.physics.id)
         self.assertFalse(rows[0]["is_cross_subject"])
-        self.assertTrue(any(r["subject"] == "Chemistry" and r["is_cross_subject"] for r in rows))
+        self.assertTrue(any(r["id"] == self.biology.id and r["is_cross_subject"] for r in rows))
 
-    def test_own_subject_pattern_is_never_duplicated(self):
+    def test_no_duplicates(self):
         rows = self._get(**{"class": "12", "subject": "Physics", "exam_type": "board"})
         ids = [r["id"] for r in rows]
         self.assertEqual(len(ids), len(set(ids)))
 
-    def test_only_cbse_official_patterns_travel_across_subjects(self):
-        """Opening this to every premade pattern would bury a subject's own templates."""
-        rows = self._get(**{"class": "12", "subject": "Sociology", "exam_type": "board"})
-        self.assertNotIn(self.one_mark.id, [r["id"] for r in rows])
+    def test_seeded_and_one_mark_patterns_stay_class_and_subject_specific(self):
+        """Only the SQP replicas travel. Opening this to every premade pattern would bury a
+        subject's own templates under dozens of unrelated rows."""
+        rows = self._get(**{"class": "11", "subject": "Sociology", "exam_type": "board"})
+        ids = [r["id"] for r in rows]
+        self.assertNotIn(self.seeded10.id, ids)
+        self.assertNotIn(self.one_mark.id, ids)
 
     def test_a_periodic_test_is_not_offered_an_80_mark_board_paper(self):
-        rows = self._get(**{"class": "12", "subject": "Sociology", "exam_type": "pt1"})
-        self.assertEqual([r for r in rows if r["is_cross_subject"]], [])
+        """The front end then falls back to its 20-mark periodic-test default, which is right."""
+        rows = self._get(**{"class": "12", "subject": "Physics", "exam_type": "pt1"})
+        self.assertEqual([r for r in rows if r["pattern_source"] == "cbse_sqp"], [])
 
 
 class BlueprintSerializerTest(TestCase):
@@ -7598,3 +7671,594 @@ class BlueprintSerializerTest(TestCase):
         self.assertEqual(r.json()["mapped_questions"], 2)
         self.assertEqual(r.json()["units_used"], ["Optics", "Waves"])
         self.assertEqual(r.json()["pattern_name"], "HY")
+
+
+class CrossSchoolPatternSharingTest(TestCase):
+    """Patterns are VISIBLE to every school and WRITABLE only by the school that made them.
+
+    Sharing them removes the disappearance bug at its root: visibility used to be derived by
+    joining through the creator's profile to their school, so deleting a teacher NULLed
+    `created_by`, broke the chain, and silently hid everything they had built. But visibility was
+    also what `bulk_delete` used as its safety boundary — widening one without the other would
+    have handed every school a delete button on everyone else's work, which is a far worse bug
+    than the one being fixed. These tests pin both halves together.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.school_a = School.objects.create(name="Alpha School")
+        self.school_b = School.objects.create(name="Beta School")
+
+        def mk_user(name, school, role="teacher"):
+            u = User.objects.create_user(name, f"{name}@x.com", "pw")
+            u.profile.school = school
+            u.profile.role = role
+            u.profile.save()
+            return u
+
+        self.a_teacher = mk_user("a_teacher", self.school_a)
+        self.a_admin = mk_user("a_admin", self.school_a, "school_admin")
+        self.b_teacher = mk_user("b_teacher", self.school_b)
+        self.super = User.objects.create_superuser("cs_super", "s@x.com", "pw")
+
+        def mk_pattern(name, creator, source="manual"):
+            return ExamPattern.objects.create(
+                name=name, subject="Physics", class_name="12", sections=[], total_marks=70,
+                total_questions=33, pattern_source=source, created_by=creator)
+
+        self.a_pattern = mk_pattern("Alpha PT-1", self.a_teacher)
+        self.b_pattern = mk_pattern("Beta PT-1", self.b_teacher)
+        # The bug that started this: a pattern whose creator was deleted.
+        self.orphan = mk_pattern("Orphaned", None, "ai_generated")
+        # A premade CBSE template — clone-only, must stay OUT of the normal list.
+        self.premade = mk_pattern("CBSE Sample Paper — Physics", None, "cbse_sqp")
+
+        self.api = APIClient()
+
+    def _as(self, user):
+        from rest_framework.test import APIClient
+        api = APIClient()
+        api.force_authenticate(user)
+        return api
+
+    def _list(self, user):
+        r = self._as(user).get("/api/patterns/?page_size=200")
+        data = r.json()
+        return data.get("results", data if isinstance(data, list) else [])
+
+    # ── visibility ──────────────────────────────────────────────────────────────────
+    def test_each_school_sees_the_others_patterns(self):
+        ids = {p["id"] for p in self._list(self.a_teacher)}
+        self.assertIn(self.b_pattern.id, ids)
+        ids_b = {p["id"] for p in self._list(self.b_teacher)}
+        self.assertIn(self.a_pattern.id, ids_b)
+
+    def test_an_orphaned_pattern_is_visible_again(self):
+        """This is the whole point — it used to be invisible to everybody."""
+        ids = {p["id"] for p in self._list(self.a_teacher)}
+        self.assertIn(self.orphan.id, ids)
+
+    def test_premade_templates_stay_out_of_the_list(self):
+        """~70 CBSE rows would bury a school's own handful; they are reached via `templates`."""
+        ids = {p["id"] for p in self._list(self.a_teacher)}
+        self.assertNotIn(self.premade.id, ids)
+
+    def test_an_orphan_is_no_longer_offered_as_an_official_template(self):
+        """A deleted creator used to promote one school's work into the clone-only pool that every
+        other school is shown as premade CBSE material."""
+        from api.views import ExamPatternViewSet
+        pool = ExamPatternViewSet._template_queryset()
+        self.assertFalse(pool.filter(id=self.orphan.id).exists())
+        self.assertTrue(pool.filter(id=self.premade.id).exists())
+
+    # ── the editable flag the UI keys off ───────────────────────────────────────────
+    def test_is_editable_marks_own_school_only(self):
+        rows = {p["id"]: p for p in self._list(self.a_teacher)}
+        self.assertTrue(rows[self.a_pattern.id]["is_editable"])
+        self.assertFalse(rows[self.b_pattern.id]["is_editable"])
+        self.assertFalse(rows[self.orphan.id]["is_editable"])
+        self.assertEqual(rows[self.b_pattern.id]["owner_school"], "Beta School")
+
+    def test_a_colleague_at_the_same_school_can_edit(self):
+        """Patterns are a shared SCHOOL resource — not private to whoever typed them."""
+        rows = {p["id"]: p for p in self._list(self.a_admin)}
+        self.assertTrue(rows[self.a_pattern.id]["is_editable"])
+
+    # ── writes are owner-only ───────────────────────────────────────────────────────
+    def test_cannot_edit_another_schools_pattern(self):
+        r = self._as(self.a_teacher).patch(
+            f"/api/patterns/{self.b_pattern.id}/", {"name": "hijacked"}, format="json")
+        self.assertEqual(r.status_code, 403)
+        self.b_pattern.refresh_from_db()
+        self.assertEqual(self.b_pattern.name, "Beta PT-1")
+
+    def test_cannot_delete_another_schools_pattern(self):
+        r = self._as(self.a_teacher).delete(f"/api/patterns/{self.b_pattern.id}/")
+        self.assertEqual(r.status_code, 403)
+        self.assertTrue(ExamPattern.objects.filter(id=self.b_pattern.id).exists())
+
+    def test_bulk_delete_cannot_reach_across_schools(self):
+        """bulk_delete used get_queryset() as its boundary; that now spans every school."""
+        r = self._as(self.a_teacher).post(
+            "/api/patterns/bulk-delete/",
+            {"ids": [self.a_pattern.id, self.b_pattern.id, self.orphan.id]}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["deleted"], 1)
+        self.assertFalse(ExamPattern.objects.filter(id=self.a_pattern.id).exists())
+        self.assertTrue(ExamPattern.objects.filter(id=self.b_pattern.id).exists())
+        self.assertTrue(ExamPattern.objects.filter(id=self.orphan.id).exists())
+
+    def test_nobody_but_a_superadmin_can_delete_an_orphan(self):
+        """It is visible to all and owned by none, so no school may remove it."""
+        self.assertEqual(
+            self._as(self.a_teacher).delete(f"/api/patterns/{self.orphan.id}/").status_code, 403)
+        self.assertEqual(
+            self._as(self.super).delete(f"/api/patterns/{self.orphan.id}/").status_code, 204)
+
+    def test_superadmin_can_edit_anything(self):
+        r = self._as(self.super).patch(
+            f"/api/patterns/{self.b_pattern.id}/", {"name": "fixed by support"}, format="json")
+        self.assertEqual(r.status_code, 200)
+
+    def test_premade_template_is_not_deletable_by_a_school(self):
+        """403, and the reason is readable. It used to be 404 as a side effect of hiding premade
+        rows from the list queryset — but that hiding also 404'd READING one, which is how the
+        blueprint builder ended up unable to load the sample paper it was asked to plan. Detail
+        routes now reach every pattern and `_assert_owned` refuses the write explicitly."""
+        r = self._as(self.a_admin).delete(f"/api/patterns/{self.premade.id}/")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("superadmin", str(r.data).lower())
+        self.assertTrue(ExamPattern.objects.filter(id=self.premade.id).exists())
+
+    def test_a_premade_template_can_still_be_read_by_a_school(self):
+        """The generate page offers the official sample papers, so a teacher must be able to open
+        one and load its questions — they are read-only, not invisible."""
+        r = self._as(self.a_teacher).get(f"/api/patterns/{self.premade.id}/")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.data["is_editable"])
+        scaffold = self._as(self.a_teacher).get(
+            f"/api/patterns/{self.premade.id}/blueprint-scaffold/")
+        self.assertEqual(scaffold.status_code, 200)
+
+    def test_another_schools_pattern_can_still_be_used_to_generate(self):
+        """Read-only must not mean useless: the point of sharing is reuse."""
+        rows = {p["id"]: p for p in self._list(self.a_teacher)}
+        self.assertIn(self.b_pattern.id, rows)          # selectable in the generator dropdown
+        self.assertEqual(rows[self.b_pattern.id]["total_marks"], 70)   # full structure readable
+
+
+class SubjectFamilyTest(SimpleTestCase):
+    """A Class 6 timetable says "English"; the paper that syllabus builds towards is "English
+    Language & Literature". Matching on the raw string finds neither."""
+
+    def test_english_and_maths_variants_collapse(self):
+        from core.subjects import same_subject
+        for name in ("English Core", "English Language & Literature",
+                     "English Language and Literature", "english"):
+            self.assertTrue(same_subject(name, "English"), name)
+        for name in ("Mathematics Basic", "Mathematics Standard", "Maths", "Applied Mathematics"):
+            self.assertTrue(same_subject(name, "Mathematics"), name)
+
+    def test_sciences_are_never_folded_into_science(self):
+        """A Class 11 Physics teacher must not be handed the combined Class 10 Science paper."""
+        from core.subjects import same_subject
+        for name in ("Physics", "Chemistry", "Biology", "Social Science", "Computer Science"):
+            self.assertFalse(same_subject(name, "Science"), name)
+
+    def test_unknown_subjects_are_their_own_family(self):
+        from core.subjects import same_subject
+        self.assertTrue(same_subject("Psychology", "psychology "))
+        self.assertFalse(same_subject("Psychology", "Sociology"))
+        self.assertFalse(same_subject("", "Physics"))
+
+
+class SqpTemplateSelectionTest(TestCase):
+    """The Create Pattern page loads `templates` and takes the FIRST result as the structure to
+    show the teacher, so the ordering of this endpoint is the feature — not a nicety."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.admin = User.objects.create_superuser("tpl_admin", "t@x.com", "pw")
+        self.user = User.objects.create_user("tpl_t", "tt@x.com", "pw")
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+
+        def sqp(subject, cmin, cmax, src_class):
+            return ExamPattern.objects.create(
+                name=f"CBSE Sample Paper — {subject} (Classes {cmin}-{cmax})",
+                subject=subject, class_name=src_class, sections=[], total_marks=80,
+                total_questions=30, pattern_source="cbse_sqp",
+                class_min=cmin, class_max=cmax, created_by=self.admin)
+
+        self.eng_school = sqp("English Language & Literature", 1, 10, "10")
+        self.eng_senior = sqp("English Core", 11, 12, "12")
+        self.science = sqp("Science", 1, 10, "10")
+        # A seeded aggregate whose name contains "Board" — the thing that used to win.
+        self.seeded = ExamPattern.objects.create(
+            name="CBSE Board English Language & Literature Class 6",
+            subject="English Language & Literature", class_name="6", sections=[],
+            total_marks=80, total_questions=20, pattern_source="cbse_official",
+            created_by=self.admin)
+
+    def _first(self, **params):
+        from urllib.parse import urlencode
+        rows = self.api.get(f"/api/patterns/templates/?{urlencode(params)}").json()
+        return rows[0] if rows else None
+
+    def test_class_6_english_gets_the_class_1_to_10_english_paper(self):
+        """The exact case in the report: pick Class 6 + English, get the English SQP."""
+        first = self._first(**{"class": "6", "subject": "English", "exam_type": "board"})
+        self.assertEqual(first["id"], self.eng_school.id)
+
+    def test_the_senior_english_paper_is_not_chosen_for_a_junior_class(self):
+        first = self._first(**{"class": "6", "subject": "English", "exam_type": "board"})
+        self.assertNotEqual(first["id"], self.eng_senior.id)
+
+    def test_class_12_english_gets_the_senior_paper(self):
+        first = self._first(**{"class": "12", "subject": "English", "exam_type": "board"})
+        self.assertEqual(first["id"], self.eng_senior.id)
+
+    def test_exam_type_narrowing_does_not_discard_the_sample_paper(self):
+        """The bug this pins: sample papers are named "CBSE Sample Paper — X", so a `board`
+        request name-matched the seeded "CBSE Board X Class 6" row and the soft narrowing then
+        threw the actual sample paper away — and this endpoint is read first-result-first."""
+        rows = self.api.get(
+            "/api/patterns/templates/?class=6&subject=English&exam_type=board").json()
+        ids = [r["id"] for r in rows]
+        self.assertIn(self.eng_school.id, ids)
+        self.assertLess(ids.index(self.eng_school.id), ids.index(self.seeded.id))
+
+    def test_a_wrong_subject_paper_is_never_first(self):
+        """Before family matching, `subject__iexact` matched nothing for "English" and the caller
+        was handed whatever sorted first alphabetically — Accountancy, Science, anything."""
+        first = self._first(**{"class": "6", "subject": "English", "exam_type": "board"})
+        self.assertNotEqual(first["id"], self.science.id)
+
+
+class BlueprintCrudTest(TestCase):
+    """Viewing, editing and deleting a saved blueprint.
+
+    The list page had Edit and Delete from the start; what nobody could do was READ a plan back —
+    the only way to see which unit a question was pinned to was to reopen the form that can save
+    over it. These lock the API behind the new detail view, and lock the delete as recoverable.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        from core.models import Material
+
+        self.school = School.objects.create(name="BP School")
+        self.rival = School.objects.create(name="Rival School")
+
+        def mk(uname, school):
+            u = User.objects.create_user(uname, uname + "@x.com", "pw")
+            prof = u.profile
+            prof.school = school
+            prof.role = "teacher"
+            prof.save()
+            return u
+
+        self.teacher = mk("bp_teacher", self.school)
+        self.outsider = mk("bp_outsider", self.rival)
+
+        self.api = APIClient()
+        self.api.force_authenticate(self.teacher)
+
+        slots = [{"qnum": i, "type": "mcq", "marks": 1} for i in range(1, 6)]
+        self.pattern = ExamPattern.objects.create(
+            name="CBSE Sample Paper — Science (Classes 1-10)",
+            subject="Science", class_name="10",
+            sections=[{"name": "Section A", "id": "SEC_A", "marks": 5, "question_slots": slots}],
+            total_marks=5, total_questions=5,
+            pattern_source="cbse_sqp", class_min=1, class_max=10)
+
+        for unit in ("Light", "Electricity"):
+            Material.objects.create(class_name="6", subject="Science", unit=unit, title=unit,
+                                    type="textbook", visibility="private", school=self.school)
+
+    def _payload(self, **over):
+        data = {
+            "name": "Half-Yearly — first half",
+            "pattern_id": self.pattern.id,
+            "class_name": "6",
+            "subject": "Science",
+            "unit_map": {"sections": [
+                {"section_id": "SEC_A", "questions": {"1": "Light", "2": "Electricity"}}]},
+        }
+        data.update(over)
+        return data
+
+    def _create(self, **over):
+        res = self.api.post("/api/blueprints/", self._payload(**over), format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        return res.data["id"]
+
+    def test_a_saved_blueprint_reads_back_whole(self):
+        """What the detail page renders: the pattern it plans, the count, and the map itself."""
+        bp_id = self._create()
+        got = self.api.get("/api/blueprints/%d/" % bp_id)
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(got.data["pattern_id"], self.pattern.id)
+        self.assertEqual(got.data["pattern_name"], self.pattern.name)
+        self.assertEqual(got.data["mapped_questions"], 2)
+        self.assertEqual(sorted(got.data["units_used"]), ["Electricity", "Light"])
+        self.assertEqual(got.data["unit_map"]["sections"][0]["questions"],
+                         {"1": "Light", "2": "Electricity"})
+
+    def test_editing_replaces_the_map(self):
+        bp_id = self._create()
+        res = self.api.patch(
+            "/api/blueprints/%d/" % bp_id,
+            {"unit_map": {"sections": [{"section_id": "SEC_A", "questions": {"3": "Light"}}]}},
+            format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["mapped_questions"], 1)
+        self.assertEqual(ExamBlueprint.objects.get(id=bp_id).question_units(),
+                         {"SEC_A": {3: "Light"}})
+
+    def test_delete_hides_it_everywhere_but_keeps_the_row(self):
+        """A unit plan can be forty hand-picked questions. It must vanish from every list the
+        moment it is deleted, and still be recoverable from the database afterwards."""
+        bp_id = self._create()
+        res = self.api.delete("/api/blueprints/%d/" % bp_id)
+        self.assertEqual(res.status_code, 204)
+
+        row = ExamBlueprint.objects.filter(id=bp_id).first()
+        self.assertIsNotNone(row, "deleting must not destroy the row outright")
+        self.assertFalse(row.is_active)
+
+        listed = self.api.get("/api/blueprints/").data
+        rows = listed.get("results", listed) if isinstance(listed, dict) else listed
+        self.assertNotIn(bp_id, [r["id"] for r in rows])
+        self.assertEqual(self.api.get("/api/blueprints/%d/" % bp_id).status_code, 404)
+
+        offered = self.api.get(
+            "/api/get_blueprints/?class_name=6&subject=Science&pattern=%d" % self.pattern.id)
+        self.assertEqual(offered.data["blueprints"], [])
+
+    def test_a_deleted_blueprint_is_ignored_by_generation(self):
+        """The paper still generates — from its pattern, without the blueprint."""
+        from core.tasks import _resolve_blueprint
+        bp_id = self._create()
+        self.api.delete("/api/blueprints/%d/" % bp_id)
+        paper = QuestionPaper(class_name="6", subject="Science", pattern=self.pattern)
+        self.assertIsNone(_resolve_blueprint("exam_%d" % bp_id, paper))
+
+    def test_another_school_can_neither_read_nor_delete_it(self):
+        from rest_framework.test import APIClient
+        bp_id = self._create()
+        other = APIClient()
+        other.force_authenticate(self.outsider)
+        self.assertEqual(other.get("/api/blueprints/%d/" % bp_id).status_code, 404)
+        self.assertEqual(other.delete("/api/blueprints/%d/" % bp_id).status_code, 404)
+        self.assertTrue(ExamBlueprint.objects.get(id=bp_id).is_active)
+
+    def test_the_builder_offers_the_units_of_the_class_being_planned(self):
+        """A sample paper covers Classes 1-10 and carries 10 as its source class. Planning it for
+        Class 6 has to offer Class 6 chapters: the scaffold answered for Class 10 before, so the
+        builder showed a Class 6 teacher an empty dropdown and told them to upload material they
+        had already uploaded."""
+        url = "/api/patterns/%d/blueprint-scaffold/" % self.pattern.id
+        chosen = self.api.get(url + "?class_name=6&subject=Science")
+        self.assertEqual(chosen.status_code, 200, chosen.data)
+        self.assertEqual(sorted(chosen.data["units"]), ["Electricity", "Light"])
+        self.assertEqual(len(chosen.data["sections"][0]["questions"]), 5)
+
+        self.assertEqual(self.api.get(url).data["units"], [])   # class 10: nothing uploaded
+
+
+class BlueprintOfferedOnTheGeneratePageTest(TestCase):
+    """`get_blueprints` is the only thing that fills the generate page's Blueprint dropdown, and
+    teachers reported it permanently empty."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.school = School.objects.create(name="Offer School")
+        self.teacher = User.objects.create_user("offer_t", "o@x.com", "pw")
+        prof = self.teacher.profile
+        prof.school = self.school
+        prof.role = "teacher"
+        prof.save()
+        self.api = APIClient()
+        self.api.force_authenticate(self.teacher)
+
+        slots = [{"qnum": i, "type": "mcq", "marks": 1} for i in range(1, 4)]
+        sections = [{"name": "Section A", "id": "SEC_A", "marks": 3, "question_slots": slots}]
+        self.sqp = ExamPattern.objects.create(
+            name="CBSE Sample Paper — English Language & Literature (Classes 1-10)",
+            subject="English Language & Literature", class_name="10", sections=sections,
+            total_marks=3, total_questions=3, pattern_source="cbse_sqp",
+            class_min=1, class_max=10)
+        self.other_pattern = ExamPattern.objects.create(
+            name="School Half-Yearly", subject="English", class_name="6", sections=sections,
+            total_marks=3, total_questions=3, created_by=self.teacher)
+
+        # Written by a Class 6 teacher against the Classes 1-10 sample paper, with units from
+        # their own Class 6 English material, so the subject is "English" and not the name CBSE
+        # prints on the paper.
+        self.bp = ExamBlueprint.objects.create(
+            name="Term 1 units", class_name="6", subject="English", pattern=self.sqp,
+            created_by=self.teacher,
+            unit_map={"sections": [{"section_id": "SEC_A", "questions": {"1": "Prose 1"}}]})
+
+    def _offered(self, class_name="6", subject="English", pattern=None):
+        # urlencode, not interpolation: "English Language & Literature" contains an ampersand,
+        # and splicing it raw into the query string truncates the subject at the &.
+        from urllib.parse import urlencode
+        params = {"class_name": class_name, "subject": subject,
+                  "pattern": self.sqp.id if pattern is None else pattern}
+        res = self.api.get("/api/get_blueprints/?" + urlencode(params))
+        self.assertEqual(res.status_code, 200, res.data)
+        return [b["id"] for b in res.data["blueprints"]]
+
+    def test_it_is_offered_for_the_class_it_was_written_for(self):
+        self.assertEqual(self._offered(), ["exam_%d" % self.bp.id])
+
+    def test_the_paper_subject_may_be_the_full_cbse_name(self):
+        """The generate page sends the subject the paper is set in. "English Language & Literature"
+        and "English" are the same subject under two names; an exact match dropped the blueprint."""
+        self.assertEqual(self._offered(subject="English Language & Literature"),
+                         ["exam_%d" % self.bp.id])
+
+    def test_it_is_not_offered_for_a_different_class(self):
+        """Its pins are Class 6 chapter names, and Class 9 has different ones."""
+        self.assertEqual(self._offered(class_name="9"), [])
+
+    def test_it_is_not_offered_for_another_pattern(self):
+        """Question numbers address ONE pattern's printed questions; the worker rejects a
+        mismatch, so the form must not present it."""
+        self.assertEqual(self._offered(pattern=self.other_pattern.id), [])
+
+    def test_a_blueprint_that_pins_nothing_is_not_offered(self):
+        self.bp.unit_map = {"sections": []}
+        self.bp.save(update_fields=["unit_map"])
+        self.assertEqual(self._offered(), [])
+
+
+class SourceMixMeterTest(TestCase):
+    """The generate page's source-mix meter ("50% from the book / 50% the AI's own questions")
+    arrives as ONE paper-wide percentage and is spent per question here.
+
+    What it must respect: questions that are required to quote the book never move, questions
+    that are already the model's own work count toward the requested share instead of being
+    converted twice, and the share is spread across sections rather than emptied into the first
+    one. A converted question KEEPS its chapter — "own" means "not lifted from the book", not
+    "off-syllabus"."""
+
+    def _wo(self, name, slots=None, count=None, **kw):
+        n = count if count is not None else len(slots or [])
+        return sg.SectionWorkOrder(
+            section_name=name, section_id=name[:1], title="", marks=n,
+            questions_count=n, marks_per_question=1.0, question_types=["MCQ"],
+            instructions=[], constraints={}, context_text="textbook chunk " * 40,
+            difficulty="Medium", subject="Science", class_name="10",
+            chapters=["Light", "Electricity"], slots=list(slots or []), **kw)
+
+    def _plain(self, n):
+        return [{"qnum": i + 1, "type": "mcq", "marks": 1} for i in range(n)]
+
+    def _own_flags(self, wo):
+        return [bool(s.get("own_question")) for s in wo.slots]
+
+    # ── allocation ───────────────────────────────────────────────────────────────
+    def test_zero_ratio_is_a_no_op(self):
+        wos = [self._wo("A", self._plain(10))]
+        sg.plan_creative_allocation(wos, 0, log=lambda *_: None)
+        self.assertEqual(wos[0].own_count, 0)
+        self.assertNotIn(True, self._own_flags(wos[0]))
+
+    def test_half_the_paper_is_converted_at_50_percent(self):
+        wos = [self._wo("A", self._plain(10)), self._wo("B", self._plain(10))]
+        sg.plan_creative_allocation(wos, 50, log=lambda *_: None)
+        self.assertEqual(sum(w.own_count for w in wos), 10)
+        # ...and spread across BOTH sections, not taken entirely out of the first.
+        self.assertEqual([w.own_count for w in wos], [5, 5])
+
+    def test_share_is_proportional_to_each_section_s_room(self):
+        # 20 free questions, 25% asked for → 5 conversions, 4 from the big section, 1 from the small.
+        wos = [self._wo("A", self._plain(16)), self._wo("B", self._plain(4))]
+        sg.plan_creative_allocation(wos, 25, log=lambda *_: None)
+        self.assertEqual([w.own_count for w in wos], [4, 1])
+
+    def test_converted_questions_are_spread_through_the_section(self):
+        # Not the first N: a paper whose whole opening block is AI-written and whose tail is all
+        # textbook reads as two different papers stapled together.
+        wos = [self._wo("A", self._plain(8))]
+        sg.plan_creative_allocation(wos, 50, log=lambda *_: None)
+        self.assertEqual(self._own_flags(wos[0]),
+                         [True, False, True, False, True, False, True, False])
+
+    def test_book_bound_questions_never_convert(self):
+        slots = [{"qnum": 1, "type": "extract", "marks": 2},
+                 {"qnum": 2, "type": "sa", "marks": 2, "source": "textbook"},
+                 {"qnum": 3, "type": "sa", "marks": 2},
+                 {"qnum": 4, "type": "sa", "marks": 2}]
+        wos = [self._wo("A", slots)]
+        sg.plan_creative_allocation(wos, 100, log=lambda *_: None)
+        self.assertEqual(self._own_flags(wos[0]), [False, False, True, True])
+
+    def test_map_work_section_is_left_alone(self):
+        wos = [self._wo("A", self._plain(4), is_map_work=True), self._wo("B", self._plain(4))]
+        sg.plan_creative_allocation(wos, 100, log=lambda *_: None)
+        self.assertEqual([w.own_count for w in wos], [0, 4])
+
+    def test_questions_already_the_model_s_own_count_toward_the_share(self):
+        # 4 grammar questions (already source='general') + 4 free ones. At 50% the paper needs 4
+        # own questions and already HAS 4 — nothing is converted.
+        general = [{"qnum": i + 1, "type": "mcq", "marks": 1, "source": "general"} for i in range(4)]
+        wos = [self._wo("A", general), self._wo("B", self._plain(4))]
+        sg.plan_creative_allocation(wos, 50, log=lambda *_: None)
+        self.assertEqual([w.own_count for w in wos], [0, 0])
+        # ...but at 75% the shortfall is made up out of the free section.
+        sg.plan_creative_allocation(wos, 75, log=lambda *_: None)
+        self.assertEqual([w.own_count for w in wos], [0, 2])
+
+    def test_english_own_only_section_needs_no_conversion(self):
+        wos = [self._wo("Writing", self._plain(4), english_own_only=True),
+               self._wo("B", self._plain(4))]
+        sg.plan_creative_allocation(wos, 50, log=lambda *_: None)
+        self.assertEqual([w.own_count for w in wos], [0, 0])
+
+    def test_ratio_is_clamped_and_junk_is_ignored(self):
+        for bad in (None, "", "abc", -20):
+            wos = [self._wo("A", self._plain(4))]
+            sg.plan_creative_allocation(wos, bad, log=lambda *_: None)
+            self.assertEqual(wos[0].own_count, 0, bad)
+        wos = [self._wo("A", self._plain(4))]
+        sg.plan_creative_allocation(wos, 500, log=lambda *_: None)
+        self.assertEqual(wos[0].own_count, 4)
+
+    def test_slots_are_copied_not_mutated(self):
+        # The slot dicts belong to the pattern/blueprint row — marking them in place would write
+        # the meter's decision back into the saved pattern.
+        slots = self._plain(4)
+        wos = [self._wo("A", slots)]
+        sg.plan_creative_allocation(wos, 100, log=lambda *_: None)
+        self.assertEqual([s.get("own_question") for s in slots], [None] * 4)
+
+    # ── prompt ───────────────────────────────────────────────────────────────────
+    def test_prompt_marks_the_converted_slots_and_states_the_count(self):
+        wos = [self._wo("A", self._plain(4))]
+        sg.plan_creative_allocation(wos, 50, log=lambda *_: None)
+        prompt = sg.build_section_prompt(wos[0])
+        self.assertEqual(prompt.count("OWN COMPOSITION — write this question YOURSELF"), 2)
+        self.assertIn("2 of these 4 questions are marked OWN COMPOSITION", prompt)
+        # The chapter assignment still stands — own does not mean off-syllabus.
+        self.assertIn("CHAPTER", prompt)
+
+    def test_prompt_of_an_untouched_paper_says_nothing_about_the_mix(self):
+        wo = self._wo("A", self._plain(4))
+        self.assertNotIn("OWN COMPOSITION", sg.build_section_prompt(wo))
+
+    def test_slot_less_section_states_the_split_against_its_count(self):
+        wos = [self._wo("A", count=10)]        # legacy blueprint / One-Mark test: no slots
+        sg.plan_creative_allocation(wos, 30, log=lambda *_: None)
+        self.assertEqual(wos[0].own_count, 3)
+        prompt = sg.build_section_prompt(wos[0])
+        self.assertIn("SOURCE MIX — MANDATORY: EXACTLY 3 of these 10", prompt)
+        self.assertIn("The other 7 must be grounded in the reference material", prompt)
+
+    # ── wiring ───────────────────────────────────────────────────────────────────
+    def test_build_work_orders_applies_the_ratio(self):
+        secs = psx.normalize_slots([{"id": "SEC_A", "name": "A", "marks": 4,
+                                     "question_slots": self._plain(4)}])
+        psx.derive_aggregates_from_slots(secs)
+        p = ExamPattern(name="p", subject="Science", class_name="10", sections=secs)
+        bp = sg_gen.pattern_sections_to_blueprint_dict(p)
+        wos = sg.build_work_orders(bp, p, {}, "Medium", "10", "Science", ["Light"],
+                                   creative_ratio=50)
+        self.assertEqual(sum(w.own_count for w in wos), 2)
+        # Default keeps every question grounded in the book, as before the meter existed.
+        wos = sg.build_work_orders(bp, p, {}, "Medium", "10", "Science", ["Light"])
+        self.assertEqual(sum(w.own_count for w in wos), 0)
+
+    def test_single_prompt_fallback_states_the_mix_too(self):
+        # The whole-paper fallback prompt cannot address individual questions, so the meter
+        # becomes a proportion there — but a paper that falls back must not silently revert to
+        # 100% textbook.
+        self.assertEqual(sg_gen._source_mix_directive(0), "")
+        self.assertEqual(sg_gen._source_mix_directive(None), "")
+        self.assertEqual(sg_gen._source_mix_directive("junk"), "")
+        text = sg_gen._source_mix_directive(40)
+        self.assertIn("about 40% of this paper", text)
+        self.assertIn("The other 60% must be grounded", text)

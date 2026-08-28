@@ -3533,7 +3533,7 @@ def pattern_sections_to_blueprint_dict(pattern):
 
 
 def generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None,
-                            unit_map=None):
+                            unit_map=None, creative_ratio=0):
     """
     Universal question paper generator that works for all subjects and question types.
     Uses database-driven blueprints and adaptive prompt generation.
@@ -3552,6 +3552,7 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
         f.write(f"Pattern: {pattern.name}\n")
         f.write(f"Section: {section or 'All'}\n")
         f.write(f"Model Source: {model_source}\n")
+        f.write(f"Source Mix: {creative_ratio}% own composition / {100 - int(creative_ratio or 0)}% from the book\n")
         f.write(f"Additional Context Length: {len(additional_context)} chars\n")
         f.write(f"{'='*50}\n\n")
     
@@ -3644,6 +3645,7 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
                 chapters=chapters,
                 disable_images=_disable_images,
                 unit_map=unit_map,
+                creative_ratio=creative_ratio,
             )
             print("[Universal-Generator] ✅ Parallel pipeline succeeded — rendering")
             return _render_paper_from_data(
@@ -3661,7 +3663,8 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
 
         file_path, summary, total_cost, in_tok, out_tok = generate_with_universal_prompt(
             class_name, subject, chapters, difficulty, pattern, blueprint,
-            context_text, all_question_types, summary_file, model_source, additional_context
+            context_text, all_question_types, summary_file, model_source, additional_context,
+            creative_ratio=creative_ratio,
         )
         return file_path, summary, total_cost, in_tok, out_tok
         
@@ -3674,6 +3677,30 @@ def generate_universal_paper(class_name, subject, chapters, difficulty, pattern,
             f.write(f"Traceback: {traceback.format_exc()}\n")
         
         raise Exception(error_msg)
+
+def _source_mix_directive(creative_ratio) -> str:
+    """The generate page's source-mix meter, as a whole-paper rule for the single-prompt path.
+
+    The parallel pipeline spends the percentage question by question (see
+    section_generator.plan_creative_allocation); this fallback builds ONE prompt for the whole
+    paper, so the same setting can only be stated as a proportion. Empty at 0 — the default,
+    where every question stays grounded in the reference material.
+    """
+    try:
+        ratio = max(0, min(100, int(creative_ratio or 0)))
+    except (TypeError, ValueError):
+        ratio = 0
+    if not ratio:
+        return ""
+    return (
+        f"\nSOURCE MIX — MANDATORY: about {ratio}% of this paper's questions must be YOUR OWN "
+        "compositions — original questions on the same chapters, built on a fresh scenario, "
+        "example or set of numbers that does NOT appear in the reference material. The other "
+        f"{100 - ratio}% must be grounded in the reference material. Questions that have to "
+        "quote the book (extracts, prescribed passages, map work) always stay book-based, and "
+        "an own question must never be a lightly reworded reference-material question.\n"
+    )
+
 
 def _difficulty_directive(difficulty: str) -> str:
     d = difficulty.strip().lower()
@@ -3703,7 +3730,8 @@ def _difficulty_directive(difficulty: str) -> str:
 - MCQ: one obvious correct answer with straightforward distractors"""
 
 
-def generate_with_universal_prompt(class_name, subject, chapters, difficulty, pattern, blueprint, context_text, question_types, summary_file, model_source, additional_context=""):
+def generate_with_universal_prompt(class_name, subject, chapters, difficulty, pattern, blueprint, context_text, question_types, summary_file, model_source, additional_context="",
+                                   creative_ratio=0):
     """Generate paper using universal prompt system"""
 
     print(f"[Universal-Prompt] Building adaptive prompt for {subject}")
@@ -4064,7 +4092,7 @@ EXAMPLE OUTPUT FORMAT (WITH PASSAGES):
 }}
 
 {_difficulty_directive(difficulty)}
-
+{_source_mix_directive(creative_ratio)}
 OUTPUT REQUIREMENTS:
 - Generate ONLY valid JSON
 - Follow the example format above
@@ -4286,7 +4314,8 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
         
         raise Exception(error_msg)
 
-def generate_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None, unit_map=None):
+def generate_paper(class_name, subject, chapters, difficulty, pattern, section=None, model_source='aws', additional_context="", school_id=None, unit_map=None,
+                   creative_ratio=0):
     """
     Main entry point for question paper generation.
     Now uses the universal generator by default, with fallback to legacy system.
@@ -4296,7 +4325,8 @@ def generate_paper(class_name, subject, chapters, difficulty, pattern, section=N
     try:
         # Try universal generator first
         print(f"[Generator] Attempting universal generation...")
-        file_path, summary, total_cost, in_tok, out_tok = generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section, model_source, additional_context, school_id=school_id, unit_map=unit_map)
+        file_path, summary, total_cost, in_tok, out_tok = generate_universal_paper(class_name, subject, chapters, difficulty, pattern, section, model_source, additional_context, school_id=school_id, unit_map=unit_map,
+                                                                                  creative_ratio=creative_ratio)
         return file_path, summary, total_cost, in_tok, out_tok
         
     except Exception as e:

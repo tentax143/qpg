@@ -11,6 +11,9 @@ import apiClient from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import CustomSelect from '@/components/CustomSelect';
+import {
+  sortPatternsForPicker, patternOptionMeta, isOfficialSamplePaper, sameSubject,
+} from '@/lib/patterns';
 
 // A blueprint answers "where does each question come from". The structure — how many questions,
 // what type, what marks — is the PATTERN's job and is read-only here. Keeping that split visible
@@ -27,6 +30,14 @@ export default function BuildBlueprintPage() {
   const [scaffold, setScaffold] = useState(null);
   const [name, setName] = useState('');
   const [blueprintId, setBlueprintId] = useState(null);   // set when editing an existing one
+
+  // The class and subject whose MATERIAL the units come from. Usually the pattern's own, but the
+  // official sample papers cover a whole stage (Classes 1-10 / 11-12) and carry the source class,
+  // so a Class 6 teacher planning the Classes 1-10 paper has to say which class they mean —
+  // otherwise the builder offered them Class 10 chapters and saved a Class 10 blueprint.
+  const [cls, setCls] = useState('');
+  const [subj, setSubj] = useState('');
+  const [subjects, setSubjects] = useState([]);
 
   // { [sectionId]: { questions: {qnum: unit}, units: [unit] } }
   const [assign, setAssign] = useState({});
@@ -49,7 +60,11 @@ export default function BuildBlueprintPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await apiClient.get('/patterns/');
+        // include_official: the official CBSE sample papers are excluded from /patterns/ by
+        // default (they would bury a school's own handful of rows). Without them here, the one
+        // pattern most teachers now generate from could not be planned at all — which is why
+        // the generate page's blueprint dropdown came up empty.
+        const res = await apiClient.get('/patterns/?page_size=200&include_official=1');
         const rows = res.data?.results || (Array.isArray(res.data) ? res.data : []);
         setPatterns(rows);
       } catch {
@@ -69,6 +84,8 @@ export default function BuildBlueprintPage() {
         const bp = res.data;
         setName(bp.name || '');
         if (bp.pattern_id) setPatternId(String(bp.pattern_id));
+        if (bp.class_name) setCls(String(bp.class_name));
+        if (bp.subject) setSubj(bp.subject);
         const next = {};
         for (const entry of (bp.unit_map?.sections || [])) {
           if (!entry?.section_id) continue;
@@ -84,11 +101,17 @@ export default function BuildBlueprintPage() {
     })();
   }, [blueprintId]);
 
-  const loadScaffold = useCallback(async (id) => {
+  const loadScaffold = useCallback(async (id, forClass, forSubject) => {
     setLoadingScaffold(true);
     setError(null);
     try {
-      const res = await apiClient.get(`/patterns/${id}/blueprint-scaffold/`);
+      // class_name/subject decide which material's units come back — the pattern's structure is
+      // the same either way.
+      const qs = new URLSearchParams();
+      if (forClass) qs.set('class_name', forClass);
+      if (forSubject) qs.set('subject', forSubject);
+      const res = await apiClient.get(
+        `/patterns/${id}/blueprint-scaffold/${qs.toString() ? `?${qs}` : ''}`);
       setScaffold(res.data);
     } catch {
       setError('Could not load that pattern’s questions.');
@@ -99,21 +122,117 @@ export default function BuildBlueprintPage() {
   }, []);
 
   useEffect(() => {
-    if (patternId) loadScaffold(patternId);
+    if (patternId) loadScaffold(patternId, cls, subj);
     else setScaffold(null);
-  }, [patternId, loadScaffold]);
+  }, [patternId, cls, subj, loadScaffold]);
 
-  const patternOptions = useMemo(() => patterns.map(p => ({
-    value: String(p.id),
-    label: `${p.name} — Class ${p.class_name} ${p.subject} (${p.total_marks}M)`,
-  })), [patterns]);
+  const selectedPattern = useMemo(
+    () => patterns.find(p => String(p.id) === String(patternId)) || null,
+    [patterns, patternId]);
+
+  // Default the class and subject from the pattern the moment it is chosen. A banded sample paper
+  // has no single class, so that one is left for the teacher to pick.
+  useEffect(() => {
+    if (!selectedPattern || blueprintId) return;
+    const { class_min: lo, class_max: hi } = selectedPattern;
+    if (lo && hi) setCls(lo !== hi ? '' : String(lo));
+    else setCls(String(selectedPattern.class_name || ''));
+    setSubj(selectedPattern.subject || '');
+  }, [selectedPattern, blueprintId]);
+
+  // Subjects that actually have material for the chosen class. The pattern's own name is kept as
+  // an option even when nothing is uploaded under it, so the selection is never silently changed.
+  useEffect(() => {
+    if (!cls) { setSubjects([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiClient.get(
+          `/get_subjects_for_class/?class_name=${encodeURIComponent(cls)}`);
+        if (!cancelled) setSubjects(res.data?.subjects || []);
+      } catch {
+        if (!cancelled) setSubjects([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [cls]);
+
+  // A sample paper is titled with the name CBSE prints on it — "English Language & Literature",
+  // "Mathematics Standard" — while the material is filed under the timetable name. Left as-is the
+  // builder found no units and told the teacher to upload material they had already uploaded, so
+  // fall back to the same-family subject that DOES have material. Never while editing: the saved
+  // blueprint's own subject is the teacher's answer and must not be quietly rewritten.
+  useEffect(() => {
+    if (blueprintId || !subj || !subjects.length) return;
+    if (subjects.some(x => x.toLowerCase() === subj.toLowerCase())) return;
+    const family = subjects.find(x => sameSubject(x, subj));
+    if (family) setSubj(family);
+  }, [subjects, subj, blueprintId]);
+
+  const patternOptions = useMemo(
+    () => sortPatternsForPicker(patterns, { subject: subj, className: cls }).map(p => ({
+      value: String(p.id),
+      label: p.name,
+      meta: patternOptionMeta(p),
+      ...(isOfficialSamplePaper(p) ? { badge: 'SQP' } : {}),
+    })), [patterns, subj, cls]);
+
+  const classOptions = useMemo(() => {
+    const { class_min: lo, class_max: hi, class_name: cn } = selectedPattern || {};
+    if (lo && hi && hi >= lo) {
+      return Array.from({ length: hi - lo + 1 }, (_, i) => ({
+        value: String(lo + i), label: `Class ${lo + i}`,
+      }));
+    }
+    return cn ? [{ value: String(cn), label: `Class ${cn}` }] : [];
+  }, [selectedPattern]);
+
+  const subjectOptions = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const nameOrSubject of [...(subj ? [subj] : []), ...subjects]) {
+      const key = nameOrSubject.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ value: nameOrSubject, label: nameOrSubject });
+    }
+    return out;
+  }, [subj, subjects]);
 
   // Memoised so the `|| []` fallback isn't a fresh array on every render, which would make
   // unitOptions recompute (and re-render every one of a 38-question paper's dropdowns) each time.
   const units = useMemo(() => scaffold?.units || [], [scaffold]);
+
+  // Every unit the saved map already pins. A unit can be pinned and yet absent from `units` — the
+  // material was deleted or its unit renamed after the blueprint was written. Dropping those from
+  // the dropdown made the question render as "Auto" while the pin was still saved, so the page
+  // showed one plan and generation applied another.
+  const pinnedUnits = useMemo(() => {
+    const out = new Set();
+    for (const sec of Object.values(assign)) {
+      for (const u of Object.values(sec.questions || {})) if (u) out.add(u);
+      for (const u of (sec.units || [])) if (u) out.add(u);
+    }
+    return [...out];
+  }, [assign]);
+
+  const unitChoices = useMemo(() => {
+    const known = new Set(units);
+    return [...units, ...pinnedUnits.filter(u => !known.has(u))];
+  }, [units, pinnedUnits]);
+
+  const missingMaterial = useMemo(() => {
+    const known = new Set(units);
+    return pinnedUnits.filter(u => !known.has(u));
+  }, [units, pinnedUnits]);
+
+  const unitLabel = useCallback(
+    (u) => (units.includes(u) ? u : `${u} — no material uploaded`), [units]);
+
   const unitOptions = useMemo(
-    () => [{ value: NO_UNIT, label: 'Auto — let QPG choose' }, ...units.map(u => ({ value: u, label: u }))],
-    [units]);
+    () => [{ value: NO_UNIT, label: 'Auto — let QPG choose' },
+           ...unitChoices.map(u => ({ value: u, label: unitLabel(u) }))],
+    [unitChoices, unitLabel]);
 
   function setQuestionUnit(sectionId, qnum, unit) {
     setAssign(prev => {
@@ -156,6 +275,8 @@ export default function BuildBlueprintPage() {
   async function handleSave(e) {
     e.preventDefault();
     if (!patternId) { setError('Choose a pattern first.'); return; }
+    if (!cls) { setError('Choose which class this blueprint is for.'); return; }
+    if (!subj) { setError('Choose the subject whose units this blueprint uses.'); return; }
     if (!mappedCount && !sectionLevelCount) {
       setError('Assign a unit to at least one question — an empty blueprint would change nothing.');
       return;
@@ -170,10 +291,14 @@ export default function BuildBlueprintPage() {
       .filter(s => s.questions || s.units);
 
     const payload = {
-      name: name.trim() || `${scaffold?.pattern?.name || 'Blueprint'} — unit plan`,
+      name: name.trim()
+        || `${scaffold?.pattern?.name || 'Blueprint'} — Class ${cls} ${subj} unit plan`,
       pattern_id: Number(patternId),
-      class_name: scaffold?.pattern?.class_name || '',
-      subject: scaffold?.pattern?.subject || '',
+      // The class and subject the UNITS belong to — not the pattern's own. The generate page
+      // offers a blueprint by these, so a sample paper's source class (10 or 12) would have made
+      // a Class 6 plan invisible to the Class 6 teacher who wrote it.
+      class_name: cls,
+      subject: subj,
       unit_map: { sections },
     };
 
@@ -254,6 +379,41 @@ export default function BuildBlueprintPage() {
             </div>
           </div>
 
+          {/* Which class's and subject's units to plan with. Prefilled from the pattern; a sample
+              paper covers a whole stage, so there the class is a real choice and the units depend
+              on it entirely. */}
+          {selectedPattern && (
+            <div className="grid md:grid-cols-2 gap-5 mt-5">
+              <CustomSelect
+                label="Class"
+                icon={GraduationCap}
+                options={classOptions}
+                value={cls}
+                onChange={(v) => { setCls(v); setAssign({}); }}
+                placeholder="Which class is this for?"
+                disabled={classOptions.length <= 1}
+              />
+              <CustomSelect
+                label="Subject"
+                icon={BookOpen}
+                options={subjectOptions}
+                value={subj}
+                onChange={(v) => { setSubj(v); setAssign({}); }}
+                placeholder={cls ? 'Choose the subject' : 'Pick a class first'}
+                disabled={!cls}
+              />
+            </div>
+          )}
+
+          {selectedPattern && classOptions.length > 1 && !cls && (
+            <p className="mt-4 text-xs font-semibold text-cyan-800 bg-cyan-50 border border-cyan-100 rounded-xl px-4 py-3">
+              <strong>{selectedPattern.name}</strong> is the sample paper for{' '}
+              {selectedPattern.class_label || `Classes ${selectedPattern.class_min}-${selectedPattern.class_max}`}.
+              Pick the class you are setting the paper for — the units come from that class’s
+              uploaded material.
+            </p>
+          )}
+
           {scaffold && (
             <div className="mt-5 flex flex-wrap items-center gap-3 text-[11px] font-black uppercase tracking-wider">
               <span className="px-3 py-1.5 bg-gray-100 text-gray-600 rounded-full">
@@ -269,6 +429,7 @@ export default function BuildBlueprintPage() {
               )}
               <span className="px-3 py-1.5 bg-gray-50 text-gray-500 rounded-full">
                 {units.length} unit{units.length === 1 ? '' : 's'} available
+                {cls && subj ? ` · Class ${cls} ${subj}` : ''}
               </span>
             </div>
           )}
@@ -283,9 +444,11 @@ export default function BuildBlueprintPage() {
           </div>
         )}
 
-        {/* No uploaded material means there are no units to choose from, and a blueprint would be
-            unfillable. Say that plainly instead of showing empty dropdowns. */}
-        {scaffold && units.length === 0 && (
+        {/* No uploaded material means there are no units to choose from, and a NEW blueprint would
+            be unfillable. Say that plainly instead of showing empty dropdowns — but never lock an
+            EXISTING blueprint out of being edited: its own pinned units stay selectable below, so
+            a teacher can still read the plan, change it and save. */}
+        {scaffold && cls && subj && units.length === 0 && (
           <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl flex gap-3 mb-6">
             <AlertCircle className="text-amber-600 shrink-0 mt-0.5" size={18} />
             <p className="text-xs font-semibold text-amber-900 leading-relaxed">
@@ -293,11 +456,28 @@ export default function BuildBlueprintPage() {
               A blueprint assigns questions to units from your uploaded material, so upload the
               textbook or notes for this subject first —{' '}
               <Link href="/materials/upload" className="underline font-black">go to Materials</Link>.
+              {unitChoices.length > 0 && ' The units this blueprint already uses are still listed '
+                + 'below so you can edit it in the meantime.'}
             </p>
           </div>
         )}
 
-        {scaffold && units.length > 0 && scaffold.sections.map((sec) => {
+        {/* A pin whose material has since gone: still applied at generation time, but the question
+            will be written without textbook grounding. The worker logs this; the teacher should
+            see it while they can still change it. */}
+        {scaffold && units.length > 0 && missingMaterial.length > 0 && (
+          <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl flex gap-3 mb-6">
+            <AlertCircle className="text-amber-600 shrink-0 mt-0.5" size={18} />
+            <p className="text-xs font-semibold text-amber-900 leading-relaxed">
+              No uploaded material for <strong>{missingMaterial.join(', ')}</strong>. Questions
+              pinned there will be written from the model’s own knowledge —{' '}
+              <Link href="/materials/upload" className="underline font-black">upload the material</Link>{' '}
+              or pick a different unit for them.
+            </p>
+          </div>
+        )}
+
+        {scaffold && cls && subj && unitChoices.length > 0 && scaffold.sections.map((sec) => {
           const secAssign = assign[sec.section_id] || { questions: {}, units: [] };
           const assignable = sec.questions.filter(q => q.unit_applicable);
           return (
@@ -376,7 +556,9 @@ export default function BuildBlueprintPage() {
                               }`}
                             >
                               <option value={NO_UNIT}>Auto — let QPG choose</option>
-                              {units.map(u => <option key={u} value={u}>{u}</option>)}
+                              {unitChoices.map(u => (
+                                <option key={u} value={u}>{unitLabel(u)}</option>
+                              ))}
                             </select>
                           ) : (
                             /* An unseen passage or general-knowledge question is deliberately NOT
@@ -397,7 +579,7 @@ export default function BuildBlueprintPage() {
           );
         })}
 
-        {scaffold && units.length > 0 && (
+        {scaffold && cls && subj && unitChoices.length > 0 && (
           <div className="flex flex-col md:flex-row items-center justify-end gap-4 pt-8 border-t border-gray-100">
             <Link href="/blueprints"
                   className="w-full md:w-auto px-8 py-4 bg-gray-100 text-gray-600 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-gray-200 transition-all text-center">

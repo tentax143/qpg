@@ -12,6 +12,7 @@ import {
   AlertTriangle, ListOrdered
 } from 'lucide-react';
 import apiClient from '@/lib/api';
+import { patternScope, isOfficialSamplePaper } from '@/lib/patterns';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
@@ -113,7 +114,11 @@ export default function PatternDetailPage() {
                 )}
               </div>
               <p className="text-gray-400 font-bold text-sm uppercase tracking-tight">
-                {pattern.pattern_source === 'ai_generated' ? 'AI-generated pattern' : 'Manually created pattern'} for Class {pattern.class_name} {pattern.subject}
+                {isOfficialSamplePaper(pattern)
+                  ? 'Official CBSE sample paper structure'
+                  : pattern.pattern_source === 'ai_generated' ? 'AI-generated pattern'
+                  : pattern.pattern_source === 'imported' ? 'Imported from an uploaded paper'
+                  : 'Manually created pattern'}{' \u2014 '}{patternScope(pattern)}
               </p>
             </div>
           </div>

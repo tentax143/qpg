@@ -169,6 +169,7 @@ class SectionWorkOrder:
     sums_count: int = 0                                  # Accountancy: how many of this section's questions MUST be numerical problems ("sums") — see plan_sums_allocation
     sums_share: float = 0.0                              # paper-wide sums MARKS share this section was planned against (0.0 = not a sums subject)
     disable_images: bool = False                         # superadmin cut AI image generation for this school — skip image_finder entirely
+    own_count: int = 0                                   # source-mix meter: how many of this section's questions must be the model's OWN composition rather than drawn from the book (slot sections also carry own_question=True on the chosen slots) — see plan_creative_allocation
 
 
 # ─────────────────────────────────────────────
@@ -1208,6 +1209,13 @@ MATHEMATICAL NOTATION (strictly follow):
                     "subject at this class level (no chapter names, characters, or lines from any "
                     "textbook content)"
                 )
+            if s.get("own_question"):
+                line += (
+                    " | OWN COMPOSITION — write this question YOURSELF: a fresh scenario, "
+                    "context, data or example of your own. It must still test the chapter/topic "
+                    "assigned above at this class level, but must NOT be copied, quoted or "
+                    "reworded from the REFERENCE MATERIAL or from the textbook's own exercises"
+                )
             if s.get("condition"):
                 line += f" | condition: {s['condition']}"
             if s.get("choice") == "internal":
@@ -1310,6 +1318,17 @@ MATHEMATICAL NOTATION (strictly follow):
                 "questions marked GENERAL KNOWLEDGE must NOT reuse its content, wording, characters "
                 "or chapter names. "
             )
+        # Source-mix meter: the per-slot lines above already carry the rule, but the model
+        # honours a stated COUNT far more reliably than N scattered flags — say the split once.
+        own_note = ""
+        _own_n = sum(1 for s in wo.slots if s.get("own_question"))
+        if _own_n:
+            own_note = (
+                f"{_own_n} of these {len(wo.slots)} questions are marked OWN COMPOSITION — "
+                "those must be original questions you write yourself on their assigned chapter, "
+                "NOT taken from the reference material; every other question must stay grounded "
+                "in it. "
+            )
         no_passage_note = ""
         if not any(str(s.get("source") or "").lower() == "unseen" for s in wo.slots):
             no_passage_note = (
@@ -1324,7 +1343,20 @@ MATHEMATICAL NOTATION (strictly follow):
             "Each question's type, subtype and marks MUST match its line above. Write the "
             "question ON the stated TOPIC where one is given. Sub-parts go in that question's "
             '"sub_questions" array (each entry with "text" and "marks"). ' + general_note +
-            no_passage_note + "Do NOT merge, split, reorder or renumber questions.\n"
+            own_note + no_passage_note + "Do NOT merge, split, reorder or renumber questions.\n"
+        )
+
+    # Slot-less sections (legacy subsection blueprints, One-Mark tests) have no per-question line
+    # to hang the mix on, so it is stated against the section's count instead.
+    if wo.own_count and not wo.slots:
+        _book_n = max(0, generate_count - wo.own_count)
+        chapter_block += (
+            f"\nSOURCE MIX — MANDATORY: EXACTLY {wo.own_count} of these {generate_count} "
+            "questions must be YOUR OWN composition — an original question you write yourself "
+            "on its assigned chapter, built on a fresh scenario, context, data or example that "
+            "does NOT appear in the reference material. The other "
+            f"{_book_n} must be grounded in the reference material above. Never copy or lightly "
+            "reword a question, example or exercise the reference material already contains."
         )
 
     # Avoid repeating questions from earlier papers (so two classes don't get identical papers).
@@ -3453,6 +3485,9 @@ def build_single_question_prompt(wo: SectionWorkOrder, qtype_str: str, q_index: 
         "Draw this question from a DIFFERENT chapter or concept.\n"
         if avoid_chapters else ""
     )
+    # Source-mix meter: this path generates one question at a time, so the slot at this index
+    # is the one that carries whether the teacher asked for an own composition here.
+    _mix_slot = wo.slots[q_index] if (wo.slots and 0 <= q_index < len(wo.slots)) else None
     is_la = qtype_str.lower() in ("la", "long_answer", "long answer")
     is_cbq = qtype_str.lower() in ("cbq", "source_based", "case_based", "source based", "case based")
     mpq = wo.marks_per_question
@@ -3520,6 +3555,14 @@ def build_single_question_prompt(wo: SectionWorkOrder, qtype_str: str, q_index: 
                 "- Take NOTHING from any textbook chapter, story, poem or character — write "
                 'your own example sentence, and set "chapter_tag" to "Grammar"\n'
             )
+    elif (_mix_slot or {}).get("own_question"):
+        source_rule = (
+            "- Write this question YOURSELF — a fresh scenario, context, data or example of "
+            "your own\n"
+            "- It must test the same chapter/topic at this class level, but must NOT be "
+            "copied, quoted or reworded from the reference material or from the textbook's "
+            "own exercises\n"
+        )
     else:
         source_rule = "- Draw content ONLY from the reference material above\n"
 
@@ -5766,6 +5809,107 @@ def _allocate_chapters_to_slots(candidate_chapters: list, n_slots: int, subject:
     return plan
 
 
+# ─────────────────────────────────────────────
+# Book ↔ own-composition mix (the generate page's source-mix meter)
+# ─────────────────────────────────────────────
+#
+# The teacher sets ONE paper-wide percentage ("50% from the book / 50% my own questions"). It is
+# spent here, once, over the whole paper rather than per section, because sections differ wildly
+# in what they are allowed to do:
+#
+#   · questions that MUST quote the book (extracts, source="textbook", map work) can never move;
+#   · questions that are ALREADY the model's own work (English grammar/writing, source="general",
+#     unseen passages) count TOWARD the requested share instead of being converted a second time;
+#   · everything else is free, and the share is split across sections in proportion to how much
+#     free room each one has, so a 40% meter takes ~40% out of every section instead of turning
+#     the first section entirely creative and leaving the last one untouched.
+#
+# A converted question KEEPS its chapter assignment: "own" here means "not lifted from the book",
+# not "off-syllabus" — the teacher still expects the paper to cover the chapters they ticked.
+# That is why this marks slots with own_question=True instead of reusing source="general", which
+# additionally strips the chapter (right for a Grammar section, wrong for a Physics paper the
+# teacher wants half original).
+
+def _slot_mix_state(wo, slot) -> str:
+    """'fixed' (must stay book-grounded), 'own' (already the model's own work) or 'free'."""
+    if wo.is_map_work:
+        return "fixed"          # map questions are located on the prescribed map, not invented
+    if wo.english_own_only:
+        return "own"
+    if (slot or {}).get("own_question"):
+        return "own"          # already converted by an earlier pass — never pick it twice
+    src = str((slot or {}).get("source") or "").strip().lower()
+    styp = str((slot or {}).get("type") or "").strip().lower()
+    if src in ("general", "unseen"):
+        return "own"            # already composed by the model, not taken from the textbook
+    if src == "textbook" or styp == "extract":
+        return "fixed"          # the pattern demands textbook material, verbatim
+    return "free"
+
+
+def plan_creative_allocation(work_orders: list, creative_ratio, log=print) -> list:
+    """Mark `creative_ratio` percent of the paper's questions as the model's OWN compositions.
+
+    Sets own_question=True on the chosen question_slots (copied, never mutated in place — those
+    dicts belong to the pattern/blueprint rows) and `wo.own_count` on every section it touches.
+    No-op at 0, the default, which reproduces the previous everything-from-the-book behaviour.
+    """
+    ratio = max(0, min(100, _as_int(creative_ratio, 0)))
+    if ratio <= 0:
+        return work_orders
+
+    total = already = 0
+    free: list = []                      # [(wo, [indices this section may convert])]
+    for wo in work_orders:
+        if wo.slots:
+            states = [_slot_mix_state(wo, sl) for sl in wo.slots]
+        else:
+            states = [_slot_mix_state(wo, None)] * max(0, _as_int(wo.questions_count, 0))
+        total += len(states)
+        already += sum(1 for st in states if st == "own")
+        idxs = [i for i, st in enumerate(states) if st == "free"]
+        if idxs:
+            free.append((wo, idxs))
+
+    pool = sum(len(idxs) for _, idxs in free)
+    target = int(round(total * ratio / 100.0))
+    need = max(0, min(target - already, pool))
+    if not need:
+        log(f"[SourceMix] {ratio}% own requested — {already}/{total} question(s) already are and "
+            f"{pool} could convert; nothing to reassign")
+        return work_orders
+
+    # Largest-remainder split of `need` across the sections that have room.
+    shares = []
+    for wo, idxs in free:
+        exact = need * len(idxs) / pool
+        shares.append([wo, idxs, int(exact), exact - int(exact)])
+    _short = need - sum(sh[2] for sh in shares)
+    for k in sorted(range(len(shares)), key=lambda i: (-shares[i][3], i))[:_short]:
+        shares[k][2] += 1
+
+    for wo, idxs, n, _ in shares:
+        n = max(0, min(n, len(idxs)))
+        if not n:
+            continue
+        # Evenly spaced picks (strictly increasing, since n <= len(idxs)) so book-based and own
+        # questions alternate through the section instead of bunching at its front.
+        chosen = {idxs[int(j * len(idxs) / n)] for j in range(n)}
+        wo.own_count += len(chosen)
+        if wo.slots:
+            wo.slots = [
+                (dict(sl, own_question=True) if i in chosen else sl)
+                for i, sl in enumerate(wo.slots)
+            ]
+
+    _done = sum(wo.own_count for wo in work_orders)
+    log(f"[SourceMix] {ratio}% own: {already + _done}/{total} question(s) composed by the model "
+        f"({already} already own, {_done} reassigned), {total - already - _done} from the book: "
+        + ", ".join(f"'{wo.section_name}' {wo.own_count}/{wo.questions_count}"
+                    for wo in work_orders if wo.own_count))
+    return work_orders
+
+
 def plan_chapter_allocation(work_orders: list) -> list:
     """Give every section a per-question chapter plan (`wo.chapter_plan`), weighted by CBSE
     unit marks where known for that CLASS (uniform otherwise) and coordinated across the whole
@@ -6026,7 +6170,7 @@ def plan_sums_allocation(work_orders: list) -> list:
 
 
 def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False,
-                      unit_map=None) -> list:
+                      unit_map=None, creative_ratio: int = 0) -> list:
     pattern_section_map: dict = {}
     if pattern and hasattr(pattern, "sections") and pattern.sections:
         for ps in pattern.sections:
@@ -6254,6 +6398,8 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
     plan_chapter_allocation(work_orders)
     # A teacher's blueprint overrides that allocation where it states one (no-op without one).
     apply_unit_map(work_orders, unit_map)
+    # Book ↔ own-composition mix from the generate page's meter (no-op at the 0 default).
+    plan_creative_allocation(work_orders, creative_ratio)
     # Accountancy sums/quiz composition (sets wo.sums_count) — no-op for other subjects.
     plan_sums_allocation(work_orders)
     for wo in work_orders:
@@ -7415,7 +7561,7 @@ def _section_worker(wo: SectionWorkOrder):
 
 
 def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficulty: str, class_name: str, subject: str, chapters: list, disable_images: bool = False,
-                            unit_map=None):
+                            unit_map=None, creative_ratio: int = 0):
     """
     Generate all sections in parallel using ThreadPoolExecutor.
 
@@ -7430,11 +7576,13 @@ def generate_paper_parallel(blueprint: dict, pattern, context_map: dict, difficu
           f"{len(chapters or [])} chapter(s) | {mantle_client.models_summary()} =====")
 
     with step("Build work orders"):
-        work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters, disable_images=disable_images, unit_map=unit_map)
+        work_orders = build_work_orders(blueprint, pattern, context_map, difficulty, class_name, subject, chapters, disable_images=disable_images, unit_map=unit_map,
+                                        creative_ratio=creative_ratio)
         if not work_orders:
             raise RuntimeError("Blueprint produced no work orders")
         for wo in work_orders:
             _flags = [n for n, on in (("grammar-own", wo.is_english_grammar),
+                                      (f"own-mix:{wo.own_count}", wo.own_count),
                                       ("writing-own", wo.is_english_writing),
                                       ("no-context", wo.english_own_only),
                                       ("map", wo.is_map_work),

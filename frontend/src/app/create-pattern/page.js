@@ -12,6 +12,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import CustomSelect from '@/components/CustomSelect';
 import { subjectOptions } from '@/lib/subjects';
+import { slotPatternToText, hasQuestionSlots, patternScope } from '@/lib/patterns';
 
 // ─── Static data ─────────────────────────────────────────────────────────────
 
@@ -280,6 +281,10 @@ export default function CreatePatternPage() {
   const [aiPrompt, setAiPrompt]           = useState('');
   const [loadingPattern, setLoadingPattern] = useState(false);
   const [loadedFrom, setLoadedFrom]         = useState(null); // 'superadmin_template' | 'pt_default' | null
+  // The template that was auto-loaded. Board structures are offered across subjects and
+  // classes now, so the teacher must be told when the one loaded came from elsewhere —
+  // silently filling a Sociology paper with the Accountancy structure would be baffling.
+  const [loadedTemplate, setLoadedTemplate] = useState(null);
   const [loadError, setLoadError]           = useState(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState(null); // superadmin pattern to clone
 
@@ -311,6 +316,7 @@ export default function CreatePatternPage() {
   async function loadPattern(key, subj, cls) {
     setLoadError(null);
     setLoadedFrom(null);
+    setLoadedTemplate(null);
     setSelectedTemplateId(null);
 
     // 1) Prefer a premade pattern curated by the superadmin (the only source of premade
@@ -325,8 +331,15 @@ export default function CreatePatternPage() {
       if (matches.length > 0) {
         const tpl = matches[0];
         setSections((tpl.sections || []).map((s, i) => rawToEditorSection(s, i)));
-        setAiPrompt(patternToText(tpl, key, subj, cls));
+        // Slot-authored patterns (the official sample papers) store every printed question, so
+        // they get a renderer that can actually show them. patternToText only understands the
+        // legacy aggregate shape and rendered a slot pattern as empty section headings.
+        setAiPrompt(hasQuestionSlots(tpl)
+          ? slotPatternToText(tpl, { subject: subj, className: cls,
+                                     examName: EXAM_DISPLAY_NAMES[key] || key })
+          : patternToText(tpl, key, subj, cls));
         setSelectedTemplateId(tpl.id);
+        setLoadedTemplate(tpl);
         setLoadedFrom('superadmin_template');
         foundTemplate = true;
       }
@@ -344,7 +357,7 @@ export default function CreatePatternPage() {
       setAiPrompt(ptDefaultToText(key, subj, cls));
       setLoadedFrom('pt_default');
     } else {
-      setLoadError(`No superadmin pattern found for ${subj} Class ${cls}. Build the sections manually below.`);
+      setLoadError(`No premade structure found for ${subj}. Build the sections manually below, or describe the paper on the AI tab.`);
       setSections([]);
       setAiPrompt('');
     }
@@ -701,13 +714,21 @@ export default function CreatePatternPage() {
                   <Sparkles size={16} className="text-emerald-500" />
                   <div className="flex-1">
                     <span className="text-xs font-black text-emerald-700 uppercase tracking-wide">
-                      Loaded from superadmin pattern — click Create to make your copy
+                      {loadedTemplate?.pattern_source === 'cbse_sqp'
+                        ? `Loaded the official CBSE sample paper — ${patternScope(loadedTemplate)}`
+                        : loadedTemplate?.is_cross_subject
+                          ? `Loaded the ${loadedTemplate.subject} board structure — reusable for any subject`
+                          : 'Loaded from superadmin pattern — click Create to make your copy'}
                     </span>
-                    <span className="text-[10px] text-emerald-600 font-bold ml-2">— or edit sections to customise</span>
+                    <span className="text-[10px] text-emerald-600 font-bold ml-2">
+                      {loadedTemplate
+                        ? `— ${loadedTemplate.total_marks}M · ${loadedTemplate.total_questions}Q · edit the description below, then Generate to make it yours`
+                        : '— or edit sections to customise'}
+                    </span>
                   </div>
                   <button
                     type="button"
-                    onClick={() => { setSections([]); setLoadedFrom(null); setSelectedTemplateId(null); }}
+                    onClick={() => { setSections([]); setLoadedFrom(null); setLoadedTemplate(null); setSelectedTemplateId(null); }}
                     className="text-[10px] font-black text-emerald-600 hover:text-emerald-800 uppercase tracking-wide"
                   >
                     Clear

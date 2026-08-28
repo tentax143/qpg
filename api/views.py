@@ -317,19 +317,73 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
     filterset_fields = ['class_name', 'subject', 'pattern_source']
     search_fields = ['name', 'subject', 'class_name']
 
+    # Sources whose rows are premade, clone-only templates rather than somebody's work.
+    _PREMADE_SOURCES = ('cbse_official', 'cbse_sqp', 'one_mark_test')
+
     def get_queryset(self):
-        user = self.request.user
-        role = _user_role(user)
-        if role == 'superadmin' or user.is_superuser:
-            return ExamPattern.objects.all().order_by('-created_at')
-        # Patterns are a SHARED school resource — every member of the school sees ALL of the
-        # school's patterns (any subject, any creator), so they can reuse each other's. (Papers,
-        # by contrast, stay private to their creator.) Premade superadmin templates remain hidden
-        # — reachable only via the `templates` action (clone-only).
+        """Every pattern is VISIBLE to every school, regardless of who created it.
+
+        Patterns are structure — sections, question counts, marks — not exam content (papers stay
+        private to their creator). Sharing them across schools makes a good structure reusable
+        instead of rebuilt, and it removes a whole class of disappearance: visibility used to be
+        derived by joining through the creator's profile to their school, so deleting a teacher
+        NULLed `created_by`, broke the chain, and silently hid every pattern they had built from
+        everyone.
+
+        Visible is not the same as editable — `_owned_queryset` governs writes, so another
+        school's pattern is read-only and can be cloned but never edited or deleted.
+
+        Premade templates stay out of this list: they are reached through the `templates` action
+        and would otherwise bury a school's own handful of patterns under ~70 CBSE rows.
+        """
+        base = ExamPattern.objects.select_related('created_by__profile__school')
+        if self._is_superadmin(self.request.user):
+            return base.all().order_by('-created_at')
+
+        # Hiding the premade rows is a LIST concern — it keeps ~70 CBSE templates from burying a
+        # school's own handful. Applied to a DETAIL route it 404s them instead, which is how the
+        # blueprint builder came to be unable to load the sample paper it was asked to plan (and
+        # /pattern/<id> to 404 on a pattern the generate page had just offered). Writes stay
+        # governed by `_assert_owned`, which refuses these outright, so reading one is safe.
+        if getattr(self, 'detail', False):
+            return base.all().order_by('-created_at')
+
+        excluded = list(self._PREMADE_SOURCES)
+        # ?include_official=1 — the generate page asks for the official CBSE sample papers so a
+        # teacher can set a paper straight from one. Opt-in rather than default: the Exam Patterns
+        # management page is the school's OWN work, and folding ~18 read-only official rows into
+        # it would change what that page is for. The seeded `cbse_official` aggregates stay out
+        # either way — those are 58 rows nobody picks directly.
+        if str(self.request.query_params.get('include_official', '')).lower() in ('1', 'true', 'yes'):
+            excluded.remove('cbse_sqp')
+
+        return base.exclude(pattern_source__in=excluded).order_by('-created_at')
+
+    def _owned_queryset(self, user):
+        """Patterns this user may EDIT or DELETE — their school's own work.
+
+        Deliberately still keyed on the creator's school: that is the only ownership signal the
+        model has. It means an orphaned pattern (creator deleted) is editable by nobody but a
+        superadmin, which is the safe direction — it stays visible and clonable, it just cannot be
+        changed or removed by a school that never made it.
+        """
+        if self._is_superadmin(user):
+            return ExamPattern.objects.all()
         school = _get_school(user)
         if school:
-            return ExamPattern.objects.filter(created_by__profile__school=school).order_by('-created_at')
-        return ExamPattern.objects.filter(created_by=user).order_by('-created_at')
+            return ExamPattern.objects.filter(created_by__profile__school=school)
+        return ExamPattern.objects.filter(created_by=user)
+
+    def _assert_owned(self, instance, user):
+        """Raise PermissionDenied unless `user` may modify `instance`."""
+        from rest_framework.exceptions import PermissionDenied
+        if instance.pattern_source in self._GLOBAL_SOURCES and not self._is_superadmin(user):
+            raise PermissionDenied(
+                "Shared official patterns can only be changed by a superadmin.")
+        if not self._owned_queryset(user).filter(pk=instance.pk).exists():
+            raise PermissionDenied(
+                "This pattern belongs to another school. You can view it or clone it into your "
+                "own patterns, but not edit or delete it.")
 
     def retrieve(self, request, *args, **kwargs):
         """The create-pattern page polls this endpoint every 3s while a pattern generates.
@@ -349,6 +403,11 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         (e.g. by the per-question editor), re-normalize the slots, refresh the
         structure warnings, and re-derive the legacy aggregates so counts/marks/
         question_types can never drift from the edited slots."""
+        # Patterns are visible school-wide AND cross-school; only the owning school may change
+        # one. Without this, widening visibility would have handed every school an edit button on
+        # everyone else's work.
+        self._assert_owned(serializer.instance, self.request.user)
+
         sections = serializer.validated_data.get('sections')
         if isinstance(sections, list) and any(
                 isinstance(s, dict) and s.get('question_slots') for s in sections):
@@ -373,14 +432,15 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
 
     @staticmethod
     def _template_queryset():
-        """Premade patterns owned by the superadmin / seeded — the clone source."""
-        from django.db.models import Q
+        """Premade patterns — the clone source, matched by SOURCE only.
+
+        It used to also match `created_by__isnull=True`, which meant any pattern whose creator was
+        deleted was silently promoted into the official template pool and offered to every other
+        school. Source is the honest signal: these rows are premade because of what they are, not
+        because of who does or does not own them.
+        """
         return ExamPattern.objects.filter(
-            Q(pattern_source__in=['cbse_official', 'one_mark_test'])
-            | Q(created_by__isnull=True)
-            | Q(created_by__is_superuser=True)
-            | Q(created_by__profile__role='superadmin')
-        )
+            pattern_source__in=['cbse_official', 'cbse_sqp', 'one_mark_test'])
 
     @action(detail=False, methods=['get'])
     def templates(self, request):
@@ -393,36 +453,71 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         class_name = request.query_params.get('class') or request.query_params.get('class_name')
         subject    = request.query_params.get('subject')
         exam_type  = request.query_params.get('exam_type')
+        et = (exam_type or '').strip().lower()
 
+        # The SQP-derived board patterns are reusable STRUCTURES — neither class- nor
+        # subject-specific. A CBSE sample paper's shape (16 one-markers, 5 two-markers, 7
+        # three-markers, 2 case studies, 3 long answers) is the same board-paper skeleton whatever
+        # subject or class you sit it for, and only ten subjects have an SQP at all. Filtering them
+        # by class meant a Class 10 Biology teacher saw nothing, because the Biology SQP happens to
+        # be the Class 12 paper. clone_template already takes `class_name` and `subject` overrides,
+        # so the clone lands in the teacher's own class and subject — this only makes them visible.
+        #
+        # Everything else (cbse_official seeds, one_mark_test, other superadmin templates) keeps
+        # the class+subject narrowing: those ARE specific to what they were built for.
+        sqp_pool = qs.filter(pattern_source='cbse_sqp')
+        others = qs.exclude(pattern_source='cbse_sqp')
         if class_name:
-            qs = qs.filter(class_name__iexact=class_name)
+            others = others.filter(class_name__iexact=class_name)
 
-        results = list(qs.order_by('-created_at')) if not subject else []
+        # A board-shaped paper is only a sensible suggestion for a board-shaped exam. Offering an
+        # 80-mark board structure for a 20-mark PT-1 is worse than offering nothing — the front end
+        # then falls back to its 20-mark periodic-test default, which is what that teacher wants.
+        sqp_allowed = exam_type is None or et in self._BOARD_EXAM_TYPES
+
         cross = []
+        sqp_first = []
         if subject:
-            narrowed = qs.filter(subject__iexact=subject)
+            narrowed = others.filter(subject__iexact=subject)
             if not narrowed.exists():
-                narrowed = qs.filter(subject__icontains=subject)
+                narrowed = others.filter(subject__icontains=subject)
             results = list(narrowed.order_by('-created_at'))
 
-            # Official board patterns are offered to EVERY subject, not just the ten that have a
-            # CBSE sample paper. The structure is what is reusable: every Class 12 science SQP is
-            # the same 16/5/7/2/3 shape, so a Psychology teacher can clone the Physics one and
-            # get a correct board-shaped paper. clone_template already takes a `subject` override,
-            # so the clone lands in their own subject — this only makes them visible.
-            # Restricted to cbse_official on purpose: opening this to every premade pattern would
-            # bury the subject's own templates under dozens of unrelated rows.
-            if exam_type is None or (exam_type or '').strip().lower() in self._BOARD_EXAM_TYPES:
-                seen = {p.id for p in results}
-                cross = [p for p in qs.filter(pattern_source='cbse_official').order_by('subject')
-                         if p.id not in seen]
+            if sqp_allowed:
+                # The subject's OWN sample paper is the most faithful structure available, so it
+                # leads — and is not flagged cross-subject, because it isn't.
+                #
+                # Matched by FAMILY and ranked by BAND, not by string equality: a Class 6 teacher
+                # picks "English", the paper is "English Language & Literature", and there is a
+                # second English paper for 11-12. Plain `subject__iexact` matched neither, so the
+                # caller (which takes the first result) was handed an unrelated subject entirely.
+                from core.subjects import same_subject
+                family = [p for p in sqp_pool if same_subject(p.subject, subject)]
+                family.sort(key=lambda p: (
+                    not p.serves_class(class_name),   # papers covering this class first
+                    p.subject,
+                ))
+                sqp_first = family
+                seen = {p.id for p in family} | {p.id for p in results}
+                cross = [p for p in sqp_pool.order_by('subject') if p.id not in seen]
+                # Same rule for the rest: an official paper that covers the chosen class is a
+                # better suggestion than one from the other stage.
+                cross.sort(key=lambda p: (not p.serves_class(class_name), p.subject))
+        else:
+            results = list(others.order_by('-created_at'))
+            if sqp_allowed:
+                results += sorted(sqp_pool, key=lambda p: (not p.serves_class(class_name), p.subject))
 
         # Soft exam_type narrowing by name; keep the broader set if nothing name-matches.
+        # Applied to the school/seeded patterns ONLY. The official sample papers are named
+        # "CBSE Sample Paper — X", so a `board` request name-matched the seeded "CBSE Board X
+        # Class 6" row and this filter then DISCARDED the very sample paper the caller wanted —
+        # `templates` is read first-result-first by the create-pattern page.
         if exam_type:
-            et = exam_type.strip().lower()
             hit = [p for p in results if et in (p.name or '').lower()]
             if hit:
                 results = hit
+        results = sqp_first + results
 
         data = ExamPatternSerializer(results, many=True).data
         for row in data:
@@ -470,19 +565,23 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
     _BOARD_EXAM_TYPES = ('board', 'half_yearly', 'pre_board', 'annual', '')
 
     # Global/system templates shared across all schools — only a superadmin may delete these.
-    _GLOBAL_SOURCES = ('cbse_official', 'one_mark_test')
+    _GLOBAL_SOURCES = ('cbse_official', 'cbse_sqp', 'one_mark_test')
 
     def _is_superadmin(self, user):
         return _user_role(user) == 'superadmin' or user.is_superuser
 
     def destroy(self, request, *args, **kwargs):
-        """Block non-superadmins from deleting shared global templates (cbse_official / one_mark_test)."""
+        """Only the owning school (or a superadmin) may delete a pattern.
+
+        Every school can now SEE every pattern, so visibility is no longer a delete boundary —
+        this check is what stops one school removing another's work.
+        """
         instance = self.get_object()
-        if instance.pattern_source in self._GLOBAL_SOURCES and not self._is_superadmin(request.user):
-            return Response(
-                {"error": "Shared official patterns can only be deleted by a superadmin."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        try:
+            self._assert_owned(instance, request.user)
+        except Exception as exc:
+            return Response({"error": str(getattr(exc, 'detail', exc))},
+                            status=status.HTTP_403_FORBIDDEN)
         return super().destroy(request, *args, **kwargs)
 
     @action(detail=False, methods=['post'], url_path='bulk-delete')
@@ -500,9 +599,9 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             return Response({"error": "'ids' must be a list of integers."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # get_queryset() already restricts to the caller's school / own + global templates,
-        # so ids belonging to other schools are silently excluded here.
-        visible = self.get_queryset().filter(id__in=ids)
+        # NOT get_queryset(): that now spans every school, so using it as the boundary would
+        # make this a cross-school delete. Ownership is the boundary for writes.
+        visible = self._owned_queryset(request.user).filter(id__in=ids)
 
         protected_skipped = []
         deletable = visible
@@ -654,7 +753,11 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         from core import pattern_structure
         from core.section_generator import _section_id_from_name
 
-        pattern = self.get_object()
+        # NOT self.get_object(): that runs the filter backends over the queryset first, and this
+        # endpoint's own `class_name`/`subject` params are also filterset fields on ExamPattern.
+        # Asking for "this pattern, planned for Class 6 Science" therefore filtered the pattern
+        # itself down to class_name=6 and 404'd every sample paper (whose own class is 10 or 12).
+        pattern = get_object_or_404(self.get_queryset(), pk=pk)
         subject = request.query_params.get('subject') or pattern.subject
         class_name = request.query_params.get('class_name') or pattern.class_name
 
@@ -730,6 +833,11 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
             return billing
 
         pattern = self.get_object()
+        try:
+            self._assert_owned(pattern, request.user)   # regeneration overwrites the pattern
+        except Exception as exc:
+            return Response({"error": str(getattr(exc, 'detail', exc))},
+                            status=status.HTTP_403_FORBIDDEN)
         if pattern.pattern_source not in ('ai_generated', 'imported'):
             return Response({"error": "Only AI-generated or PDF-imported patterns can be regenerated"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -764,7 +872,9 @@ class ExamPatternViewSet(viewsets.ModelViewSet):
         if billing:
             return billing
 
-        qs = self.get_queryset()
+        # NOT get_queryset(): that now spans every school. Regeneration blanks a pattern's
+        # sections and re-runs the LLM over it, so it is a write and belongs to the owner only.
+        qs = self._owned_queryset(request.user)
         ids = request.data.get('ids')
         if ids is not None:
             if not isinstance(ids, list) or not ids:
@@ -917,12 +1027,20 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                         return Response({"error": "Selected blueprint template doesn't match class/subject."}, status=status.HTTP_400_BAD_REQUEST)
                         
             # Create Paper Object
+            # Source mix: percent of questions written from the model's own knowledge
+            # rather than the book. Absent / unparseable keeps the all-from-the-book default.
+            try:
+                creative_ratio = max(0, min(100, int(float(data.get("creative_ratio", 0) or 0))))
+            except (TypeError, ValueError):
+                creative_ratio = 0
+
             paper = QuestionPaper.objects.create(
                 class_name=class_name,
                 subject=subject,
                 pattern_id=pattern_id,
                 chapters=chapters_list,
                 difficulty=data.get("difficulty", "Medium"),
+                creative_ratio=creative_ratio,
                 created_by=request.user,
                 status="queued"
             )
@@ -959,6 +1077,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
                 "extra_context": additional_context_text,
                 "num_one_mark_questions": num_one_mark,
                 "school_name": school_name,
+                "creative_ratio": creative_ratio,
             }
             additional_context_json = json.dumps(meta_payload)
 
@@ -985,6 +1104,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Set the created_by field to the current user"""
         serializer.save(created_by=self.request.user)
+
 
     @action(detail=True, methods=['get'])
     def status(self, request, pk=None):
@@ -1124,6 +1244,13 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             except (ValueError, TypeError):
                 num_one_mark = 20
 
+        # Source mix: re-uses the paper's stored setting unless this request overrides it.
+        try:
+            creative_ratio = max(0, min(100, int(float(
+                request.data.get('creative_ratio', paper.creative_ratio) or 0))))
+        except (TypeError, ValueError):
+            creative_ratio = paper.creative_ratio or 0
+
         meta_payload = {
             "class_name": paper.class_name,
             "duration": str(request.data.get('duration', '') or '').strip(),
@@ -1132,6 +1259,7 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
             "extra_context": '',
             "num_one_mark_questions": num_one_mark,
             "school_name": school_name,
+            "creative_ratio": creative_ratio,
         }
 
         blocked = _budget_blocked(request.user)
@@ -1144,11 +1272,13 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
         paper.status = 'queued'
         paper.edited_content = None
         paper.task_id = None
+        paper.creative_ratio = creative_ratio
         paper.gen_params = {
             'model_source': request.session.get('model_choice', 'aws'),
             'additional_context': _json.dumps(meta_payload),
         }
-        paper.save(update_fields=['status', 'edited_content', 'task_id', 'gen_params', 'updated_at'])
+        paper.save(update_fields=['status', 'edited_content', 'task_id', 'creative_ratio',
+                                  'gen_params', 'updated_at'])
 
         # Per-user serial queue: dispatch now only if nothing else is active for this user, else
         # leave it waiting to be promoted when the current generation finishes.
@@ -2308,6 +2438,17 @@ class ExamBlueprintViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Set the created_by field to the current user"""
         serializer.save(created_by=self.request.user)
+    def perform_destroy(self, instance):
+        """Deactivate rather than drop the row.
+
+        Every read path already filters `is_active=True` (`_scoped_blueprints`, `get_blueprints`,
+        `core.tasks._resolve_blueprint`), so the blueprint disappears from the lists, the generate
+        form and generation itself — the delete is complete as far as the teacher is concerned.
+        What it is not is irreversible: a unit plan can be forty hand-picked questions, and one
+        mis-click should not destroy it beyond recovery.
+        """
+        instance.is_active = False
+        instance.save(update_fields=['is_active', 'updated_at'])
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -2443,20 +2584,25 @@ def get_blueprints(request):
         subject = request.GET.get("subject", "").strip()
         pattern_id = (request.GET.get("pattern") or "").strip()
 
-        if not class_name or not subject:
+        if not pattern_id.isdigit() and (not class_name or not subject):
             return Response({"blueprints": []})
 
-        class_num = class_name.split("-")[0]
-
-        qs = _scoped_blueprints(request.user).filter(
-            class_name=class_num,
-            subject__iexact=subject,
-        ).select_related('pattern')
+        qs = _scoped_blueprints(request.user).select_related('pattern')
         if pattern_id.isdigit():
             qs = qs.filter(pattern_id=int(pattern_id))
+        if class_name:
+            qs = qs.filter(class_name=class_name.split("-")[0])
+
+        from core.subjects import same_subject
 
         out = []
         for bp in qs.order_by('-created_at'):
+            # Subject matched by FAMILY, not string equality. The blueprint records the subject
+            # whose material its units came from ("English"), while the paper may be set from the
+            # sample paper for "English Language & Literature" — the same subject under the name
+            # CBSE prints on the paper. An exact match dropped the blueprint from this list.
+            if subject and not same_subject(bp.subject, subject):
+                continue
             mapped = sum(len(per_q) for per_q in bp.question_units().values())
             section_wide = len(bp.section_units())
             if not mapped and not section_wide:

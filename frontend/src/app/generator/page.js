@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { 
   Plus, X, Upload, Eye, EyeOff, Zap,
   Settings, BookOpen, Layers, BarChart, FilePlus,
@@ -9,6 +10,7 @@ import {
   CheckCircle, Info, Undo, AlertCircle, GraduationCap
 } from 'lucide-react';
 import apiClient from '@/lib/api';
+import { sortPatternsForPicker, patternOptionMeta, isOfficialSamplePaper } from '@/lib/patterns';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -28,6 +30,9 @@ function GeneratorContent() {
     subject: '',
     pattern: '',
     difficulty: 'Easy',
+    // Source mix: percent of the paper the AI writes itself instead of drawing from the
+    // uploaded book material. 0 keeps every question grounded in the book.
+    creative_ratio: 0,
     blueprint: '',
     chapters: '',
     duration: '',
@@ -41,9 +46,14 @@ function GeneratorContent() {
   const [subjects, setSubjects] = useState([]);
   const [patterns, setPatterns] = useState([]);
   const [blueprints, setBlueprints] = useState([]);
+  const pendingBlueprint = useRef(null);   // ?blueprint= from the URL, applied once its row loads
   const [availableChapters, setAvailableChapters] = useState([]);
   const [selectedChapters, setSelectedChapters] = useState([]);
   
+  // Source-mix meter: the form stores the AI's share, the book's is whatever is left.
+  const creativeRatio = Math.max(0, Math.min(100, Number(formData.creative_ratio) || 0));
+  const bookRatio = 100 - creativeRatio;
+
   // One Mark Test helper — derived from selected pattern
   const isOneMarkTest = patterns.find(p => String(p.id) === String(formData.pattern))?.pattern_source === 'one_mark_test';
 
@@ -71,10 +81,19 @@ function GeneratorContent() {
 
   const fetchInitialData = async () => {
     try {
-      const patternsRes = await apiClient.get('/patterns/?page_size=100');
+      // include_official: the official CBSE sample papers belong in this picker so a
+      // teacher can generate straight from one; they stay out of the Exam Patterns
+      // management page, which is the school's own work.
+      const patternsRes = await apiClient.get('/patterns/?page_size=200&include_official=1');
       const allPatterns = patternsRes.data.results || [];
       setPatterns(allPatterns);
       
+      // A blueprint deep link (/generator?pattern=7&blueprint=exam_3) cannot be applied yet:
+      // the blueprint list is fetched only once class+subject+pattern are known, and the effect
+      // that fires then deliberately clears any stale selection. Remember the request and let
+      // loadBlueprints apply it when the matching row actually arrives.
+      pendingBlueprint.current = searchParams.get('blueprint') || null;
+
       // Check for pattern ID in URL
       const patternId = searchParams.get('pattern');
       if (patternId) {
@@ -162,7 +181,13 @@ function GeneratorContent() {
     setLoadingBlueprints(true);
     try {
       const res = await apiClient.get(`/get_blueprints/?class_name=${encodeURIComponent(formData.class_name)}&subject=${encodeURIComponent(formData.subject)}&pattern=${encodeURIComponent(formData.pattern)}`);
-      setBlueprints(res.data.blueprints || []);
+      const rows = res.data.blueprints || [];
+      setBlueprints(rows);
+      const wanted = pendingBlueprint.current;
+      if (wanted && rows.some(b => String(b.id) === String(wanted))) {
+        pendingBlueprint.current = null;
+        setFormData(prev => ({ ...prev, blueprint: wanted }));
+      }
     } catch (err) {
       console.error("Error loading blueprints", err);
     } finally {
@@ -399,27 +424,25 @@ function GeneratorContent() {
                   onChange={(val) => handleInputChange({ target: { name: 'pattern', value: val } })}
                   options={[
                     ...patterns.filter(p => p.pattern_source === 'one_mark_test').map(p => ({
-                      label: `⚡ ${p.name}`,
+                      label: p.name,
                       value: p.id,
+                      badge: '⚡',
+                      meta: 'Quick test',
                     })),
-                    ...patterns
-                      .filter(p => p.pattern_source !== 'one_mark_test')
-                      .sort((a, b) => {
-                        const sel = formData.subject?.toLowerCase();
-                        const cls = formData.class_name;
-                        const aSubj = a.subject?.toLowerCase() === sel;
-                        const bSubj = b.subject?.toLowerCase() === sel;
-                        const aCls  = a.class_name === cls;
-                        const bCls  = b.class_name === cls;
-                        // Full match (class + subject) > subject-only > class-only > no match
-                        const aScore = (aSubj && aCls ? 3 : aSubj ? 2 : aCls ? 1 : 0);
-                        const bScore = (bSubj && bCls ? 3 : bSubj ? 2 : bCls ? 1 : 0);
-                        return bScore - aScore;
-                      })
-                      .map(p => ({
-                        label: `${p.name} (${p.class_name} - ${p.subject})`,
-                        value: p.id,
-                      })),
+                    // Class and subject are chosen before this opens, so the list is ranked
+                    // against them: this subject's official sample paper first, then the school's
+                    // own pattern for this subject + class, then the rest (see lib/patterns.js).
+                    ...sortPatternsForPicker(
+                      patterns.filter(p => p.pattern_source !== 'one_mark_test'),
+                      { subject: formData.subject, className: formData.class_name },
+                    ).map(p => ({
+                      // Name alone on the primary line; everything else goes to the muted meta
+                      // column so every option stays on ONE row however long the name is.
+                      label: p.name,
+                      value: p.id,
+                      badge: isOfficialSamplePaper(p) ? 'SQP' : undefined,
+                      meta: patternOptionMeta(p),
+                    })),
                   ]}
                   placeholder="Select a pattern"
                   className="space-y-2"
@@ -439,6 +462,89 @@ function GeneratorContent() {
                   placeholder="Select difficulty"
                   className="space-y-2"
                 />
+              </div>
+
+              {/* Source Mix — how much of the paper comes from the uploaded book material and
+                  how much the AI composes itself. One paper-wide percentage; the backend spends
+                  it question by question and leaves questions that MUST quote the book alone. */}
+              <div className="p-6 bg-gradient-to-br from-blue-50 via-white to-violet-50 border border-blue-100 rounded-2xl space-y-4">
+                <div className="flex items-center justify-between gap-4">
+                  <label htmlFor="creative_ratio" className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wider">
+                    <BarChart size={16} className="text-blue-500" />
+                    Question Source Mix
+                  </label>
+                  <span className="px-2.5 py-1 rounded-full bg-white border border-gray-200 text-[10px] font-black uppercase tracking-wider text-gray-400">
+                    Drag to adjust
+                  </span>
+                </div>
+
+                {/* The meter itself */}
+                <div className="flex h-8 w-full overflow-hidden rounded-xl bg-white border border-gray-200 shadow-inner">
+                  <div
+                    className="bg-blue-600 transition-all duration-200 ease-out"
+                    style={{ width: `${bookRatio}%` }}
+                  />
+                  <div
+                    className="bg-violet-500 transition-all duration-200 ease-out"
+                    style={{ width: `${creativeRatio}%` }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 text-xs font-bold">
+                  <span className="flex items-center gap-2 text-blue-700">
+                    <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
+                    From the book
+                    <span className="text-sm font-black tabular-nums">{bookRatio}%</span>
+                  </span>
+                  <span className="flex items-center gap-2 text-violet-700">
+                    <span className="text-sm font-black tabular-nums">{creativeRatio}%</span>
+                    AI&apos;s own / creative
+                    <span className="w-2.5 h-2.5 rounded-full bg-violet-500" />
+                  </span>
+                </div>
+
+                <input
+                  id="creative_ratio"
+                  name="creative_ratio"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={creativeRatio}
+                  onChange={(e) => handleInputChange({ target: { name: 'creative_ratio', value: Number(e.target.value) } })}
+                  className="w-full accent-violet-600 cursor-pointer"
+                  aria-label="Percentage of questions the AI writes itself instead of taking from the book"
+                />
+
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { v: 0, label: 'All from book' },
+                    { v: 25, label: '25% own' },
+                    { v: 50, label: '50 / 50' },
+                    { v: 75, label: '75% own' },
+                    { v: 100, label: 'All original' },
+                  ].map(({ v, label }) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => handleInputChange({ target: { name: 'creative_ratio', value: v } })}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                        creativeRatio === v
+                          ? 'bg-violet-600 text-white'
+                          : 'bg-white text-gray-600 border border-gray-200 hover:border-violet-300 hover:text-violet-700'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <p className="text-[11px] text-gray-500 leading-relaxed">
+                  <span className="font-black text-blue-700">From the book</span> — built on the material uploaded for the chapters you pick.{' '}
+                  <span className="font-black text-violet-700">Own / creative</span> — the AI writes the question itself: same chapter and level, but a fresh
+                  scenario, example or set of numbers, so students cannot answer it from memory of the textbook exercise.
+                  {creativeRatio > 0 && ' Questions that must quote the book (extracts, prescribed passages, map work) always stay book-based.'}
+                </p>
               </div>
 
               {/* One Mark Test: question count field */}
@@ -489,15 +595,32 @@ function GeneratorContent() {
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 {/* Blueprint */}
-                <CustomSelect
-                  label="Blueprint (Optional)"
-                  icon={Settings}
-                  value={formData.blueprint}
-                  onChange={(val) => handleInputChange({ target: { name: 'blueprint', value: val } })}
-                  options={blueprints.map(b => ({ label: b.name, value: b.id }))}
-                  placeholder="Auto-select blueprint"
-                  className="space-y-2"
-                />
+                <div className="space-y-2">
+                  <CustomSelect
+                    label="Blueprint (Optional)"
+                    icon={Settings}
+                    value={formData.blueprint}
+                    onChange={(val) => handleInputChange({ target: { name: 'blueprint', value: val } })}
+                    options={blueprints.map(b => ({ label: b.name, value: b.id }))}
+                    placeholder={loadingBlueprints ? 'Loading blueprints…' : 'Auto — no blueprint'}
+                    className="space-y-2"
+                  />
+                  {/* An empty dropdown reads as a bug. Say why it is empty and what to do about
+                      it: a blueprint is written FOR one pattern, so until this pattern has one
+                      there is genuinely nothing to offer. */}
+                  {!loadingBlueprints && blueprints.length === 0 && (
+                    <p className="text-[10px] font-bold text-gray-400 uppercase ml-1 leading-relaxed">
+                      {formData.pattern
+                        ? <>No blueprint for this pattern yet —{' '}
+                            <Link href={`/blueprints/plan?pattern=${formData.pattern}`}
+                                  className="text-blue-600 hover:underline normal-case">
+                              plan which unit each question comes from
+                            </Link>
+                          </>
+                        : 'Pick a pattern to see its blueprints'}
+                    </p>
+                  )}
+                </div>
 
                 {/* Preview Button */}
                 <div className="space-y-2">

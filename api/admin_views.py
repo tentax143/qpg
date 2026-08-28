@@ -579,7 +579,12 @@ def vector_store_detail(request, pk):
 @permission_classes([IsSuperAdmin])
 def cbse_patterns_list(request):
     from core.models import ExamPattern
-    qs = ExamPattern.objects.filter(pattern_source='cbse_official').order_by('class_name', 'subject')
+    # BOTH official sources. The SQP-derived replicas were split out of 'cbse_official' into
+    # 'cbse_sqp' so `seed_cbse_patterns --force` and `update_cbse_patterns_task` can no longer
+    # destroy them — but this page is the superadmin's inventory of official patterns, and
+    # filtering on the old source alone silently dropped ten rows off it.
+    qs = ExamPattern.objects.filter(
+        pattern_source__in=['cbse_official', 'cbse_sqp']).order_by('class_name', 'subject')
     data = [{
         'id': p.id,
         'name': p.name,
@@ -589,6 +594,10 @@ def cbse_patterns_list(request):
         'total_questions': p.total_questions,
         'sections': p.sections,
         'sqp_year': p.sqp_year or '',
+        'pattern_source': p.pattern_source,
+        # Auto-update rewrites a pattern from the CBSE site via the LLM; that would overwrite a
+        # question-by-question replica with a looser reconstruction, so those are excluded.
+        'auto_updatable': p.pattern_source == 'cbse_official',
     } for p in qs]
     return Response({'patterns': data, 'count': len(data)})
 

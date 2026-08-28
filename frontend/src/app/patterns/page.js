@@ -10,6 +10,7 @@ import {
   CheckSquare, Square, RefreshCw, AlertCircle
 } from 'lucide-react';
 import apiClient from '@/lib/api';
+import { patternScope } from '@/lib/patterns';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import SuccessAlert from '@/components/SuccessAlert';
@@ -43,9 +44,13 @@ export default function PatternsPage() {
     });
   };
 
-  const allSelected = patterns.length > 0 && selected.size === patterns.length;
+  // Patterns are visible across schools but only the owning school may change them, so every
+  // bulk action operates on the editable subset. Selecting a pattern you cannot delete would just
+  // produce a silent skip in the response.
+  const editablePatterns = patterns.filter(p => p.is_editable);
+  const allSelected = editablePatterns.length > 0 && selected.size === editablePatterns.length;
   const toggleSelectAll = () => {
-    setSelected(allSelected ? new Set() : new Set(patterns.map(p => p.id)));
+    setSelected(allSelected ? new Set() : new Set(editablePatterns.map(p => p.id)));
   };
 
   const handleBulkDelete = async () => {
@@ -224,15 +229,17 @@ export default function PatternsPage() {
                         {index + 1}
                       </div>
 
-                      <button
-                        onClick={() => toggleSelect(pattern.id)}
-                        title="Select for bulk delete"
-                        className="absolute top-6 left-6 text-gray-300 hover:text-blue-600 transition-colors"
-                      >
-                        {selected.has(pattern.id)
-                          ? <CheckSquare size={20} className="text-blue-600" />
-                          : <Square size={20} />}
-                      </button>
+                      {pattern.is_editable && (
+                        <button
+                          onClick={() => toggleSelect(pattern.id)}
+                          title="Select for bulk delete"
+                          className="absolute top-6 left-6 text-gray-300 hover:text-blue-600 transition-colors"
+                        >
+                          {selected.has(pattern.id)
+                            ? <CheckSquare size={20} className="text-blue-600" />
+                            : <Square size={20} />}
+                        </button>
+                      )}
 
                       <div className="flex items-start gap-3 mb-4 pl-9">
                         <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0">
@@ -240,7 +247,12 @@ export default function PatternsPage() {
                         </div>
                         <div className="pr-10">
                           <h3 className="text-lg font-black text-gray-900 leading-tight mb-1">{pattern.name}</h3>
-                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">— Class {pattern.class_name} • {pattern.subject}</p>
+                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">— {patternScope(pattern)}</p>
+                          {!pattern.is_editable && (
+                            <p className="mt-1 text-[10px] font-black text-amber-600 uppercase tracking-widest">
+                              {pattern.owner_school ? `Shared by ${pattern.owner_school}` : 'Shared pattern'} · view or generate only
+                            </p>
+                          )}
                         </div>
                       </div>
 
@@ -286,13 +298,15 @@ export default function PatternsPage() {
                           <Eye size={12} />
                           View
                         </Link>
-                        <Link
-                          href={`/pattern/${pattern.id}/edit`}
-                          className="flex-1 min-w-[80px] px-3 py-3 bg-blue-50 text-blue-600 rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-blue-600 hover:text-white transition-all duration-300 flex items-center justify-center gap-2 border border-blue-100 hover:-translate-y-0.5"
-                        >
-                          <Edit2 size={12} />
-                          Edit
-                        </Link>
+                        {pattern.is_editable && (
+                          <Link
+                            href={`/pattern/${pattern.id}/edit`}
+                            className="flex-1 min-w-[80px] px-3 py-3 bg-blue-50 text-blue-600 rounded-xl font-black text-[10px] uppercase tracking-widest text-center hover:bg-blue-600 hover:text-white transition-all duration-300 flex items-center justify-center gap-2 border border-blue-100 hover:-translate-y-0.5"
+                          >
+                            <Edit2 size={12} />
+                            Edit
+                          </Link>
+                        )}
                         {isRegenerating ? (
                           <span
                             title="Pattern is regenerating — try again once it's done"
@@ -310,12 +324,14 @@ export default function PatternsPage() {
                             Generate
                           </Link>
                         )}
-                        <button
-                          onClick={() => handleDelete(pattern.id)}
-                          className="px-3 py-3 bg-red-50 text-red-600 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all duration-300 flex items-center justify-center hover:-translate-y-0.5"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        {pattern.is_editable && (
+                          <button
+                            onClick={() => handleDelete(pattern.id)}
+                            className="px-3 py-3 bg-red-50 text-red-600 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all duration-300 flex items-center justify-center hover:-translate-y-0.5"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );})}

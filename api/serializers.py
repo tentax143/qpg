@@ -30,6 +30,48 @@ class IssueSerializer(serializers.ModelSerializer):
 class ExamPatternSerializer(serializers.ModelSerializer):
     """Serializer for ExamPattern model"""
     created_by = UserSerializer(read_only=True)
+    owner_school = serializers.SerializerMethodField()
+    is_editable = serializers.SerializerMethodField()
+    # How to describe this pattern's class scope: a band ("Classes 1-10") for the official sample
+    # papers, the single class for everything else. Computed here so the UI never has to know the
+    # band rules.
+    class_label = serializers.CharField(read_only=True)
+
+    def _school_of(self, obj):
+        """The school that owns this pattern, via its creator's profile. None for premade
+        templates (no creator) and for patterns whose creator has been deleted."""
+        creator = obj.created_by
+        profile = getattr(creator, 'profile', None) if creator else None
+        return getattr(profile, 'school', None) if profile else None
+
+    def get_owner_school(self, obj):
+        """Named so the UI can say whose pattern this is — patterns are visible to every school
+        now, so 'who made this' stops being obvious from the fact that you can see it."""
+        school = self._school_of(obj)
+        return school.name if school else None
+
+    def get_is_editable(self, obj):
+        """Whether the requesting user may edit/delete this one.
+
+        Patterns are readable across schools but writable only by the school that made them, so
+        the front end needs this to hide Edit/Delete rather than let a teacher click through to a
+        403. Mirrors ExamPatternViewSet._assert_owned — the API stays the real enforcement point.
+        """
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is None or not getattr(user, 'is_authenticated', False):
+            return False
+        if getattr(user, 'is_superuser', False) or \
+                getattr(getattr(user, 'profile', None), 'role', None) == 'superadmin':
+            return True
+        if obj.pattern_source in ('cbse_official', 'cbse_sqp', 'one_mark_test'):
+            return False
+        owner_school = self._school_of(obj)
+        user_school = getattr(getattr(user, 'profile', None), 'school', None)
+        if owner_school is not None and user_school is not None:
+            return owner_school == user_school
+        # No school on either side: fall back to "did I create it".
+        return obj.created_by_id == user.id
 
     class Meta:
         model = ExamPattern
@@ -37,7 +79,9 @@ class ExamPatternSerializer(serializers.ModelSerializer):
             'id', 'name', 'description', 'subject', 'class_name',
             'sections', 'total_marks', 'total_questions', 'pattern_source',
             'ai_prompt', 'status', 'task_id',
-            'created_by', 'created_at', 'updated_at',
+            'created_by', 'owner_school', 'is_editable',
+            'class_min', 'class_max', 'class_label',
+            'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'status', 'task_id', 'created_at', 'updated_at']
 
@@ -69,7 +113,7 @@ class QuestionPaperSerializer(serializers.ModelSerializer):
         model = QuestionPaper
         fields = [
             'id', 'class_name', 'subject', 'pattern', 'pattern_id',
-            'chapters', 'difficulty', 'file', 'status', 'status_detail', 'task_id',
+            'chapters', 'difficulty', 'creative_ratio', 'file', 'status', 'status_detail', 'task_id',
             'edited_content', 'cost', 'created_by', 'created_at', 'updated_at',
             'answer_key_status'
         ]

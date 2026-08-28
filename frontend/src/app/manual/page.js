@@ -234,10 +234,22 @@ function SectionBlueprint({ num }) {
         <h4 className="font-bold text-slate-900 sans mb-3">Creating One</h4>
         <StepList steps={[
           'Go to Blueprints in the sidebar and click New Blueprint.',
-          'Choose the pattern you want to plan. Its real printed questions load automatically — the same numbers, types and marks that will appear on the paper.',
+          'Choose the pattern you want to plan — including the official CBSE sample papers.',
+          'Pick the class and subject. A sample paper covers a whole stage (Classes 1-10 or 11-12), so tell it which class you are setting the paper for: the units come from that class’s uploaded material.',
+          'Its real printed questions load automatically — the same numbers, types and marks that will appear on the paper.',
           'Set a unit per question, or use "Apply to all" to fill a whole section in one click and then adjust individual questions.',
           'Leave anything you do not care about on Auto.',
           'Save it, then pick it in the Blueprint field when you generate a paper from that pattern.',
+        ]} />
+      </div>
+
+      <div className="section-card mb-4">
+        <h4 className="font-bold text-slate-900 sans mb-3">Checking, Changing and Removing One</h4>
+        <StepList steps={[
+          'The Blueprints page groups every plan under the pattern it belongs to, with how many questions each one pins.',
+          'Click a blueprint’s name to read the whole plan — every printed question next to the unit it is set from, and which ones are still on Auto.',
+          'From there, Generate with this takes you straight to the generate page with the pattern and blueprint already selected.',
+          'Edit reopens the builder on the same plan. Delete removes it from the lists and from generation; the pattern and any papers already generated are untouched.',
         ]} />
       </div>
 

@@ -71,6 +71,13 @@ class ExamPattern(models.Model):
         ('ai_generated', 'AI Generated'),
         ('imported', 'Imported'),
         ('cbse_official', 'CBSE Official'),
+        # Extracted question-by-question from an official CBSE sample paper by
+        # `manage.py import_sqp_patterns`. Deliberately NOT 'cbse_official': that set is
+        # hand-written aggregates which `seed_cbse_patterns --force` deletes wholesale and
+        # `update_cbse_patterns_task` regenerates via the LLM — either would destroy a faithful
+        # SQP replica. It is also the marker for "reusable for any class or subject" in the
+        # template picker.
+        ('cbse_sqp', 'CBSE Sample Paper'),
         ('one_mark_test', 'One Mark Test'),
     ]
     pattern_source = models.CharField(max_length=20, choices=PATTERN_SOURCE_CHOICES, default='manual')
@@ -88,6 +95,41 @@ class ExamPattern(models.Model):
 
     # Academic year this pattern was last verified/updated against (e.g. "2025-26")
     sqp_year = models.CharField(max_length=10, blank=True, default='')
+
+    # Which classes this pattern's structure serves, inclusive. Only meaningful for the official
+    # `cbse_sqp` patterns: CBSE publishes ONE sample paper per subject per stage, and the same
+    # structure is used across the stage — the Class 10 paper is the model for classes 1-10, the
+    # Class 12 paper for classes 11-12. Everything else (a teacher's own pattern, or a paper they
+    # imported themselves) is for the single class in `class_name`, and leaves these NULL.
+    #
+    # Stored as a range rather than a list so "does this apply to class 6" is one comparison, and
+    # so widening a band later is a data edit rather than a re-import.
+    class_min = models.PositiveSmallIntegerField(null=True, blank=True)
+    class_max = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    def serves_class(self, class_name) -> bool:
+        """True if this pattern's structure is meant for `class_name`.
+
+        Banded patterns answer by range; everything else by exact class, so a teacher's own
+        Class 10 pattern never claims to serve Class 6.
+        """
+        raw = str(class_name or '').split('-')[0].strip()   # "11-A" -> "11"
+        if not raw.isdigit():
+            return False
+        n = int(raw)
+        if self.class_min and self.class_max:
+            return self.class_min <= n <= self.class_max
+        own = str(self.class_name or '').split('-')[0].strip()
+        return own.isdigit() and int(own) == n
+
+    @property
+    def class_label(self) -> str:
+        """How to describe this pattern's class scope in the UI."""
+        if self.class_min and self.class_max:
+            if self.class_min == self.class_max:
+                return f"Class {self.class_min}"
+            return f"Classes {self.class_min}-{self.class_max}"
+        return f"Class {self.class_name}" if self.class_name else ""
 
     # Timestamps
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
@@ -157,6 +199,11 @@ class QuestionPaper(models.Model):
     pattern = models.ForeignKey(ExamPattern, on_delete=models.CASCADE)
     chapters = models.JSONField()                  # ["4","5","6"]
     difficulty = models.CharField(max_length=20, default="Medium")
+    # Source mix, as the PERCENT of questions the model composes itself instead of drawing
+    # from the uploaded textbook material (0 = every question grounded in the book, which is
+    # the historic behaviour; 100 = every question original). Set by the generate page's
+    # source-mix meter and spent per question by section_generator.plan_creative_allocation.
+    creative_ratio = models.PositiveSmallIntegerField(default=0)
     file = models.FileField(upload_to="question_papers/", blank=True, null=True)
     status = models.CharField(max_length=20, default="queued")  # queued/generating/done/cancelled
     task_id = models.CharField(max_length=255, blank=True, null=True)  # Celery task ID

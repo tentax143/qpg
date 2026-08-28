@@ -927,6 +927,13 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
                         print(f"[Task] WARNING blueprint units with NO uploaded material: "
                               f"{', '.join(missing)} — those questions will be ungrounded")
 
+        # Source mix (percent of questions the model composes itself). The request's meta wins
+        # — a regenerate can change it — with the paper's stored setting as the fallback.
+        try:
+            creative_ratio = int(extra_meta.get('creative_ratio', paper.creative_ratio) or 0)
+        except (TypeError, ValueError):
+            creative_ratio = paper.creative_ratio or 0
+
         file_path, summary, total_cost, input_tokens, output_tokens = generator.generate_paper(
             class_name=class_name,
             subject=paper.subject,
@@ -938,6 +945,7 @@ def generate_paper_task(self, paper_id, blueprint_id=None, model_source='local',
             additional_context=additional_context,
             school_id=school_id,
             unit_map=unit_map,
+            creative_ratio=creative_ratio,
         )
 
         # file_path is relative like "question_papers/filename.docx"
@@ -1198,6 +1206,10 @@ def update_cbse_patterns_task(self, class_filter=None, subject_filter=None):
     from .models import ExamPattern
     from . import cbse_scraper
 
+    # 'cbse_official' ONLY, deliberately: this task re-derives a pattern from the CBSE site with
+    # the LLM, which would replace a `cbse_sqp` question-by-question replica of the official sample
+    # paper with a looser reconstruction. Those are maintained by `manage.py import_sqp_patterns`
+    # from the PDFs in sqp/ instead.
     qs = ExamPattern.objects.filter(pattern_source='cbse_official').order_by('class_name', 'subject')
     if class_filter:
         qs = qs.filter(class_name__in=class_filter)
