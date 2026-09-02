@@ -6863,6 +6863,79 @@ class ContextSpreadOrderTest(SimpleTestCase):
         self.assertEqual(sorted(out), sorted(cands))
 
 
+class CanonicalTypeKeyTest(SimpleTestCase):
+    """_canon_type_keys: patterns write a question type as a display label ("Very Short
+    Answer"), an underscore key ("very_short_answer") or an abbreviation ("VSA"), and the
+    retrieval code used to compare underscore keys against display labels — so the VSA, SA
+    and LA sections of live pattern 415 (20 of 43 questions) retrieved on nothing but the
+    generic probe, and TYPE_CONTEXT_PROFILES never routed them either."""
+
+    def test_every_label_form_reads_the_same(self):
+        for label in ("Very Short Answer", "very_short_answer", "VSA",
+                      "Very Short Answer (VSA)"):
+            self.assertEqual(sg._canon_type_keys(label), ["vsa"], label)
+        for label in ("Short Answer", "short_answer", "SA", "Short Answer (SA)"):
+            self.assertEqual(sg._canon_type_keys(label), ["sa"], label)
+        for label in ("Long Answer", "long_answer", "LA", "essay"):
+            self.assertEqual(sg._canon_type_keys(label), ["la"], label)
+        for label in ("Case-Based", "case_based", "CBQ", "Case Study"):
+            self.assertEqual(sg._canon_type_keys(label), ["cbq"], label)
+
+    def test_sa_never_swallows_very_short_answer(self):
+        # The hazard the old substring gate had in reverse: "sa" IS a substring of "vsa",
+        # so a VSA section used to pull the SA profile as well.
+        for label in ("Very Short Answer", "very_short_answer", "VSA"):
+            self.assertNotIn("sa", sg._canon_type_keys(label), label)
+            self.assertNotIn("la", sg._canon_type_keys(label), label)
+
+    def test_compound_label_reports_both_halves(self):
+        self.assertEqual(sg._canon_type_keys("MCQ / Assertion-Reason"), ["assertion", "mcq"])
+
+    def test_dicts_and_unknown_labels(self):
+        self.assertEqual(sg._canon_type_keys({"type": "Long Answer", "count": 3}), ["la"])
+        self.assertEqual(sg._canon_type_keys(""), [])
+        self.assertEqual(sg._canon_type_keys("Something Unheard Of"), [])
+
+    def test_type_str_output_is_unchanged(self):
+        # A dozen call sites match space-separated display text against _type_str, and two
+        # feed it into the LLM prompt — canonicalisation must stay OUT of it.
+        self.assertEqual(sg._type_str("Very Short Answer"), "very short answer")
+        self.assertEqual(sg._type_str("Assertion-Reason"), "assertion-reason")
+        self.assertEqual(sg._type_str({"type": "Short Answer (SA)"}), "short answer (sa)")
+
+
+class QueryHintsForTypesTest(SimpleTestCase):
+    """_query_hints_for_types: every section must get its OWN leading probe. The generic
+    probe used to be first, and get_section_context admits only the top-ranked chunk per
+    chapter on a 4+ chapter paper — so all five sections of pattern 415 received a
+    byte-identical context however many type hints trailed behind it."""
+
+    def _hints(self, label):
+        return sg._query_hints_for_types([{"type": label, "count": 3}], "Science")
+
+    def test_display_labels_get_their_own_probe(self):
+        self.assertEqual(self._hints("Very Short Answer")[0],
+                         "Science definitions key terms brief answers")
+        self.assertEqual(self._hints("Short Answer")[0], "Science short answer explanations")
+        self.assertEqual(self._hints("Long Answer")[0], "Science detailed explanations processes")
+        self.assertEqual(self._hints("Case-Based")[0], "Science case study applications")
+
+    def test_generic_probe_is_last_not_first(self):
+        for label in ("MCQ", "Very Short Answer", "Short Answer", "Long Answer", "Case-Based"):
+            hints = self._hints(label)
+            self.assertEqual(hints[-1], "Science important concepts definitions", label)
+            self.assertGreater(len(hints), 1, label)
+
+    def test_unknown_type_still_retrieves(self):
+        self.assertEqual(self._hints("Something Unheard Of"),
+                         ["Science important concepts definitions"])
+
+    def test_sections_of_one_paper_get_different_leading_probes(self):
+        leads = {self._hints(l)[0] for l in
+                 ("MCQ", "Very Short Answer", "Short Answer", "Long Answer", "Case-Based")}
+        self.assertEqual(len(leads), 5)
+
+
 class StalePatternReaperTest(TestCase):
     """A pattern whose Celery task evaporated (worker/broker restart, revoked message) used
     to sit at 'queued'/'generating' forever while the create-pattern page polled it every 3s
@@ -8385,3 +8458,590 @@ class SelfContainedQuestionTest(TestCase):
         q = self._mcq("Which of the following is a property used to group objects?")
         with mock.patch.object(sg.mantle_client, "converse", return_value=(reply, 10, 20)):
             self.assertEqual(sg.run_content_quality_critic([q], "6", "Science", "Easy"), [])
+
+
+class PictureBasedSlotTest(TestCase):
+    """"One question must be picture based" is a per-question quota, not a hint.
+
+    A live Class 6 Science pattern marked Q21 (VSA), Q29 (SA) and Q41 (case study) picture-based
+    and asked for no picture anywhere else. The paper came back with the VSA picture on Q28, the
+    case-study picture on Q43, none at all in the SA section, and a Long Answer — a section that
+    asked for none — opening "He is shown a diagram with labels for different parts of a magnetic
+    door catch", describing a picture that is never printed.
+    """
+
+    def _wo(self, slots, **kw):
+        kw.setdefault("section_name", "Very Short Answer Questions")
+        return sg.SectionWorkOrder(
+            section_id="B", title="", marks=len(slots) * 2, questions_count=len(slots),
+            marks_per_question=2.0, question_types=["VSA"], instructions=["Answer any SIX."],
+            constraints={}, context_text="textbook chunk " * 40, difficulty="Easy",
+            subject="Science", class_name="6", chapters=["Exploring Magnets"], slots=slots, **kw)
+
+    def _slots(self, n, picture_at=None):
+        out = []
+        for i in range(1, n + 1):
+            s = {"qnum": 20 + i, "type": "vsa", "marks": 2}
+            if i == picture_at:
+                s["condition"] = "picture based question"
+            out.append(s)
+        return out
+
+    def _q(self, text, **kw):
+        q = {"type": "VSA", "subtype": "standard", "marks": 2, "text": text,
+             "answer_explanation": "key points", "chapter_tag": "Exploring Magnets",
+             "competency_type": "recall"}
+        q.update(kw)
+        return q
+
+    # ── which slot asked for a picture ───────────────────────────────────────────
+    def test_slot_condition_marks_the_picture_question(self):
+        self.assertTrue(sg._slot_wants_image({"condition": "picture based question"}))
+        self.assertTrue(sg._slot_wants_image({"condition": "One question must be diagram based"}))
+        self.assertTrue(sg._slot_wants_image({"format": "Figure-based MCQ"}))
+        self.assertFalse(sg._slot_wants_image({"condition": "Application question"}))
+        self.assertFalse(sg._slot_wants_image({"condition": "critical/HOTS question"}))
+        self.assertFalse(sg._slot_wants_image(None))
+
+    def test_topic_is_not_a_picture_request(self):
+        # "Diagram of the human eye" says what the question is ABOUT — the student still draws it.
+        self.assertFalse(sg._slot_wants_image({"topic": "Diagram of the human eye"}))
+
+    def test_positions_are_slot_order_one_based(self):
+        wo = self._wo(self._slots(8, picture_at=1))
+        self.assertEqual(sg._image_slot_positions(wo), [1])
+        self.assertTrue(sg._needs_image(wo))   # so the JSON schema exposes "image_prompt"
+
+    def test_section_with_no_picture_slot_needs_no_image(self):
+        self.assertFalse(sg._needs_image(self._wo(self._slots(8))))
+
+    # ── what the model is told ───────────────────────────────────────────────────
+    def test_prompt_states_the_count_and_the_position(self):
+        prompt = sg.build_section_prompt(self._wo(self._slots(8, picture_at=1)))
+        self.assertIn("PICTURE-BASED QUESTIONS — EXACTLY 1 in this section", prompt)
+        self.assertIn("Question 1 — and NO other question — must be picture-based", prompt)
+        self.assertIn('EVERY OTHER question in this section must have NO "image_prompt"', prompt)
+        # and the slot line itself states the contract, not just the teacher's wording
+        self.assertIn('PICTURE-BASED — this question MUST carry an "image_prompt"', prompt)
+
+    def test_prompt_forbids_pictures_where_none_were_asked(self):
+        prompt = sg.build_section_prompt(self._wo(self._slots(8)))
+        self.assertIn("NO PICTURES IN THIS SECTION", prompt)
+        self.assertIn("Asking the student to DRAW or sketch is fine", prompt)
+        self.assertNotIn("PICTURE-BASED QUESTIONS — EXACTLY", prompt)
+
+    def test_map_work_section_is_not_told_there_are_no_pictures(self):
+        wo = self._wo(self._slots(3), is_map_work=True)
+        self.assertNotIn("NO PICTURES IN THIS SECTION", sg.build_section_prompt(wo))
+
+    # ── enforcement ──────────────────────────────────────────────────────────────
+    def test_picture_slot_without_an_image_is_rejected(self):
+        wo = self._wo(self._slots(8, picture_at=1))
+        errs = sg._validate_by_subtype(self._q("Name a magnetic material in your kitchen."), 1, wo)
+        self.assertTrue([e for e in errs if "PICTURE-BASED" in e], errs)
+
+    def test_picture_slot_with_an_image_passes(self):
+        wo = self._wo(self._slots(8, picture_at=1))
+        q = self._q("Study the diagram above. Which end points north?",
+                    image_prompt="A bar magnet hanging from a thread, ends labelled N and S.")
+        self.assertEqual([e for e in sg._validate_by_subtype(q, 1, wo)
+                          if "PICTURE" in e or "image_prompt" in e], [])
+
+    def test_image_on_the_wrong_question_is_rejected(self):
+        # The live failure: the section's one picture landed on Q8 instead of Q1.
+        wo = self._wo(self._slots(8, picture_at=1))
+        q = self._q("Study the diagram above showing a bar magnet suspended by a thread.",
+                    image_prompt="A bar magnet suspended from a thread.")
+        errs = sg._validate_by_subtype(q, 8, wo)
+        self.assertTrue([e for e in errs if 'remove "image_prompt"' in e], errs)
+        self.assertIn("only on Q1", " ".join(errs))
+
+    def test_image_in_a_section_that_asked_for_none_is_rejected(self):
+        wo = self._wo(self._slots(3))
+        q = self._q("Study the figure above.", image_prompt="A magnet and some pins.")
+        errs = sg._validate_by_subtype(q, 2, wo)
+        self.assertTrue([e for e in errs if "on no question in this section" in e], errs)
+
+    def test_disabled_images_do_not_demand_a_picture(self):
+        # The school's kill switch is on; requiring an image_prompt would retry until it gave up.
+        wo = self._wo(self._slots(8, picture_at=1), disable_images=True)
+        errs = sg._validate_by_subtype(self._q("Name a magnetic material."), 1, wo)
+        self.assertEqual([e for e in errs if "PICTURE-BASED" in e], [])
+
+    # ── questions that point at a picture nobody prints ──────────────────────────
+    def test_phantom_picture_is_rejected(self):
+        wo = self._wo(self._slots(3))
+        for text in (
+            "Rohan is shown a diagram with labels for parts of a magnetic door catch. Explain.",
+            "Study the diagram above showing a bar magnet.",
+            "Observe the figure given below and name the part labelled A.",
+            "Based on the graph shown, what is the average speed?",
+            "In the given figure, which end points north?",
+            "The diagram below shows the digestive system.",
+            "In the diagram, label the north pole.",
+            "From the graph, find the speed at t = 5 s.",
+        ):
+            errs = sg._validate_by_subtype(self._q(text), 2, wo)
+            self.assertTrue([e for e in errs if "not printed" in e], text)
+
+    def test_questions_that_ask_the_student_to_draw_are_left_alone(self):
+        wo = self._wo(self._slots(3))
+        for text in (
+            "Draw a labelled diagram of the human eye.",
+            "Draw a neat diagram of a plant cell and label any three parts.",
+            "With the help of a diagram, explain the working of a periscope.",
+            "Explain, with a suitable diagram, how a magnet attracts iron.",
+            "Sketch the circuit and mark the direction of current.",
+            "Plot a graph of distance against time for the data below.",
+            "Label the parts of the diagram you have drawn.",
+            "A rod of length 2.5 m rests on a table. Find its weight.",
+            "Which of these is a non-standard unit of length?",
+            "Read the source above and answer the following:",
+            "In the picture she painted, the artist used only primary colours. Name them.",
+            "Name the image formed by a plane mirror.",
+            "From the table of values given below, find the missing entry.",
+        ):
+            errs = sg._validate_by_subtype(self._q(text), 2, wo)
+            self.assertEqual([e for e in errs if "not printed" in e], [], text)
+
+    def test_map_question_may_point_at_its_map(self):
+        wo = self._wo(self._slots(3), is_map_work=True)
+        q = self._q("On the given map of India, locate and label the Tropic of Cancer.")
+        self.assertEqual([e for e in sg._validate_by_subtype(q, 1, wo) if "not printed" in e], [])
+
+    # ── the render-time salvage obeys the same spec ──────────────────────────────
+    def test_render_backfill_skips_questions_that_asked_for_no_picture(self):
+        # Section instructions mentioning "picture based" used to make the renderer backfill an
+        # image_prompt onto EVERY descriptive question in the section — one request, many images.
+        sec_info = {
+            "_section_name": "Very Short Answer Questions",
+            "title": "",
+            "instructions": ["Answer any SIX. One question must be picture based."],
+            "question_slots": self._slots(3, picture_at=1),
+        }
+        qs = [
+            {"type": "VSA", "marks": 2,
+             "text": "The diagram below shows a bar magnet with its two poles clearly marked "
+                     "and a compass needle placed beside it."},
+            {"type": "VSA", "marks": 2,
+             "text": "A diagram illustrates the concept of osmosis using a U-tube setup with a "
+                     "semi-permeable membrane separating the two arms."},
+            {"type": "VSA", "marks": 2,
+             "text": "The figure shows a lever with the load, effort and fulcrum marked on it."},
+        ]
+        out = []
+        sg_gen._emit_section_questions(out, qs, sec_info, 1)
+        self.assertEqual(len([1 for kind, _ in out if kind == "image_gen"]), 1)
+        self.assertTrue(str(qs[0].get("image_prompt", "")).strip())
+        self.assertFalse(str(qs[1].get("image_prompt", "")).strip())
+        self.assertFalse(str(qs[2].get("image_prompt", "")).strip())
+
+
+class SectionAttemptOfMTest(TestCase):
+    """"Answer any SIX of the following" over eight 2-mark questions is worth 12 marks, not 16.
+
+    A live Class 6 Science pattern (80 marks, 43 questions) printed as 90: its VSA section
+    declared 16 marks for the eight questions it prints and its SA section 27 for nine, because
+    the slot schema had no way to say that a student answers only six and seven of them.
+    """
+
+    def _sec(self, n, marks, instructions, **kw):
+        sec = {
+            "name": "Very Short Answer Questions",
+            "question_slots": [{"qnum": 20 + i, "type": "vsa", "marks": marks}
+                               for i in range(1, n + 1)],
+            "instructions": instructions,
+        }
+        sec.update(kw)
+        return sec
+
+    def _paper(self):
+        """The teacher's pattern, exactly as reported: 80 marks over 43 questions."""
+        def slots(a, b, t, m):
+            return [{"qnum": q, "type": t, "marks": m} for q in range(a, b + 1)]
+        return [
+            {"name": "Multiple Choice Questions",
+             "question_slots": slots(1, 18, "mcq", 1) + slots(19, 20, "ar", 1),
+             "instructions": ["Answer all the Multiple Choice Questions.",
+                              "Internal choice is provided in some questions. A student is "
+                              "expected to attempt only one of these questions."]},
+            {"name": "Very Short Answer Questions", "question_slots": slots(21, 28, "vsa", 2),
+             "instructions": ["Answer any SIX of the following."]},
+            {"name": "Short Answer Questions", "question_slots": slots(29, 37, "sa", 3),
+             "instructions": ["Answer any SEVEN of the following."]},
+            {"name": "Long Answer Questions", "question_slots": slots(38, 40, "la", 5),
+             "instructions": ["Answer the following questions."]},
+            {"name": "Case Study Questions", "question_slots": slots(41, 43, "cbq", 4),
+             "instructions": ["Read the case study and answer based on the case."]},
+        ]
+
+    # ── reading the quota ────────────────────────────────────────────────────────
+    def test_reads_the_quota_off_the_instruction(self):
+        for instr, want in (
+            ("Answer any SIX of the following.", 6),
+            ("Answer any 6 of the following.", 6),
+            ("Attempt any five questions.", 5),
+            ("Solve any SEVEN questions from this section.", 7),
+        ):
+            self.assertEqual(psx.section_attempt(self._sec(8, 2, [instr])), want, instr)
+
+    def test_explicit_attempt_wins_over_the_instruction(self):
+        sec = self._sec(8, 2, ["Answer any SIX of the following."], attempt=5)
+        self.assertEqual(psx.section_attempt(sec), 5)
+
+    def test_compulsory_sections_have_no_quota(self):
+        for instr in (
+            "Answer all the Multiple Choice Questions.",
+            "Answer the following questions.",
+            "Read the case study and answer based on the case.",
+            "All questions are compulsory.",
+        ):
+            self.assertIsNone(psx.section_attempt(self._sec(8, 2, [instr])), instr)
+
+    def test_internal_choice_note_is_not_a_section_quota(self):
+        # The dangerous one: CBSE repeats this inside section instructions. Read as a quota it
+        # would price a 20-question MCQ section at a single mark.
+        sec = {"name": "MCQ",
+               "question_slots": [{"qnum": i, "type": "mcq", "marks": 1} for i in range(1, 21)],
+               "instructions": ["Answer all the Multiple Choice Questions.",
+                                "Internal choice is provided in some questions. A student is "
+                                "expected to attempt only one of these questions."]}
+        self.assertIsNone(psx.section_attempt(sec))
+        self.assertEqual(psx.attemptable_marks(sec), 20)
+
+    def test_implausible_quota_is_ignored(self):
+        # "any one of these questions" against 20 slots is a misread instruction, not a quota.
+        self.assertIsNone(psx.section_attempt(
+            self._sec(20, 1, ["A student may answer any one of these questions."])))
+
+    def test_quota_at_or_above_the_printed_count_is_ignored(self):
+        self.assertIsNone(psx.section_attempt(self._sec(6, 2, ["Answer any SIX of the following."])))
+
+    def test_mixed_marks_have_no_single_answer(self):
+        # "any 6 of 8" names no marks total when the eight are worth different amounts.
+        sec = self._sec(8, 2, ["Answer any SIX of the following."])
+        sec["question_slots"][0]["marks"] = 3
+        self.assertIsNone(psx.section_attempt(sec))
+        self.assertEqual(psx.attemptable_marks(sec), 17)
+
+    # ── what the section is worth ────────────────────────────────────────────────
+    def test_attemptable_marks(self):
+        self.assertEqual(
+            psx.attemptable_marks(self._sec(8, 2, ["Answer any SIX of the following."])), 12)
+        self.assertEqual(
+            psx.attemptable_marks(self._sec(8, 2, ["Answer all the questions."])), 16)
+
+    def test_derive_aggregates_records_the_quota_and_the_earnable_marks(self):
+        secs = [self._sec(8, 2, ["Answer any SIX of the following."])]
+        psx.derive_aggregates_from_slots(secs)
+        self.assertEqual(secs[0]["attempt"], 6)
+        self.assertEqual(secs[0]["marks"], 12)
+        self.assertEqual(secs[0]["questions_count"], 8)   # all eight are still printed
+
+    def test_paper_totals_match_the_teachers_pattern(self):
+        secs = psx.normalize_slots(self._paper())
+        psx.derive_aggregates_from_slots(secs)
+        self.assertEqual([s["marks"] for s in secs], [20, 12, 21, 15, 12])
+        p = ExamPattern(name="t", sections=secs)
+        self.assertEqual(p.get_total_marks(), 80)
+        self.assertEqual(p.get_total_questions(), 43)
+
+    def test_structure_validator_accepts_the_quota(self):
+        secs = psx.normalize_slots(self._paper())
+        psx.derive_aggregates_from_slots(secs)
+        self.assertEqual(psx.validate_pattern_structure(secs, declared_total=80), [])
+
+    def test_structure_validator_still_catches_a_wrong_section_total(self):
+        secs = psx.normalize_slots(self._paper())
+        psx.derive_aggregates_from_slots(secs)
+        secs[1]["marks"] = 16                       # the pre-fix value
+        msgs = " | ".join(e["msg"] for e in psx.validate_pattern_structure(secs))
+        self.assertIn("answers any 6 of 8 questions, worth 12 marks", msgs)
+
+    def test_schema_prompt_documents_the_quota(self):
+        self.assertIn("attempt", psx.SLOT_SCHEMA_PROMPT_RULES)
+        self.assertIn("attempt 6, marks 12, NOT 16", psx.SLOT_SCHEMA_PROMPT_RULES)
+
+    # ── a pattern saved before this fix still prints correctly ───────────────────
+    def _stale_pattern(self):
+        """The pattern as it sits in the database now: no 'attempt', marks = every slot."""
+        secs = psx.normalize_slots(self._paper())
+        for s in secs:
+            s["marks"] = sum(sl["marks"] for sl in s["question_slots"])
+            s["questions_count"] = len(s["question_slots"])
+        return ExamPattern(name="Half-Yearly Exam", sections=secs, total_marks=90,
+                           class_name="6", subject="Science")
+
+    def test_blueprint_recovers_the_quota_without_a_re_save(self):
+        bp = sg_gen.pattern_sections_to_blueprint_dict(self._stale_pattern())
+        vsa = bp["Very Short Answer Questions"]
+        self.assertEqual((vsa["marks"], vsa["attempt_count"], vsa["questions_count"]), (12, 6, 8))
+        mcq = bp["Multiple Choice Questions"]
+        self.assertEqual((mcq["marks"], mcq["attempt_count"]), (20, None))
+
+    def test_header_total_comes_from_the_blueprint_when_the_stored_one_is_stale(self):
+        pattern = self._stale_pattern()
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        self.assertEqual(sg_gen._paper_total_marks(pattern, bp), 80)
+
+    def test_header_total_falls_back_to_the_stored_value(self):
+        pattern = self._stale_pattern()
+        self.assertEqual(sg_gen._paper_total_marks(pattern, {}), 90)
+        self.assertEqual(sg_gen._paper_total_marks(pattern, {"A": {"marks": 0}}), 90)
+
+    # ── generation budgets the attempted subset ──────────────────────────────────
+    def test_work_order_generates_all_and_budgets_the_attempted_subset(self):
+        pattern = self._stale_pattern()
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        wos = {w.section_name: w for w in sg.build_work_orders(
+            bp, pattern, {}, "Easy", "6", "Science", ["Exploring Magnets"])}
+        vsa = wos["Very Short Answer Questions"]
+        self.assertEqual((vsa.marks, vsa.questions_count), (12, 8))
+        self.assertEqual((vsa.provided_count, vsa.attempt_count), (8, 6))
+        self.assertIn("answer any 6 of these 8 questions", sg.build_section_prompt(vsa))
+        mcq = wos["Multiple Choice Questions"]
+        self.assertEqual((mcq.marks, mcq.questions_count, mcq.attempt_count), (20, 20, None))
+
+    def test_the_eight_generated_questions_pass_the_section_marks_check(self):
+        # wo.marks budgets six questions; the section legitimately ships eight worth 16.
+        pattern = self._stale_pattern()
+        bp = sg_gen.pattern_sections_to_blueprint_dict(pattern)
+        wo = {w.section_name: w for w in sg.build_work_orders(
+            bp, pattern, {}, "Easy", "6", "Science",
+            ["Exploring Magnets"])}["Very Short Answer Questions"]
+        data = {"questions": [
+            {"type": "VSA", "subtype": "standard", "marks": 2, "chapter_tag": "Exploring Magnets",
+             "competency_type": "recall", "answer_explanation": "key points",
+             "text": f"State one property of a magnet, point {i}."} for i in range(1, 9)]}
+        errs = [e for e in sg.validate_section_output(data, wo)
+                if "marks total" in e or e.startswith("Expected")]
+        self.assertEqual(errs, [])
+
+    # ── the paper says so ────────────────────────────────────────────────────────
+    def test_section_instructions_are_printed_once(self):
+        bp = sg_gen.pattern_sections_to_blueprint_dict(self._stale_pattern())
+        out = sg_gen.render_section_questions(
+            [], {k: {"questions": []} for k in bp}, bp, "6", "Science", [], None)
+        headers = [t for kind, t in out if kind == "header"]
+        instructions = [t for kind, t in out if kind == "instruction"]
+        # This pattern states every section's heading itself, so the headings print the way the
+        # teacher wrote them — roman numeral, their words, and the arithmetic of what a student
+        # ANSWERS — instead of the generic "SECTION – <name> (N MARKS)" banner.
+        self.assertIn("II. Answer any SIX of the following.\t6 x 2 = 12", headers)
+        self.assertIn("III. Answer any SEVEN of the following.\t7 x 3 = 21", headers)
+        self.assertIn("I. Answer all the Multiple Choice Questions.\t20 x 1 = 20", headers)
+        self.assertIn("IV. Answer the following questions.\t3 x 5 = 15", headers)
+        self.assertIn("V. Read the case study and answer based on the case.\t3 x 4 = 12", headers)
+        # a heading is not repeated as an instruction line underneath itself
+        self.assertNotIn("Answer any SIX of the following.", instructions)
+        self.assertNotIn("Answer any SEVEN of the following.", instructions)
+        # the general internal-choice note is repeated across sections in real patterns and
+        # must print once, not once per section
+        repeated = [t for t in instructions if t.startswith("Internal choice")]
+        self.assertEqual(len(repeated), 1)
+
+    # ── every printed question keeps its full marks ──────────────────────────────
+    def test_reconcile_keeps_full_marks_on_every_printed_question(self):
+        """"Answer any SIX" budgets 12m, but all EIGHT printed questions are worth 2m each.
+
+        reconcile_uniform_marks compared 8 x 2 = 16 against the 12m budget, called the section
+        inconsistent and spread 12 across the eight as 2,2,2,2,1,1,1,1 — docking four questions
+        the paper's own audit then flagged as "carries 1m but the pattern requires 2m".
+        """
+        wo = sg.SectionWorkOrder(
+            section_name="Very Short Answer Questions", section_id="B", title="",
+            marks=12, questions_count=8, marks_per_question=2.0,
+            question_types=[{"type": "Very Short Answer", "count": 8, "marks_each": 2}],
+            instructions=[], constraints={}, context_text="", difficulty="Easy",
+            subject="Science", class_name="6", chapters=["Alpha"],
+            provided_count=8, attempt_count=6)
+        data = {"Very Short Answer Questions": {
+            "questions": [{"text": f"Q{i}", "marks": 2} for i in range(8)]}}
+        out = sg.reconcile_uniform_marks(data, [wo])
+        marks = [q["marks"] for q in out["Very Short Answer Questions"]["questions"]]
+        self.assertEqual(marks, [2.0] * 8, "printed questions must keep full marks")
+        self.assertEqual(sum(marks), 16.0)
+
+    def test_reconcile_still_distributes_a_genuinely_inconsistent_section(self):
+        """The attempt-aware fix must not disarm the real DISTRIBUTE case: a section with no
+        attempt quota whose count x marks_per_question can never equal its declared marks."""
+        wo = sg.SectionWorkOrder(
+            section_name="Short Answer Questions", section_id="C", title="",
+            marks=10, questions_count=3, marks_per_question=3.0,
+            question_types=[{"type": "Short Answer", "count": 3, "marks_each": 3}],
+            instructions=[], constraints={}, context_text="", difficulty="Easy",
+            subject="Science", class_name="6", chapters=["Alpha"])
+        data = {"Short Answer Questions": {
+            "questions": [{"text": f"Q{i}", "marks": 3} for i in range(3)]}}
+        out = sg.reconcile_uniform_marks(data, [wo])
+        marks = [q["marks"] for q in out["Short Answer Questions"]["questions"]]
+        self.assertEqual(sum(marks), 10)
+        self.assertEqual(sorted(marks, reverse=True), [4, 3, 3])
+
+
+class PerQuestionSourceAnchorTest(TestCase):
+    """Each printed question is bound to ONE chapter and ONE numbered excerpt of it.
+
+    Measured defect: the weighted chapter plan reached the prompt only as an aggregate
+    Counter ("3 from Optics, 2 from Waves"), and the reference material was one unlabeled
+    blob whose first chunk consumed each chapter's whole character budget — so a section's
+    questions were all written off the same top-ranked paragraph (only 5 of 55 questions in
+    the reference paper shared a 5-word run with the material they were given)."""
+
+    def _fake_query(self, docs_by_unit):
+        def q(**kwargs):
+            docs = list(docs_by_unit.get(kwargs.get("unit"), []))[:kwargs.get("n_results", 5)]
+            return {"ids": [[str(i) for i in range(len(docs))]], "documents": [docs],
+                    "metadatas": [[{"chunk_index": i} for i in range(len(docs))]],
+                    "distances": [[0.0] * len(docs)]}
+        return q
+
+    def _ctx(self, docs, max_chars=4000):
+        from unittest import mock
+        with mock.patch.object(sg.embeddings, "query", side_effect=self._fake_query(docs)), \
+             mock.patch.object(sg.embeddings, "get_chapter_summary",
+                               side_effect=lambda c, s, u, school_id=None: ""):
+            return sg.get_section_context("10", "Physics", [u for u in docs if u],
+                                          ["waves"], max_chars=max_chars)
+
+    def _wo(self, **kw):
+        base = dict(section_name="Section B", section_id="B", title="", marks=10,
+                    questions_count=4, marks_per_question=2.5, question_types=["SA"],
+                    instructions=[], constraints={}, context_text="", difficulty="Medium",
+                    subject="Physics", class_name="10", chapters=["Alpha", "Beta"])
+        base.update(kw)
+        return sg.SectionWorkOrder(**base)
+
+    # ── retrieval: several labeled excerpts per chapter, same character budget ──────
+    def test_chapter_slice_yields_several_numbered_excerpts(self):
+        docs = {"Alpha": [f"Alpha sentence {i}. " + "a" * 900 for i in range(6)],
+                "Beta":  [f"Beta sentence {i}. " + "b" * 900 for i in range(6)]}
+        ctx = self._ctx(docs)
+        self.assertIn("[E1] ", ctx)
+        self.assertIn("[E2] ", ctx)
+        idx = sg._excerpt_index(ctx)
+        by_ch = {}
+        for eid, ch in idx:
+            by_ch.setdefault(ch, []).append(eid)
+        # every chapter contributes MORE than the single excerpt the old loop admitted…
+        self.assertGreater(len(by_ch["Alpha"]), 1)
+        self.assertGreater(len(by_ch["Beta"]), 1)
+        # …ids are globally unique and ordered…
+        self.assertEqual([e for e, _ in idx], sorted(e for e, _ in idx))
+        self.assertEqual(len({e for e, _ in idx}), len(idx))
+        # …and it still costs the same window (no extra input tokens).
+        self.assertLessEqual(len(ctx), 5000)
+
+    def test_many_chapter_papers_no_longer_collapse_to_one_excerpt_each(self):
+        """The measured cliff: at 4+ chapters every chapter contributed exactly ONE excerpt
+        because the first chunk spent the whole slice. A one-chapter paper must not lose
+        excerpts in exchange."""
+        from unittest import mock
+        chs = [f"Ch{i}" for i in range(1, 7)]
+        docs = {c: [f"{c} para {i}. " + ("word " * 195) for i in range(40)] for c in chs}
+        counts = {}
+        for n in (1, 4, 6):
+            with mock.patch.object(sg.embeddings, "query",
+                                   side_effect=self._fake_query(docs)), \
+                 mock.patch.object(sg.embeddings, "get_chapter_summary",
+                                   side_effect=lambda c, s, u, school_id=None: "S" * 400):
+                ctx = sg.get_section_context("10", "Physics", chs[:n], ["hint"])
+            counts[n] = len(sg._excerpt_index(ctx))
+            self.assertLessEqual(len(ctx), 10000)      # window unchanged (1.25 × 8000)
+        self.assertGreaterEqual(counts[1], 6)          # one-chapter papers keep their spread
+        self.assertGreaterEqual(counts[4], 8)          # was 4 (one per chapter)
+        self.assertGreaterEqual(counts[6], 12)         # was 6 (one per chapter)
+
+    def test_excerpt_never_shrinks_below_the_useful_floor(self):
+        """A tight budget falls back to ONE excerpt rather than shredding the chapter into
+        fragments too small to ground an answer."""
+        docs = {"Alpha": ["Alpha. " + "a" * 900 for _ in range(4)]}
+        ctx = self._ctx(docs, max_chars=sg._EXCERPT_MIN_CHARS + 100)
+        self.assertEqual(len(sg._excerpt_index(ctx)), 1)
+
+    def test_trim_excerpt_cuts_at_a_sentence_boundary(self):
+        out = sg._trim_excerpt("One two three four. Five six seven eight nine ten.", 30)
+        self.assertEqual(out, "One two three four.")
+        self.assertEqual(sg._trim_excerpt("short", 100), "short")
+
+    def test_excerpt_index_attributes_each_id_to_its_chapter(self):
+        ctx = ("=== CHAPTER: Alpha ===\n\n[E1] one\n\n[E2] two\n\n"
+               "=== CHAPTER: Beta ===\n\n[E3] three")
+        self.assertEqual(sg._excerpt_index(ctx),
+                         [(1, "Alpha"), (2, "Alpha"), (3, "Beta")])
+        self.assertEqual(sg._excerpt_index(""), [])
+
+    # ── binding: slot i → chapter_plan[i] → a DIFFERENT excerpt of that chapter ─────
+    def test_each_slot_gets_its_own_excerpt_of_its_planned_chapter(self):
+        ctx = ("=== CHAPTER: Alpha ===\n\n[E1] a1\n\n[E2] a2\n\n"
+               "=== CHAPTER: Beta ===\n\n[E3] b1\n\n[E4] b2")
+        wo = self._wo(context_text=ctx, slots=[{"type": "sa", "marks": 2} for _ in range(4)],
+                      chapter_plan=["Alpha", "Beta", "Alpha", "Beta"])
+        plan = sg.plan_slot_excerpts(wo)
+        self.assertEqual(plan, {0: ("Alpha", 1), 1: ("Beta", 3),
+                                2: ("Alpha", 2), 3: ("Beta", 4)})
+        # four questions, four DIFFERENT excerpts — the whole point
+        self.assertEqual(len({eid for _c, eid in plan.values()}), 4)
+
+    def test_more_slots_than_excerpts_wraps_instead_of_dropping(self):
+        ctx = "=== CHAPTER: Alpha ===\n\n[E1] a1\n\n[E2] a2"
+        wo = self._wo(context_text=ctx, slots=[{"type": "sa"} for _ in range(3)],
+                      chapter_plan=["Alpha", "Alpha", "Alpha"])
+        self.assertEqual(sg.plan_slot_excerpts(wo),
+                         {0: ("Alpha", 1), 1: ("Alpha", 2), 2: ("Alpha", 1)})
+
+    def test_teacher_pinned_and_non_textbook_slots_are_left_alone(self):
+        ctx = "=== CHAPTER: Alpha ===\n\n[E1] a1\n\n[E2] a2"
+        wo = self._wo(context_text=ctx, chapter_plan=["Alpha"] * 4, slots=[
+            {"type": "sa", "chapter": "Teacher's Unit"},   # blueprint pin outranks the plan
+            {"type": "sa", "source": "general"},           # must not come from the textbook
+            {"type": "sa", "source": "unseen"},            # composes its own passage
+            {"type": "sa", "own_question": True},          # keeps its chapter, invents the rest
+        ])
+        self.assertEqual(sg.plan_slot_excerpts(wo), {3: ("Alpha", None)})
+
+    def test_no_plan_or_no_slots_is_a_no_op(self):
+        ctx = "=== CHAPTER: Alpha ===\n\n[E1] a1"
+        self.assertEqual(sg.plan_slot_excerpts(self._wo(context_text=ctx)), {})
+        self.assertEqual(
+            sg.plan_slot_excerpts(self._wo(context_text=ctx, slots=[{"type": "sa"}])), {})
+
+    def test_missing_excerpts_still_binds_the_chapter(self):
+        """No indexed material (or a context rebuilt without labels): the question is still
+        pinned to its planned chapter, which the aggregate Counter never did per question."""
+        wo = self._wo(context_text="plain unlabeled context", chapter_plan=["Alpha", "Beta"],
+                      slots=[{"type": "sa"}, {"type": "sa"}])
+        self.assertEqual(sg.plan_slot_excerpts(wo), {0: ("Alpha", None), 1: ("Beta", None)})
+
+    # ── prompt rendering ───────────────────────────────────────────────────────────
+    def test_prompt_carries_the_per_slot_assignment_and_the_convention(self):
+        ctx = ("=== CHAPTER: Alpha ===\n\n[E1] a1\n\n[E2] a2\n\n"
+               "=== CHAPTER: Beta ===\n\n[E3] b1")
+        wo = self._wo(context_text=ctx, questions_count=3,
+                      slots=[{"type": "sa", "marks": 2} for _ in range(3)],
+                      chapter_plan=["Alpha", "Beta", "Alpha"])
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn('| CHAPTER: "Alpha" ONLY | SOURCE EXCERPT: [E1]', prompt)
+        self.assertIn('| CHAPTER: "Beta" ONLY | SOURCE EXCERPT: [E3]', prompt)
+        self.assertIn('| CHAPTER: "Alpha" ONLY | SOURCE EXCERPT: [E2]', prompt)
+        self.assertIn("A line's SOURCE EXCERPT is the material for THAT question", prompt)
+        self.assertIn("do NOT write two questions off the same excerpt", prompt)
+
+    def test_own_knowledge_sections_get_no_chapter_or_excerpt_on_their_slots(self):
+        """An English grammar/writing section may use no textbook content at all — naming a
+        chapter there re-invites exactly what its rules forbid."""
+        wo = self._wo(context_text="", english_own_only=True, is_english_grammar=True,
+                      questions_count=2, chapter_plan=["Alpha", "Beta"],
+                      slots=[{"type": "sa"}, {"type": "sa"}])
+        prompt = sg.build_section_prompt(wo)
+        self.assertNotIn("SOURCE EXCERPT", prompt)
+        self.assertNotIn('CHAPTER: "Alpha"', prompt)
+        self.assertIn("CHAPTER ASSIGNMENT: NONE", prompt)
+
+    def test_blueprint_pin_still_renders_its_own_wording(self):
+        ctx = "=== CHAPTER: Alpha ===\n\n[E1] a1"
+        wo = self._wo(context_text=ctx, questions_count=1, chapter_plan=["Alpha"],
+                      slots=[{"type": "sa", "chapter": "Teacher's Unit"}])
+        prompt = sg.build_section_prompt(wo)
+        self.assertIn('CHAPTER: draw this question from "Teacher\'s Unit" ONLY', prompt)
+        self.assertNotIn("SOURCE EXCERPT", prompt)

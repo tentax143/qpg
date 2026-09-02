@@ -20,6 +20,7 @@ from docx.enum.table import WD_ROW_HEIGHT_RULE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from . import embeddings
+from . import pattern_structure
 from . import mantle_client
 from .models import ExamBlueprint, BlueprintTemplate, GeneratedQuestion
 from .blueprint_manager import BlueprintManager
@@ -774,6 +775,32 @@ _TYPE_GROUP_ORDER = [
 _ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"]
 
 
+def _fmt_marks_num(v):
+    """2.0 -> '2', 2.5 -> '2.5' — marks read as whole numbers on a printed paper."""
+    f = _coerce_float(v, 0.0)
+    return str(int(f)) if f == int(f) else f"{f:g}"
+
+
+def _section_calc(sec_info):
+    """"6 x 2 = 12" — the arithmetic a teacher writes beside a section heading.
+
+    The multiplier is what the student ANSWERS, not what is printed: an attempt-N-of-M section
+    prints eight 2-mark questions but is worth 6 x 2 = 12. Returns "" for a section whose marks
+    are not a single product (mixed marks), where no such line is truthful.
+    """
+    mpq = _coerce_float(sec_info.get('marks_per_question'), 0.0)
+    marks = _coerce_float(sec_info.get('marks'), 0.0)
+    try:
+        count = int(sec_info.get('attempt_count') or sec_info.get('questions_count') or 0)
+    except (TypeError, ValueError):
+        return ""
+    if not count or mpq <= 0 or marks <= 0:
+        return ""
+    if abs(count * mpq - marks) > 0.5:
+        return ""
+    return f"{count} x {_fmt_marks_num(mpq)} = {_fmt_marks_num(marks)}"
+
+
 def _coerce_float(v, default=0.0):
     try:
         return float(v)
@@ -938,12 +965,16 @@ def _regroup_section(questions_list, sec_info):
 def _emit_section_questions(all_questions, questions_list, sec_info, q_counter,
                             class_name=None, subject=None, chapters=None, paper_id=None):
     """Render a section's questions grouped by type with correct per-type marks."""
+    position = 0
     for label, qs in _regroup_section(questions_list, sec_info):
         if label:
             all_questions.append(("subheader", label))
         for q in qs:
+            # Slot sections render in authored order (see _regroup_section), so this counter is
+            # the slot index the picture spec is attached to.
+            position += 1
             if isinstance(q, dict):
-                _inject_missing_diagram_prompt(q, sec_info)
+                _inject_missing_diagram_prompt(q, sec_info, position)
                 q["qnum"] = q_counter
                 q_counter = process_question(all_questions, q, q_counter,
                                              class_name, subject, chapters, paper_id)
@@ -961,6 +992,7 @@ def _emit_section_questions(all_questions, questions_list, sec_info, q_counter,
 
 def render_section_questions(all_questions, data, blueprint, class_name=None, subject=None, chapters=None, paper_id=None):
     q_counter = 1
+    seen_instructions = set()
 
     # Resolve sections_data from the data dict
     if "sections" in data:
@@ -969,6 +1001,17 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
             sections_data = {s["name"]: s for s in sections_data if isinstance(s, dict) and "name" in s}
     else:
         sections_data = data
+
+    # A teacher-authored pattern states each section heading in its own words together with the
+    # arithmetic ("II. Answer any SIX of the following    6 x 2 = 12"). When every section
+    # carries such an instruction, print the headings the way the teacher wrote them instead of
+    # the generic "SECTION – <name> (N MARKS)" banner. All-or-nothing so one section without an
+    # instruction can't leave the paper with two different heading styles.
+    _teacher_headings = bool(blueprint) and all(
+        isinstance(si, dict) and any(str(x).strip() for x in (si.get('instructions') or []))
+        for si in blueprint.values()
+    )
+    _sec_roman = 0
 
     for sec, sec_info in blueprint.items():
         if not isinstance(sec_info, dict):
@@ -994,8 +1037,39 @@ def render_section_questions(all_questions, data, blueprint, class_name=None, su
         else:
             prefix = str(sec) if already_labelled else f"SECTION – {sec}"
             header_text = f"{prefix} ({marks} MARKS)"
+
+        # The teacher's own heading, when the pattern carries one. A tab separates the heading
+        # from its arithmetic; both renderers set a right tab stop so the sum sits at the
+        # margin the way it does on a printed paper.
+        lead_instruction = None
+        if _teacher_headings:
+            _instrs = [" ".join(str(x).split()) for x in (sec_info.get('instructions') or [])]
+            _instrs = [x for x in _instrs if x]
+            if _instrs:
+                lead_instruction = _instrs[0]
+                numbered = (f"{_ROMAN[_sec_roman]}. {lead_instruction}"
+                            if _sec_roman < len(_ROMAN) else lead_instruction)
+                calc = _section_calc(sec_info)
+                header_text = f"{numbered}\t{calc}" if calc else numbered
+                _sec_roman += 1
+
         all_questions.append(("header", header_text))
-        
+
+        # The teacher's own section instruction ("Answer any SIX of the following") — without it
+        # a student meets eight 2-mark questions under a heading that says 12 marks and has no
+        # way to know they answer six. Deduplicated across the paper: patterns routinely repeat
+        # one general note (the internal-choice line) inside every section's instructions.
+        for _instr in (sec_info.get('instructions') or []):
+            _instr = " ".join(str(_instr).split())
+            if not _instr:
+                continue
+            # Already printed as this section's heading — don't say it twice.
+            if lead_instruction and _instr == lead_instruction:
+                continue
+            if _instr.lower() not in seen_instructions:
+                seen_instructions.add(_instr.lower())
+                all_questions.append(("instruction", _instr))
+
         # Get section data - handle both old and new structures
         # Try exact match first
         section_key = None
@@ -1251,9 +1325,14 @@ _INLINE_IMG_RE = re.compile(
 # meaningless picture (e.g. a CEO/Manager org chart for a chemistry CBQ). The real image is
 # already supplied via the section's image_path or an explicit image_prompt — so these stems
 # must never be turned into image prompts.
+# The definite article is what makes a stem a POINTER: "study the diagram" points at something
+# the paper prints, while "osmosis using a U-tube setup with a semi-permeable membrane" describes
+# a scene to draw. Without it every descriptive sentence containing "using … a setup" read as a
+# pointer and its image was silently dropped.
 _GENERIC_IMG_STEM_RE = re.compile(
     r'(observe|study|look\s+at|refer\s+to|examine|consider|based\s+on|using|from|read)\b'
-    r'[^.]{0,50}\b(diagram|figure|image|graph|picture|illustration|chart|map|flow\s*chart|'
+    r'[^.]{0,50}\b(?:the|this|that|these|those)\s+'
+    r'(diagram|figure|image|graph|picture|illustration|chart|map|flow\s*chart|'
     r'table|setup|set-up|circuit|structure|source|case|passage|given|above|below|following)\b',
     re.IGNORECASE,
 )
@@ -1365,13 +1444,25 @@ def _derive_diagram_prompt(text: str) -> str | None:
     )
 
 
-def _inject_missing_diagram_prompt(q, sec_info):
+def _inject_missing_diagram_prompt(q, sec_info, position=None):
     """Backfill image_prompt when a diagram section question forgot to provide one."""
     if not isinstance(q, dict):
         return q
     if str(q.get("image_prompt", "")).strip():
         return q
-    if not _section_wants_question_diagrams(sec_info):
+
+    # A slot-authored section names exactly which questions carry a picture. The section-wide
+    # salvage below would put an image above every question that merely reads descriptively —
+    # so in a section where the teacher asked for ONE picture, it printed several. It is only
+    # safe when there is no per-question spec to obey.
+    slots = sec_info.get("question_slots") if isinstance(sec_info, dict) else None
+    if slots:
+        from .section_generator import _slot_wants_image
+        if position is None or not (1 <= position <= len(slots)):
+            return q
+        if not _slot_wants_image(slots[position - 1]):
+            return q
+    elif not _section_wants_question_diagrams(sec_info):
         return q
 
     text = str(q.get("text") or q.get("question") or "").strip()
@@ -2210,8 +2301,16 @@ def render_pdf(class_name, subject, chapters, all_questions, summary, header_met
         print(f"[PDF-Render-Loop] Processing: typ={typ}, y={y}, text_len={len(str(text))}")
         if typ == "header":
             can.setFont("Helvetica-Bold", 14)
-            can.drawCentredString(300, y, text)
-            y -= 60  # Even more spacing after header to avoid clash
+            # Teacher-authored heading: "<heading>\t<6 x 2 = 12>" prints left with the
+            # arithmetic flush right, matching the pattern the teacher wrote.
+            _left, _tab, _calc = str(text).partition("\t")
+            if _calc:
+                can.drawString(60, y, _left)
+                can.drawRightString(540, y, _calc)
+                y -= 30
+            else:
+                can.drawCentredString(300, y, text)
+                y -= 60  # Even more spacing after header to avoid clash
 
         elif typ == "subheader":
             can.setFont("Helvetica-Bold", 12)
@@ -3033,29 +3132,41 @@ def render_docx(class_name, subject, chapters, all_questions, summary, header_me
     for typ, text in all_questions:
         text_str = text if isinstance(text, str) else str(text)
         if typ == "header":
-            # CBSE-style section header: centered, bold, bottom rule
             sp = doc.add_paragraph()
             sp.paragraph_format.space_after = Pt(0)
             p = doc.add_paragraph()
-            r = p.add_run(text_str)
+            # A teacher-authored heading carries its arithmetic after a tab
+            # ("II. Answer any SIX of the following\t6 x 2 = 12"): print it as the teacher
+            # wrote it — left aligned, sum flush at the right margin, no centering or rule.
+            head_left, _tab, head_calc = text_str.partition("\t")
+            if head_calc:
+                from docx.enum.text import WD_TAB_ALIGNMENT
+                from docx.shared import Twips
+                p.paragraph_format.tab_stops.add_tab_stop(
+                    Twips(int(marks_tab_twips)), WD_TAB_ALIGNMENT.RIGHT)
+                r = p.add_run(f"{head_left}\t{head_calc}")
+            else:
+                r = p.add_run(text_str)
             r.bold = True
             r.font.size = Pt(16)   # section header — larger than the 14pt body
             if not is_tamil:
                 r.font.name = 'Times New Roman'
             if is_tamil:
                 set_tamil_font(r, script_font)
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             p.paragraph_format.space_before = Pt(8)
             p.paragraph_format.space_after = Pt(6)
-            pPr = p._element.get_or_add_pPr()
-            pBdr = OxmlElement('w:pBdr')
-            bdr = OxmlElement('w:bottom')
-            bdr.set(qn('w:val'), 'single')
-            bdr.set(qn('w:sz'), '6')
-            bdr.set(qn('w:space'), '4')
-            bdr.set(qn('w:color'), '555555')
-            pBdr.append(bdr)
-            pPr.append(pBdr)
+            if not head_calc:
+                # CBSE-style banner: centered with a bottom rule.
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                pPr = p._element.get_or_add_pPr()
+                pBdr = OxmlElement('w:pBdr')
+                bdr = OxmlElement('w:bottom')
+                bdr.set(qn('w:val'), 'single')
+                bdr.set(qn('w:sz'), '6')
+                bdr.set(qn('w:space'), '4')
+                bdr.set(qn('w:color'), '555555')
+                pBdr.append(bdr)
+                pPr.append(pBdr)
         elif typ == "subheader":
             p = doc.add_paragraph()
             r = p.add_run(text_str)
@@ -3446,7 +3557,7 @@ def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters
         "class_name": class_name,
         "subject": subject,
         "pattern_name": getattr(pattern, "name", ""),
-        "marks": getattr(pattern, "total_marks", 0),
+        "marks": _paper_total_marks(pattern, blueprint),
     }
     if additional_context:
         try:
@@ -3466,6 +3577,27 @@ def _render_paper_from_data(paper_data, blueprint, class_name, subject, chapters
 # ------------------------------
 # Entrypoint
 # ------------------------------
+def _paper_total_marks(pattern, blueprint):
+    """The marks the printed paper actually adds up to.
+
+    pattern.total_marks is a stored integer, recomputed only when the pattern is saved — one
+    saved before attempt-N-of-M was understood still carries the sum of every printed question
+    (90 for an 80-mark paper). The blueprint is rebuilt from the slots on every run, so prefer it
+    whenever every section states its marks; fall back to the stored value otherwise.
+    """
+    stored = getattr(pattern, "total_marks", 0) or 0
+    if not isinstance(blueprint, dict) or not blueprint:
+        return stored
+    marks = [float(s.get("marks") or 0) for s in blueprint.values() if isinstance(s, dict)]
+    if not marks or any(m <= 0 for m in marks):
+        return stored
+    total = sum(marks)
+    total = int(total) if total == int(total) else round(total, 2)
+    if stored and total != stored:
+        print(f"[Header] Paper total {total} from the blueprint (pattern.total_marks={stored})")
+    return total
+
+
 def pattern_sections_to_blueprint_dict(pattern):
     """
     Convert pattern.sections (list) to blueprint dict format expected by generators.
@@ -3501,9 +3633,18 @@ def pattern_sections_to_blueprint_dict(pattern):
         if not qt and title:
             qt = [t.strip() for t in re.split(r'[,+&/]|\band\b', title) if t.strip()]
 
-        marks = section.get('marks', 0)
+        # What the student can earn: an "answer any SIX of eight" section prints 8 questions but
+        # is worth 6 x 2 = 12. Recomputed here rather than trusted from the stored section, so a
+        # pattern saved before attempt-N-of-M was understood prints the right marks without a
+        # re-save. Falls back to the stored value for sections with no slots.
+        marks = pattern_structure.attemptable_marks(section) or section.get('marks', 0)
+        marks = int(marks) if float(marks) == int(marks) else marks
+        attempt = pattern_structure.section_attempt(section)
+        # `marks` is what the section is WORTH (attempt-N-of-M counts only N), so the per-question
+        # value divides by the number answered, not the number printed — eight 2-mark questions
+        # marked "answer any six" are worth 12, and 12/8 would call each one 1.5m.
         marks_per_q = section.get('marks_per_question') or section.get('marks_each') or (
-            round(marks / q_count, 2) if q_count else 1
+            round(marks / (attempt or q_count), 2) if (attempt or q_count) else 1
         )
 
         blueprint_dict[section_name] = {
@@ -3520,7 +3661,7 @@ def pattern_sections_to_blueprint_dict(pattern):
             'section_subject': section.get('subject', ''),
             # MO-01: preserve attempt-N-of-M counts
             # Seeded format stores 'attempt' directly; raw pattern dict uses 'attempt' too
-            'attempt_count': section.get('attempt'),
+            'attempt_count': attempt or section.get('attempt'),
             'provided_count': q_count,   # questions_count = the full provided set
             # Store raw question_types detail for mixed-marks detection
             'question_type_details': section.get('question_types', []),
@@ -4274,7 +4415,7 @@ OUTPUT: Return ONLY the corrected JSON, no explanations.
                 "class_name": class_name,
                 "subject": subject,
                 "pattern_name": getattr(pattern, 'name', ''),
-                "marks": getattr(pattern, 'total_marks', 0),
+                "marks": _paper_total_marks(pattern, blueprint),
             }
             # Parse additional_context for duration/marks/class_name if JSON
             if additional_context:

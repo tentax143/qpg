@@ -8,6 +8,8 @@ from them so every existing consumer keeps working. See
 docs/PER_QUESTION_STRUCTURE.md for the full contract.
 """
 
+import re
+
 # Canonical slot type -> pipeline category (the vocabulary of
 # section_generator._type_category: mcq / vsa / sa / la / cbq / map).
 SLOT_TYPE_CATEGORY = {
@@ -106,18 +108,27 @@ SLOT_SCHEMA_PROMPT_RULES = """QUESTION SLOT RULES — inside every section, list
   "not from the textbook", "give in general", "on your own", "general knowledge").
   Omit otherwise.
 - condition: any special instruction for this specific question, in the teacher's words
-  (e.g. "critical/HOTS question", "questions must be based on the paragraph").
+  (e.g. "critical/HOTS question", "picture based question", "questions must be based on the
+  paragraph"). Mark ONLY the question the teacher singled out — "one question must be picture
+  based" is a quota of one, not a licence for the whole section.
 
 SECTION RULES:
-- id ("SEC_A", "SEC_B", ...), name, marks (total for the section — MUST equal the sum of its
-  slots' marks), instructions (list of strings), constraints (object, e.g. word limits),
-  passage_instruction (for unseen reading passages: length, difficulty), extract_instruction
-  (for literature extracts).
+- id ("SEC_A", "SEC_B", ...), name, marks (see below), instructions (list of strings),
+  constraints (object, e.g. word limits), passage_instruction (for unseen reading passages:
+  length, difficulty), extract_instruction (for literature extracts).
+- attempt: with "Answer any SIX of the following" over 8 printed questions, emit ALL 8 slots and
+  set the section's "attempt" to 6. Every printed question still gets its own slot — "attempt"
+  only records how many of them a student answers.
+- marks: what a STUDENT CAN EARN in the section. With no "attempt" that is the sum of its slots'
+  marks; with "attempt" it is attempt x the per-question marks ("answer any SIX of eight 2-mark
+  questions" -> 8 slots, attempt 6, marks 12, NOT 16). Sections using "attempt" must give every
+  slot the SAME marks.
 - Do NOT emit questions_count, marks_per_question or question_types — they are derived
   automatically from question_slots.
 
 CONSISTENCY RULES:
-- Slot marks sum to the section's marks; section marks sum to total_marks.
+- Slot marks sum to the section's marks (or, with "attempt", attempt x the per-question marks);
+  section marks sum to total_marks.
 - If the teacher's own numbers contradict each other, trust the per-question detail and set
   the section/total marks to the sum of the slots."""
 
@@ -421,8 +432,16 @@ def validate_pattern_structure(sections, declared_total=None):
                     err(idx, f"{name} {label}: parts marks sum to {_int_if_whole(psum)} but slot marks is {_int_if_whole(marks)}")
 
         sec_marks = _as_float(section.get("marks"), 0.0)
-        if sec_marks > 0 and abs(slot_marks_sum - sec_marks) > 0.01:
-            err(idx, f"{name}: slot marks sum to {_int_if_whole(slot_marks_sum)} but the section declares {_int_if_whole(sec_marks)} marks")
+        # An attempt-N-of-M section prints more marks than it awards, by design.
+        expected_marks = attemptable_marks(section)
+        if sec_marks > 0 and abs(expected_marks - sec_marks) > 0.01:
+            _n = section_attempt(section)
+            detail = (f"{name}: the student answers any {_n} of {len(slots)} questions, worth "
+                      f"{_int_if_whole(expected_marks)} marks, but the section declares "
+                      f"{_int_if_whole(sec_marks)}") if _n else (
+                      f"{name}: slot marks sum to {_int_if_whole(slot_marks_sum)} but the "
+                      f"section declares {_int_if_whole(sec_marks)} marks")
+            err(idx, detail)
 
     if all_qnums:
         seen = set()
@@ -438,9 +457,8 @@ def validate_pattern_structure(sections, declared_total=None):
     if declared_total and all_qnums:
         paper_sum = 0.0
         for section in sections or []:
-            slots = slots_for_section(section)
-            if slots:
-                paper_sum += sum(_as_float(s.get("marks"), 0.0) for s in slots)
+            if slots_for_section(section):
+                paper_sum += attemptable_marks(section)
             else:
                 paper_sum += _as_float(section.get("marks"), 0.0)
         if paper_sum > 0 and abs(paper_sum - _as_float(declared_total, 0.0)) > 0.01:
@@ -515,6 +533,89 @@ def repair_preserves_slots(original_sections, repaired_sections):
     return True
 
 
+# ─────────────────────────────────────────────
+# Attempt-N-of-M sections
+# ─────────────────────────────────────────────
+#
+# "Answer any SIX of the following" over eight 2-mark slots prints 8 questions but is worth 12
+# marks, not 16. The slot schema had no way to say so, so the pattern LLM — told that a section's
+# marks must equal the sum of its slots — declared 16, and an 80-mark paper printed as 90. The
+# downstream machinery for this already exists (attempt_count / provided_count on the work order,
+# the scaled section-marks check, the "Attempt any N of these M" prompt line); nothing populated
+# it. The section's own instruction line is the fallback source when the pattern predates the
+# explicit "attempt" key.
+
+_WORD_NUMBERS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20,
+}
+
+# "any" is required: "Answer ALL the questions" and "Answer the following" are not quotas.
+_ATTEMPT_RE = re.compile(
+    r"\b(?:answer|attempt|do|write|solve)\s+any\s+"
+    r"(?P<n>\d{1,2}|" + "|".join(_WORD_NUMBERS) + r")\b",
+    re.IGNORECASE,
+)
+
+# CBSE papers repeat a general internal-choice note inside section instructions ("Internal choice
+# is provided in some questions. A student is expected to attempt only one of these questions").
+# That is a per-question OR, not a section quota — reading it as one would price a 20-mark MCQ
+# section at 1 mark.
+_NOT_A_SECTION_QUOTA = ("internal choice", "in some questions", "each question", "every question")
+
+
+def section_attempt(section):
+    """How many of the section's printed questions a student actually answers, or None.
+
+    Explicit "attempt" wins; otherwise it is read off the section's own instruction line. Only
+    returned for a section whose slots carry UNIFORM marks — with mixed marks "any 6 of 8" does
+    not name a marks total (which six?), and every consumer of this needs one.
+    """
+    slots = slots_for_section(section)
+    if len(slots) < 2:
+        return None
+    marks_values = {round(_as_float(s.get("marks"), 0.0), 2) for s in slots}
+    if len(marks_values) != 1 or next(iter(marks_values)) <= 0:
+        return None
+
+    n = _as_int(section.get("attempt"), 0)
+    if not n:
+        for instr in section.get("instructions") or []:
+            text = str(instr)
+            low = text.lower()
+            if any(bad in low for bad in _NOT_A_SECTION_QUOTA):
+                continue
+            m = _ATTEMPT_RE.search(text)
+            if m:
+                raw = m.group("n").lower()
+                n = _WORD_NUMBERS.get(raw) or _as_int(raw, 0)
+                break
+    if not n or n >= len(slots):
+        return None
+    # A quota that discards most of the section is a misread instruction, not a quota — the
+    # phrasings that produce one ("attempt any one of these questions") are about internal
+    # choice. Answering at least a third of what is printed is the plausibility floor.
+    if n * 3 < len(slots):
+        return None
+    return n
+
+
+def attemptable_marks(section):
+    """The marks a student can earn in this section — what the paper should print.
+
+    The sum of its slots, unless the section is attempt-N-of-M, in which case only N of the
+    printed questions count.
+    """
+    slots = slots_for_section(section)
+    total = sum(_as_float(s.get("marks"), 0.0) for s in slots)
+    n = section_attempt(section)
+    if n:
+        return n * _as_float(slots[0].get("marks"), 0.0)
+    return total
+
+
 def derive_aggregates_from_slots(sections):
     """Recompute the legacy aggregate keys of every slot-bearing section from
     its slots, in place: questions_count, marks, marks_per_question (uniform
@@ -527,7 +628,13 @@ def derive_aggregates_from_slots(sections):
             continue
 
         section["questions_count"] = len(slots)
-        total = sum(_as_float(s.get("marks"), 0.0) for s in slots)
+        # The section's marks are what a STUDENT CAN EARN, which is the sum of the slots only
+        # when every printed question is compulsory. questions_count stays the printed count —
+        # all of them are generated and printed; the student picks.
+        attempt = section_attempt(section)
+        if attempt:
+            section["attempt"] = attempt
+        total = attemptable_marks(section)
         if total > 0:
             section["marks"] = _int_if_whole(total)
 

@@ -317,8 +317,41 @@ def _ar_hint() -> str:
     )
 
 
+# Slot fields that say HOW a question is presented. "topic" is deliberately excluded: a topic of
+# "Diagram of the human eye" says what the question is about, not that a picture is printed.
+_SLOT_FORM_FIELDS = ("condition", "format")
+# Wider than the section-level keywords below, because a slot condition names the form outright
+# ("graph based question") where a section instruction may just be telling students to draw one.
+_SLOT_IMAGE_WORDS = ("image", "picture", "diagram", "figure", "visual", "illustration", "graph")
+
+
+def _slot_wants_image(slot) -> bool:
+    """True when a question_slot asks for a picture-based question.
+
+    Teachers set this per question — "One question must be picture based" against Q21 — so it
+    arrives on ONE slot's "condition" (or "format"), never as a section-wide setting.
+    """
+    if not isinstance(slot, dict):
+        return False
+    blob = " ".join(str(slot.get(k) or "") for k in _SLOT_FORM_FIELDS).lower()
+    return any(w in blob for w in _SLOT_IMAGE_WORDS)
+
+
+def _image_slot_positions(wo: SectionWorkOrder) -> list:
+    """1-based positions of the slots that asked for a picture, in slot order."""
+    return [i for i, s in enumerate(wo.slots or [], start=1) if _slot_wants_image(s)]
+
+
 def _needs_image(wo: SectionWorkOrder) -> bool:
-    """Return True if any instruction, or the section name/title, mentions image-based questions."""
+    """Return True if this section takes pictures at all — a slot asked for one, or an
+    instruction / the section name / the title mentions image-based questions.
+
+    This gates the "image_prompt" field in the JSON schema the model is shown, so a section
+    whose only picture request lives on a slot condition used to be given no way to attach the
+    picture the teacher asked for.
+    """
+    if _image_slot_positions(wo):
+        return True
     keywords = ("image", "picture", "diagram", "figure", "visual")
     for instr in wo.instructions:
         if any(k in instr.lower() for k in keywords):
@@ -795,16 +828,47 @@ def build_section_prompt(wo: SectionWorkOrder, attempt: int = 1, prior_error: st
         ar_block = f"\n{_ar_hint()}\n"
 
     image_block = ""
-    # Skip image_block for dedicated CBQ sections — image_finder handles image generation
-    # post-question-validation. Adding image_block would make the LLM generate an image_prompt
-    # field that triggers the Together AI pipeline and conflicts with our image flow.
-    if _needs_image(wo) and not _is_dedicated_cbq_section(wo):
+    # Picture-based questions are a QUOTA the teacher set per question, not a section-wide hint.
+    # "One question must be picture based" used to reach the model only as the free-text tail
+    # "| condition: picture based question": the JSON schema it was shown carried no
+    # "image_prompt" field, nothing stated how many pictures the section takes, and nothing
+    # checked the result. Papers came back with the picture on the wrong question, with none at
+    # all, and with questions in sections that asked for none opening "He is shown a diagram
+    # with labels…" — describing a picture that is never printed.
+    _img_positions = _image_slot_positions(wo)
+    # Dedicated CBQ sections are exempt: image_finder generates their image AFTER validation, so
+    # an image_prompt here would fire a second, conflicting image pipeline.
+    if _is_dedicated_cbq_section(wo):
+        image_block = ""
+    elif _img_positions:
+        _pos_txt = ", ".join(f"Question {p}" for p in _img_positions)
+        image_block = (
+            f"\nPICTURE-BASED QUESTIONS — EXACTLY {len(_img_positions)} in this section:\n"
+            f"- {_pos_txt} — and NO other question — must be picture-based.\n"
+            "- Each of those MUST carry an \"image_prompt\": a self-contained visual description "
+            "(20-40 words) an image model can render on its own, naming every object the "
+            "question asks about. The image is printed directly ABOVE that question.\n"
+            "- Its \"text\" must point at that picture ('Study the diagram above and answer:') "
+            "and must be answerable FROM the picture.\n"
+            "- EVERY OTHER question in this section must have NO \"image_prompt\" and must not "
+            "mention a diagram, figure, picture, graph or photograph that it does not supply — "
+            "nothing is printed above those questions, so the student would be answering about "
+            "blank space. Asking the student to DRAW a diagram is fine.\n"
+        )
+    elif _needs_image(wo):
         image_block = (
             "\nIMAGE-BASED QUESTION RULE:\n"
             "- For any question that is image/diagram/picture based, add an \"image_prompt\" field.\n"
             "- The \"image_prompt\" value must be a self-contained visual description (20-40 words) that an AI image model can render.\n"
             "- The question \"text\" must reference the image (e.g. 'Study the diagram above and answer:'). The image is rendered ABOVE the question.\n"
             "- Only add \"image_prompt\" to the specific questions that need an image — not all questions.\n"
+        )
+    elif not wo.is_map_work:
+        image_block = (
+            "\nNO PICTURES IN THIS SECTION: no image is printed with any of these questions, so "
+            "no question may point at a diagram, figure, picture, graph or photograph — no "
+            "\"image_prompt\", no 'the diagram above', no 'he is shown a figure'. Describe the "
+            "situation in words instead. Asking the student to DRAW or sketch is fine.\n"
         )
 
     error_block = ""
@@ -1189,6 +1253,11 @@ MATHEMATICAL NOTATION (strictly follow):
     # per-question topics ("Homophones", "Past perfect tense") into the prompt.
     slot_block = ""
     if wo.slots:
+        # Per-question source anchoring: slot i's chapter (from the weighted chapter plan) and
+        # the ONE numbered excerpt of it this question must be written from. Empty for sections
+        # that may use no textbook content at all — naming a chapter there re-invites exactly
+        # what _no_textbook forbids.
+        anchors = {} if _no_textbook else plan_slot_excerpts(wo)
         s_lines = []
         for pos, s in enumerate(wo.slots, start=1):
             styp = str(s.get("type") or "")
@@ -1226,6 +1295,13 @@ MATHEMATICAL NOTATION (strictly follow):
             # this is what makes a blueprint's per-question assignment actually binding.
             if s.get("chapter"):
                 line += f" | CHAPTER: draw this question from \"{s['chapter']}\" ONLY"
+            elif pos - 1 in anchors:
+                # Terse on purpose — the convention is spelled out once in anchor_note below
+                # rather than re-explained on all 20 of a section's lines.
+                _a_ch, _a_eid = anchors[pos - 1]
+                line += f" | CHAPTER: \"{_a_ch}\" ONLY"
+                if _a_eid:
+                    line += f" | SOURCE EXCERPT: [E{_a_eid}]"
             if s.get("topic"):
                 line += f" | TOPIC: {s['topic']}"
             if s.get("format"):
@@ -1250,6 +1326,14 @@ MATHEMATICAL NOTATION (strictly follow):
                 )
             if s.get("condition"):
                 line += f" | condition: {s['condition']}"
+            if _slot_wants_image(s):
+                # The condition tail above is the teacher's own wording and reads as a hint;
+                # this states what the JSON must actually contain.
+                line += (
+                    ' | PICTURE-BASED — this question MUST carry an "image_prompt" (a 20-40 '
+                    "word description of the picture printed above it) and must be answerable "
+                    "from that picture"
+                )
             if s.get("choice") == "internal":
                 alts = [str(a).strip() for a in (s.get("alternatives") or []) if str(a).strip()]
                 if pattern_structure.slot_category(styp) == "cbq" or parts:
@@ -1361,6 +1445,29 @@ MATHEMATICAL NOTATION (strictly follow):
                 "NOT taken from the reference material; every other question must stay grounded "
                 "in it. "
             )
+        # Per-question source anchoring: the slot lines carry the assignment, but the model
+        # honours a stated CONVENTION far more reliably than a repeated inline flag — say once
+        # what [E7] means and that reusing one excerpt for two questions is the failure being
+        # prevented.
+        anchor_note = ""
+        if anchors:
+            anchor_note = (
+                'A line\'s CHAPTER is binding: that question comes from that chapter and no '
+                'other, and its "chapter_tag" is that exact name. '
+            )
+        _anchor_ids = {eid for _ch, eid in anchors.values() if eid}
+        if len(_anchor_ids) > 1:
+            # State the FULL range the material carries, not just the ids this section was
+            # given — a section that stops at [E9] must not read as if [E12] were spurious.
+            _last = max([e for e, _c in _excerpt_index(wo.context_text or "")] or _anchor_ids)
+            anchor_note += (
+                f"The REFERENCE MATERIAL below is split into numbered excerpts [E1]…"
+                f"[E{_last}]. A line's SOURCE EXCERPT is the material for THAT "
+                "question: take the fact, term, example, figure or data it tests from that "
+                "excerpt. Different questions are given different excerpts on purpose — do NOT "
+                "write two questions off the same excerpt, and do not fall back on your own "
+                "recollection of the chapter while its excerpt is in front of you. "
+            )
         no_passage_note = ""
         if not any(str(s.get("source") or "").lower() == "unseen" for s in wo.slots):
             no_passage_note = (
@@ -1374,8 +1481,9 @@ MATHEMATICAL NOTATION (strictly follow):
             + "\n".join(s_lines) + "\n"
             "Each question's type, subtype and marks MUST match its line above. Write the "
             "question ON the stated TOPIC where one is given. Sub-parts go in that question's "
-            '"sub_questions" array (each entry with "text" and "marks"). ' + general_note +
-            own_note + no_passage_note + "Do NOT merge, split, reorder or renumber questions.\n"
+            '"sub_questions" array (each entry with "text" and "marks"). ' + anchor_note +
+            general_note + own_note + no_passage_note +
+            "Do NOT merge, split, reorder or renumber questions.\n"
         )
 
     # Slot-less sections (legacy subsection blueprints, One-Mark tests) have no per-question line
@@ -1873,6 +1981,54 @@ def _book_reference_hit(text: str) -> str:
     return ""
 
 
+# A question that points at a picture the paper never prints. The student sees blank space above
+# it, so it is unanswerable — the same defect as pointing at the textbook, one page later. Only
+# SUPPLIED visuals count: "Draw a labelled diagram of the human eye" asks the student to make
+# one, which is legitimate and must never be flagged (see _DRAWN_BY_STUDENT_RE below).
+_SUPPLIED_VISUAL_RE = re.compile(
+    # Deictic verbs point at something the paper is expected to print, on their own.
+    r"\b(?:study|observe|look\s+at|refer\s+to|examine|based\s+on|according\s+to)\s+"
+    r"(?:the|this|that|these|those)\s+"
+    r"(?:given\s+|above\s+|below\s+|following\s+|adjacent\s+|accompanying\s+|shown\s+)?"
+    r"(?:diagram|figure|picture|image|illustration|graph|photograph|flow\s?chart)\b"
+    # A bare "in/from the …" needs a positional word for the everyday nouns, which turn up in
+    # ordinary scenarios ("In the picture she painted, the artist used only primary colours").
+    r"|\b(?:in|from)\s+(?:the|this|that)\s+"
+    r"(?:given|above|below|following|adjacent|accompanying|shown)\s+"
+    r"(?:diagram|figure|picture|image|illustration|graph|photograph|flow\s?chart)\b"
+    # …but the technical ones never appear in a narrative, so bare is enough.
+    r"|\b(?:in|from)\s+(?:the|this|that)\s+(?:diagram|graph|flow\s?chart|illustration)\b"
+    r"|\b(?:diagram|figure|picture|image|illustration|graph|photograph)\s+"
+    r"(?:given\s+)?(?:above|below|alongside|shown|here)\b"
+    r"|\bthe\s+(?:diagram|figure|picture|image|illustration|graph|photograph)\s+"
+    r"(?:shows|depicts|represents|illustrates)\b"
+    r"|\b(?:is|are|was|were)\s+shown\s+(?:a|an|the)\s+"
+    r"(?:diagram|figure|picture|image|illustration|graph|photograph)\b",
+    re.IGNORECASE,
+)
+
+# The student makes the drawing, so nothing has to be printed — always legitimate, and common
+# enough ("Draw a neat labelled diagram of…", "With the help of a diagram, explain…") that one
+# false positive here would cost real questions on every retry.
+_DRAWN_BY_STUDENT_RE = re.compile(
+    r"\b(?:draw|sketch|make|construct|plot|label)\b[^.]{0,60}"
+    r"\b(?:diagram|figure|sketch|graph|circuit|structure)\b"
+    r"|\bwith\s+(?:the\s+help\s+of\s+)?(?:a|an|the)?\s*"
+    r"(?:neat|suitable|well[\s-]?labelled|well[\s-]?labeled|labelled|labeled|simple)?\s*"
+    r"(?:diagram|figure|sketch|graph)\b",
+    re.IGNORECASE,
+)
+
+
+def _supplied_visual_hit(text: str) -> str:
+    """The phrase where a question points at a picture the paper will not print, or ""."""
+    blob = text or ""
+    if _DRAWN_BY_STUDENT_RE.search(blob):
+        return ""
+    m = _SUPPLIED_VISUAL_RE.search(blob)
+    return " ".join(m.group(0).split()) if m else ""
+
+
 def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
     """
     Explicit structural validation for every type+subtype combination.
@@ -1913,6 +2069,44 @@ def _validate_by_subtype(q: dict, n: int, wo: SectionWorkOrder) -> list:
             "needs into the question itself: no Activity/Exercise/Table/Figure numbers, no "
             "\"the chapter\", and never ask what a person in the book said, suggested or did"
         )
+
+    # Picture-based questions are a quota the teacher set per question. The marked slot must
+    # carry its picture; no other question may carry one or point at one, because nothing is
+    # printed above it. Dedicated CBQ sections are skipped — their image arrives after validation.
+    if not _is_dedicated_cbq_section(wo):
+        _slot_wants_pic = bool(slot) and _slot_wants_image(slot)
+        _has_pic = bool(str(q.get("image_prompt", "") or "").strip()) or bool(q.get("image_based"))
+        if wo.slots:
+            _pic_positions = _image_slot_positions(wo)
+            if _slot_wants_pic and not _has_pic and not wo.disable_images:
+                errors.append(
+                    f"Q{n}: the pattern marks this question PICTURE-BASED — add an "
+                    '"image_prompt" (a 20-40 word description of the picture to print above it) '
+                    "and make the question answerable from that picture"
+                )
+            elif not _slot_wants_pic and _has_pic:
+                _where = (
+                    "only on " + ", ".join(f"Q{p}" for p in _pic_positions)
+                    if _pic_positions else "on no question in this section"
+                )
+                errors.append(
+                    f'Q{n}: remove "image_prompt" — the pattern asks for a picture {_where}, '
+                    "not here"
+                )
+        # A question that gets no picture must not describe one. Map work is exempt (its map IS
+        # printed), and so is a slot-less section the pattern calls image-based — there, any
+        # question may be the illustrated one.
+        _q_gets_picture = _slot_wants_pic or _has_pic or (not wo.slots and _needs_image(wo))
+        _is_map_q = (wo.is_map_work or subtype == "map_based"
+                     or (bool(slot) and "map" in str(slot.get("type") or "").lower()))
+        if not _q_gets_picture and not _is_map_q:
+            _vis = _supplied_visual_hit(_student_visible_text(q))
+            if _vis:
+                errors.append(
+                    f'Q{n}: points at a picture that is not printed ("{_vis}") — no image is '
+                    "rendered for this question, so the student would see blank space. Describe "
+                    "the situation in words inside the question, or ask the student to DRAW it"
+                )
 
     # General-knowledge slots must not reference textbook chapters: the teacher banned
     # textbook content outright, yet a chapter-assigned model happily writes "In the
@@ -2599,6 +2793,66 @@ def _type_str(t) -> str:
     if isinstance(t, dict):
         return str(t.get("type", "")).lower()
     return str(t).lower()
+
+
+# ── Canonical question-type keys ─────────────────────────────────────────────────────
+# _type_str() deliberately returns the RAW lowercased label and MUST keep doing so.
+# Two thirds of its ~30 call sites match SPACE-separated display text against it
+# ("short answer", "very short", "long answer", "(sa)" — _output_schema, the NON_CBQ
+# guard in _is_dedicated_cbq_section, _typical_marks_for_types), and two of them
+# (build_section_prompt, _validate_context_quality) put its output straight into an LLM
+# prompt as the section's type list. Normalising inside _type_str would rewrite those
+# prompts and silently break those substring tests, so canonicalisation lives HERE and
+# only the call sites that need a stable KEY — the retrieval query hints and the
+# TYPE_CONTEXT_PROFILES routing — go through it.
+#
+# Matching is by whole TOKEN RUN, never bare substring, and rule order is load-bearing:
+# the narrower type is tested first and every run it owns is erased from the label
+# before the next rule looks at it. That is what keeps "Very Short Answer" from also
+# answering to "sa" (the defect the old `type_key in _type_str(t)` gate had in reverse)
+# while still letting a compound label like "MCQ / Assertion-Reason" report both halves.
+_CANON_TYPE_RULES = (
+    # (canonical key,  token runs it owns, longest first)
+    ("assertion",      ("assertion reason", "assertion", "ar")),
+    ("map_work",       ("map work", "map based", "map")),
+    ("unseen_passage", ("unseen passage", "reading comprehension", "comprehension")),
+    ("cbq",            ("case based", "case study", "cbq", "case")),
+    ("source_based",   ("source based", "source")),
+    ("vsa",            ("very short answer", "very short", "vsa")),
+    ("la",             ("long answer", "long", "essay", "la")),
+    ("sa",             ("short answer", "short", "sa")),
+    ("mcq",            ("multiple choice", "objective", "mcq")),
+    ("numerical",      ("numerical", "calculation")),
+    ("match",          ("match the following", "matching", "match")),
+    ("writing_tasks",  ("writing task", "writing")),
+    ("true_false",     ("true or false", "true false")),
+    ("fill_blanks",    ("fill in the blanks", "fill in the blank", "blanks")),
+)
+
+
+def _canon_type_keys(t) -> list:
+    """Every canonical type key named by a question-type label, most specific first.
+
+    'Very Short Answer', 'very_short_answer', 'VSA' and 'Very Short Answer (VSA)' all
+    give ['vsa']; 'Case-Based' and 'case_based' both give ['cbq']; a compound
+    'MCQ / Assertion-Reason' gives ['assertion', 'mcq']. Unrecognised labels give [].
+    """
+    s = " %s " % re.sub(r"[^a-z0-9]+", " ", _type_str(t)).strip()
+    if not s.strip():
+        return []
+    keys = []
+    for key, runs in _CANON_TYPE_RULES:
+        matched = False
+        for run in runs:
+            pad = " %s " % run
+            while pad in s:
+                # Erase the run (keeping the delimiting spaces) so a later, broader rule
+                # cannot re-read these words — "very short answer" must not also be "sa".
+                s = s.replace(pad, "  ")
+                matched = True
+        if matched:
+            keys.append(key)
+    return keys
 
 
 _STOP_WORDS = {
@@ -4478,12 +4732,25 @@ def reconcile_uniform_marks(paper_data: dict, work_orders: list) -> dict:
             for t in (wo.question_types or [])
         )
         expected = wo.provided_count if (wo.provided_count and wo.provided_count > wo.questions_count) else wo.questions_count
-        consistent = (not expected) or abs(expected * mpq - wo.marks) <= 0.5
+
+        # An attempt-N-of-M section budgets only the N a student answers ("Answer any SIX of
+        # the following" = 6 x 2 = 12m), but all M PRINTED questions still carry the full
+        # marks_per_question. wo.marks is the attemptable budget, so comparing it against
+        # count x mpq declares the section inconsistent and spreads the budget thin —
+        # eight 2-mark questions became 2,2,2,2,1,1,1,1 and the audit then flagged the four
+        # it had just docked. Reconcile against what the PRINTED questions must sum to.
+        # Same adjustment the marks-sum validator already makes (see validate_section_marks).
+        printed_marks = wo.marks
+        if (wo.provided_count and wo.attempt_count and wo.attempt_count > 0
+                and wo.provided_count > wo.attempt_count):
+            printed_marks = wo.marks * (wo.provided_count / wo.attempt_count)
+
+        consistent = (not expected) or abs(expected * mpq - printed_marks) <= 0.5
 
         # DISTRIBUTE only for an inconsistent written-answer section with a sane marks budget.
         n = len(targets)
-        base, rem = divmod(int(wo.marks), n) if wo.marks else (0, 0)
-        if has_objective or consistent or not wo.marks or base < 1:
+        base, rem = divmod(int(printed_marks), n) if printed_marks else (0, 0)
+        if has_objective or consistent or not printed_marks or base < 1:
             fixed = 0
             for q in targets:
                 cur = _as_float(q.get("marks"), None) if q.get("marks") is not None else None
@@ -4499,8 +4766,9 @@ def reconcile_uniform_marks(paper_data: dict, work_orders: list) -> dict:
         for q, m in zip(targets, plan):
             q["marks"] = m
         if changed:
-            print(f"[Marks-Reconcile] '{sec_name}': distributed {wo.marks}m across {n} question(s) "
-                  f"as {plan} (pattern {expected}×{mpq} = {expected * mpq if expected else '?'} ≠ {wo.marks})")
+            print(f"[Marks-Reconcile] '{sec_name}': distributed {printed_marks:g}m across {n} question(s) "
+                  f"as {plan} (pattern {expected}×{mpq} = {expected * mpq if expected else '?'} "
+                  f"≠ {printed_marks:g})")
     return paper_data
 
 
@@ -4723,6 +4991,16 @@ TYPE_CONTEXT_PROFILES = {
     "map_work":     {"extra_hints": ["geographic locations places regions states rivers"],           "max_chars": 4000},
 }
 
+# Which canonical section types make a TYPE_CONTEXT_PROFILES slice worth building.
+# build_single_question_prompt is the ONLY reader of context_by_type and looks the slice
+# up by generate_la_cbq_individually's dominant type, which is "LA" or "source_based" —
+# so those two slices are the only ones any prompt can ever see. A dedicated case-study
+# section is routed as source_based, hence cbq maps onto that slice.
+_CONTEXT_BY_TYPE_CONSUMERS = {
+    "la":           frozenset({"la"}),
+    "source_based": frozenset({"source_based", "cbq"}),
+}
+
 
 def _validate_context_quality(context: str, section_name: str, questions_count: int, subject: str, class_name: str, question_types: list) -> bool:
     """
@@ -4764,26 +5042,50 @@ def _validate_context_quality(context: str, section_name: str, questions_count: 
         return True
 
 
+# Retrieval probe per canonical question type. Wording is unchanged from the original
+# per-type branches; vsa / source_based / map_work / match are new — they had no probe at
+# all, so those sections used to retrieve on the generic one alone.
+_TYPE_QUERY_HINTS = {
+    "mcq":            "facts MCQ questions",
+    "assertion":      "principles assertion reason",
+    "cbq":            "case study applications",
+    "source_based":   "source passages extracts",
+    "unseen_passage": "reading comprehension passages",
+    "vsa":            "definitions key terms brief answers",
+    "sa":             "short answer explanations",
+    "la":             "detailed explanations processes",
+    "numerical":      "numerical problems solved examples",
+    "writing_tasks":  "writing formats samples letters",
+    "map_work":       "locations places regions",
+    "match":          "terms and their descriptions",
+}
+
+
 def _query_hints_for_types(question_types: list, subject: str) -> list:
-    hints = [f"{subject} important concepts definitions"]
+    """Retrieval probes for a section, TYPE-SPECIFIC ONES FIRST.
+
+    Two defects fixed here, both measured on live pattern 415 (Class 6 Science):
+
+    1. The old branches compared UNDERSCORE keys ("short_answer", "long_answer") against
+       the pattern's SPACE-separated display labels ("Short Answer", "Very Short Answer",
+       "Long Answer"), which _type_str only lowercases — so three of that paper's five
+       sections (20 of 43 questions) fell through to the generic probe. Matching now goes
+       through _canon_type_keys, which reads every label form alike.
+    2. The generic probe used to come FIRST, and that alone made the fix invisible:
+       get_section_context admits only the top-ranked chunk per chapter once a paper has
+       4+ chapters, and that chunk is whichever the FIRST probe returned. Every section of
+       a paper therefore got a byte-identical context however many type hints followed.
+       It is now LAST — a fallback for an unrecognised type, not the probe that decides the
+       excerpt. It is also definition-biased ("important concepts definitions"), which is
+       what pinned retrieval to chapter openings.
+    """
+    hints = []
     for qt in question_types:
-        ql = _type_str(qt)
-        if ql in ("mcq", "multiple_choice"):
-            hints.append(f"{subject} facts MCQ questions")
-        elif ql in ("assertion_reason", "assertion-reason"):
-            hints.append(f"{subject} principles assertion reason")
-        elif ql in ("case_based", "case-based"):
-            hints.append(f"{subject} case study applications")
-        elif ql in ("unseen_passage", "reading_comprehension"):
-            hints.append(f"{subject} reading comprehension passages")
-        elif ql in ("short_answer", "sa"):
-            hints.append(f"{subject} short answer explanations")
-        elif ql in ("long_answer", "la", "essay"):
-            hints.append(f"{subject} detailed explanations processes")
-        elif ql in ("numerical", "calculation"):
-            hints.append(f"{subject} numerical problems solved examples")
-        elif ql in ("writing_tasks", "writing"):
-            hints.append(f"{subject} writing formats samples letters")
+        for key in _canon_type_keys(qt):
+            probe = _TYPE_QUERY_HINTS.get(key)
+            if probe:
+                hints.append(f"{subject} {probe}")
+    hints.append(f"{subject} important concepts definitions")
     return list(dict.fromkeys(hints))
 
 
@@ -4891,6 +5193,105 @@ def _spread_order(cands: list) -> list:
     return [cands[i] for i in picked]
 
 
+# ─────────────────────────────────────────────
+# Per-question source anchoring
+# ─────────────────────────────────────────────
+#
+# The measured complaint ("questions come from only one part of a unit") has two halves. The
+# first is retrieval: only ONE excerpt per chapter survived the character budget. The second is
+# BINDING — even when several excerpts were present, the prompt named none of them against any
+# particular question, so the model wrote all of a section's questions off whichever excerpt it
+# liked (on the reference paper only 5 of 55 questions shared a 5-word run with the material they
+# were given). Numbering the excerpts [E1]…[En] and naming one on each question slot line closes
+# the second half; splitting each chapter's slice into several excerpts (same total chars, so the
+# same input-token bill) gives that binding something to distribute.
+_EXCERPT_SPLIT = 3            # pieces a chapter's slice is cut into when it is too tight to
+                              # hold several whole chunks (a roomy slice keeps taking whole ones)
+_EXCERPT_MIN_CHARS = 300      # ~50 words; below this an excerpt cannot ground a question at all
+
+
+def _trim_excerpt(doc: str, cap: int) -> str:
+    """`doc` cut to at most `cap` chars, ending at a sentence break where one is available in
+    the last 40% (a mid-word stub reads as corrupt source material to the model)."""
+    doc = (doc or "").strip()
+    if len(doc) <= cap:
+        return doc
+    head = doc[:cap]
+    for stop in (". ", ".\n", "! ", "? ", "\n"):
+        cut = head.rfind(stop)
+        if cut >= int(cap * 0.6):
+            return head[:cut + 1].strip()
+    cut = head.rfind(" ")
+    return (head[:cut] if cut >= int(cap * 0.6) else head).strip()
+
+
+_CTX_CHAPTER_RE = re.compile(r"^=== CHAPTER: (.+?) ===\s*$", re.M)
+_CTX_EXCERPT_RE = re.compile(r"^\[E(\d+)\] ", re.M)
+
+
+def _excerpt_index(context: str) -> list:
+    """[(excerpt_id, chapter_name)] for a context string built by get_section_context.
+
+    Read back off the assembled string rather than threaded through the work order: the context
+    a section finally receives may have been rebuilt by the quality-check broad retry or had
+    CONTINUOUS PASSAGE spans prepended, and whatever arrives is what the model actually sees."""
+    if not context:
+        return []
+    heads = [(m.start(), m.group(1).strip()) for m in _CTX_CHAPTER_RE.finditer(context)]
+    out = []
+    for m in _CTX_EXCERPT_RE.finditer(context):
+        chapter = ""
+        for pos, name in heads:
+            if pos < m.start():
+                chapter = name
+            else:
+                break
+        out.append((int(m.group(1)), chapter))
+    return out
+
+
+def plan_slot_excerpts(wo) -> dict:
+    """{slot index: (chapter, excerpt id or None)} — the chapter and the ONE labeled excerpt
+    each printed question must be written from.
+
+    `wo.chapter_plan` already holds one chapter per question (plan_chapter_allocation, CBSE-mark
+    weighted and coordinated paper-wide), but it reached the prompt only as an aggregate
+    `Counter` distribution — "3 from Optics, 2 from Waves" — which the model satisfies by writing
+    all three Optics questions off the same paragraph. This pairs plan[i] with slot i and then
+    hands each slot a different excerpt of that chapter, round-robin, so a chapter that owes two
+    questions gives them two different pieces of itself.
+
+    Slots the teacher has already pinned (`slot['chapter']`, from an ExamBlueprint unit map) are
+    left alone — that assignment is rendered by build_section_prompt and outranks this one.
+    Slots that must NOT come from the textbook (source general/unseen, own-composition) get no
+    excerpt; a general/unseen slot gets no chapter either."""
+    if not getattr(wo, "slots", None) or not getattr(wo, "chapter_plan", None):
+        return {}
+    by_chapter: dict = {}
+    for eid, chapter in _excerpt_index(getattr(wo, "context_text", "") or ""):
+        by_chapter.setdefault(chapter, []).append(eid)
+    cursor: dict = {}
+    out: dict = {}
+    for i, s in enumerate(wo.slots):
+        if i >= len(wo.chapter_plan) or not isinstance(s, dict) or s.get("chapter"):
+            continue
+        if str(s.get("source") or "").strip().lower() in ("general", "unseen"):
+            continue
+        chapter = str(wo.chapter_plan[i] or "").strip()
+        if not chapter:
+            continue
+        eid = None
+        ids = by_chapter.get(chapter) or []
+        # An own-composition slot keeps its chapter but must invent its own scenario, so it is
+        # deliberately not pointed at a passage to lean on (see plan_creative_allocation).
+        if ids and not s.get("own_question"):
+            k = cursor.get(chapter, 0)
+            eid = ids[k % len(ids)]
+            cursor[chapter] = k + 1
+        out[i] = (chapter, eid)
+    return out
+
+
 def get_section_context(class_name: str, subject: str, chapters: list, query_hints: list, max_chars: int = 8000, school_id=None) -> str:
     """Assemble the section's source-material context with a PER-CHAPTER share of the
     character window, each chapter headed by its LLM chapter summary (enrichment) when
@@ -4962,6 +5363,7 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
     live_weight = sum(chapter_weights[ch] for ch in live_units) or 1
 
     blocks = []
+    excerpt_no = 0
     for chapter in live_units:
         if len(live_units) == 1:
             budget = max_chars
@@ -4980,19 +5382,35 @@ def get_section_context(class_name: str, subject: str, chapters: list, query_hin
         used = sum(len(p) for p in parts)
         added = 0
         picked_at = []
+        # Ceiling on ONE excerpt, so a tight slice yields several excerpts instead of one.
+        # The old loop spent the ENTIRE remaining slice on the first (most-similar) chunk —
+        # `room = max(400, budget - used)` — so from four chapters up every chapter
+        # contributed exactly ONE excerpt and _spread_order's other picks were discarded
+        # unused. One 880-char excerpt and two 440-char ones cost the SAME input tokens, but
+        # only the second gives build_section_prompt distinct excerpts to hand to distinct
+        # question slots. A roomy slice (one- or two-chapter papers) keeps taking whole
+        # ~1000-char chunks exactly as before — the ceiling only binds once the slice falls
+        # below chunk size, which is precisely the many-chapter case that was starving.
+        room = max(400, budget - used)
+        n_split = max(1, min(_EXCERPT_SPLIT, room // _EXCERPT_MIN_CHARS))
+        per_excerpt = max(_EXCERPT_MIN_CHARS, room // n_split)
         # Spread across the chapter rather than taking the similarity-ordered top-k, which
         # clusters into one region (see _spread_order).
         for _mid, cidx, doc in _spread_order(docs_by_unit[chapter]):
-            if not added:
-                # Always represent the chapter with at least one (possibly trimmed) chunk.
-                room = max(400, budget - used)
-                parts.append(doc[:room])
-                used += min(len(doc), room)
-            elif used + len(doc) + 2 > budget:
-                break
-            else:
-                parts.append(doc)
-                used += len(doc) + 2
+            cap = min(per_excerpt, budget - used - 8)
+            if cap < _EXCERPT_MIN_CHARS:
+                if added:
+                    break
+                # Slice too small even for one floor-sized excerpt: represent the chapter
+                # anyway with a trimmed one, exactly as the old `max(400, …)` did.
+                cap = max(400, cap)
+            piece = _trim_excerpt(doc, cap)
+            if not piece:
+                continue
+            excerpt_no += 1
+            # Numbered so a question slot can be pointed at ONE of them (_excerpt_index).
+            parts.append(f"[E{excerpt_no}] {piece}")
+            used += len(piece) + 8
             picked_at.append(cidx)
             added += 1
         if chapter and picked_at:
@@ -5761,16 +6179,27 @@ def get_section_context_map(class_name: str, subject: str, chapters: list, bluep
 
         # 3.2 — Build per-type context for this section
         type_ctx: dict = {}
+        sec_keys = {k for t in sec_types for k in _canon_type_keys(t)}
         for type_key, profile in TYPE_CONTEXT_PROFILES.items():
-            # Only build per-type context if this section has that type
-            if any(type_key in _type_str(t) for t in sec_types):
-                type_hints = [f"{effective_subject} {' '.join(profile['extra_hints'])}"] + hints[:2]
-                tctx = get_section_context(
-                    class_name, effective_subject, sec_chapters,
-                    type_hints, max_chars=profile["max_chars"], school_id=school_id
-                )
-                if tctx:
-                    type_ctx[type_key] = tctx
+            # Only build per-type context if this section has that type. The old test was
+            # `type_key in _type_str(t)` — a bare substring against the display label, so
+            # "sa"/"la"/"vsa"/"cbq" never matched "Short Answer"/"Long Answer"/
+            # "Very Short Answer"/"Case-Based" and only the mcq and assertion profiles
+            # ever fired. Canonical keys read every label form.
+            # Scoped to the slices something actually READS: build_single_question_prompt
+            # is the only consumer and looks them up by the individual-generation path's
+            # dominant type ("la" / "source_based"). Building the rest is retrieval work
+            # nothing reads — with the gate fixed that would be 3-5 extra passes per
+            # section on every paper.
+            if not (sec_keys & _CONTEXT_BY_TYPE_CONSUMERS.get(type_key, frozenset())):
+                continue
+            type_hints = [f"{effective_subject} {' '.join(profile['extra_hints'])}"] + hints[:2]
+            tctx = get_section_context(
+                class_name, effective_subject, sec_chapters,
+                type_hints, max_chars=profile["max_chars"], school_id=school_id
+            )
+            if tctx:
+                type_ctx[type_key] = tctx
         context_by_type_map[sec_name] = type_ctx
 
     # Store per-type map on the returned dict using a sentinel key
@@ -6325,11 +6754,21 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         slots = sec_data.get("question_slots") or ps.get("question_slots") or []
         slots = [s for s in slots if isinstance(s, dict)]
         if slots:
-            holder = {"question_slots": slots}
+            # The holder carries the attempt quota and the instructions it can be read from, or
+            # derive_aggregates_from_slots would price an "answer any SIX of eight" section at
+            # all eight questions and the section would print the wrong marks.
+            holder = {
+                "question_slots": slots,
+                "attempt": sec_data.get("attempt") or ps.get("attempt"),
+                "instructions": ps.get("instructions", sec_data.get("instructions", [])),
+            }
             pattern_structure.normalize_slots([holder])
             pattern_structure.derive_aggregates_from_slots([holder])
             sec_data = dict(sec_data)
             sec_data["questions_count"] = holder.get("questions_count", len(slots))
+            if holder.get("attempt"):
+                sec_data["attempt"] = holder["attempt"]
+                sec_data["attempt_count"] = holder["attempt"]
             if holder.get("marks"):
                 sec_data["marks"] = holder["marks"]
             sec_data.pop("marks_per_question", None)
@@ -6392,11 +6831,17 @@ def build_work_orders(blueprint: dict, pattern, context_map: dict, difficulty: s
         if typed_count > 0:
             q_count = typed_count
             if typed_marks > 0:
-                marks = int(round(typed_marks))
                 # 2 decimals, not 1: a pattern stating 2.25m/question must not drift to
                 # 2.2 here — reconcile_uniform_marks stamps THIS value onto every
                 # question and the paper audit then flags each one against the slots.
                 mpq = round(typed_marks / typed_count, 2)
+                # The typed breakdown describes every question the section PRINTS. wo.marks
+                # budgets what a student can EARN, which for "answer any SIX of these eight"
+                # is 6 x 2 = 12, not 16 — validate_section_output scales it back up by
+                # provided/attempt to check the eight generated questions.
+                _sec_attempt = _as_int(sec_data.get("attempt"), 0)
+                marks = (int(round(mpq * _sec_attempt))
+                         if 0 < _sec_attempt < typed_count else int(round(typed_marks)))
 
         # Derive any missing per-question marks / question count so a section NEVER asks for
         # 0 questions. AI-generated patterns sometimes leave questions_count/marks_per_question

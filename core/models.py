@@ -158,8 +158,10 @@ class ExamPattern(models.Model):
         for section in self.sections:
             slots = section.get('question_slots') or []
             if slots:
-                # Slot-authored sections: slots are the source of truth.
-                total += sum((s.get('marks') or 0) for s in slots if isinstance(s, dict))
+                # Slot-authored sections: slots are the source of truth — but an
+                # attempt-N-of-M section prints more questions than it awards marks for.
+                from . import pattern_structure
+                total += pattern_structure.attemptable_marks(section)
                 continue
             sec_marks = section.get('marks') or 0
             if sec_marks:
